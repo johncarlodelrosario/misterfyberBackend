@@ -11,8 +11,8 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "moduleResolution": "node",
-    "ignoreDeprecations": "5.0",
+    "moduleResolution": "node10",
+    "ignoreDeprecations": "6.0",
     "noImplicitAny": false,
     "noImplicitThis": false,
     "noEmitOnError": false
