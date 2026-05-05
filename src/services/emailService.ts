@@ -1,7 +1,4 @@
-import nodemailer from "nodemailer";
 import { IUser } from "../models/User";
-import { IBilling } from "../models/Billing";
-import { IPayment } from "../models/Payment";
 import dotenv from "dotenv";
 import path from "path";
 
@@ -31,21 +28,13 @@ console.log(
   process.env.EMAIL_FROM ? "✅ EXISTS" : "❌ MISSING",
 );
 console.log(
-  "   SMTP_HOST:",
-  process.env.SMTP_HOST ? "✅ EXISTS" : "❌ MISSING",
-);
-console.log(
-  "   SMTP_USER:",
-  process.env.SMTP_USER ? "✅ EXISTS" : "❌ MISSING",
-);
-console.log(
-  "   SMTP_PASS:",
-  process.env.SMTP_PASS ? "✅ EXISTS" : "❌ MISSING",
+  "   BREVO_API_KEY:",
+  process.env.BREVO_API_KEY ? "✅ EXISTS" : "❌ MISSING",
 );
 console.log("   FRONTEND_URL:", process.env.FRONTEND_URL || "❌ MISSING");
 
 class EmailService {
-  private transporter: nodemailer.Transporter | null = null;
+  private apiKey: string;
   private initialized: boolean = false;
   private adminEmail: string;
   private supportEmail: string;
@@ -56,11 +45,13 @@ class EmailService {
     this.adminEmail = process.env.ADMIN_EMAIL || "";
     this.supportEmail = process.env.SUPPORT_EMAIL || "";
     this.emailFrom = process.env.EMAIL_FROM || "";
+    this.apiKey = process.env.BREVO_API_KEY || "";
 
     console.log("\n📧 EmailService Constructor Values:");
     console.log("   ADMIN_EMAIL:", this.adminEmail || "❌ MISSING");
     console.log("   SUPPORT_EMAIL:", this.supportEmail || "❌ MISSING");
     console.log("   EMAIL_FROM:", this.emailFrom || "❌ MISSING");
+    console.log("   BREVO_API_KEY:", this.apiKey ? "✅ SET" : "❌ MISSING");
 
     // Check if all required configs are present
     if (!this.adminEmail || !this.supportEmail || !this.emailFrom) {
@@ -71,100 +62,70 @@ class EmailService {
       console.error("   EMAIL_FROM=noreply@example.com");
     }
 
-    if (
-      !process.env.SMTP_HOST ||
-      !process.env.SMTP_USER ||
-      !process.env.SMTP_PASS
-    ) {
-      console.error("\n❌ SMTP configuration missing!");
-      console.error("   Please ensure these are in your .env file:");
-      console.error("   SMTP_HOST=smtp-relay.brevo.com");
-      console.error("   SMTP_USER=your_smtp_user");
-      console.error("   SMTP_PASS=your_smtp_password");
-    }
-
-    // Initialize transporter
-    this.initTransporter();
-  }
-
-  private async initTransporter() {
-    try {
-      // Check if all required SMTP configs are present
-      if (
-        !process.env.SMTP_HOST ||
-        !process.env.SMTP_USER ||
-        !process.env.SMTP_PASS
-      ) {
-        console.error("❌ SMTP credentials missing - email disabled");
-        this.initialized = false;
-        return;
-      }
-
-      const smtpConfig = {
-        host: process.env.SMTP_HOST,
-        port: parseInt(process.env.SMTP_PORT || "587"),
-        secure: process.env.SMTP_SECURE === "true",
-        auth: {
-          user: process.env.SMTP_USER,
-          pass: process.env.SMTP_PASS,
-        },
-        tls: {
-          rejectUnauthorized: false,
-        },
-        connectionTimeout: 30000,
-        greetingTimeout: 30000,
-        socketTimeout: 30000,
-      };
-
-      console.log("\n📧 Connecting to SMTP...");
-      console.log(`   Host: ${smtpConfig.host}`);
-      console.log(`   Port: ${smtpConfig.port}`);
-      console.log(`   User: ${smtpConfig.auth.user}`);
-
-      this.transporter = nodemailer.createTransport(smtpConfig);
-
-      // Verify connection
-      await this.transporter.verify();
+    if (!this.apiKey) {
+      console.error("\n❌ BREVO_API_KEY is missing!");
+      console.error("   Please add BREVO_API_KEY to your .env file");
+    } else {
       this.initialized = true;
-      console.log("✅ SMTP email service connected successfully!\n");
-    } catch (error: any) {
-      console.error("❌ SMTP connection failed:", error.message);
-      console.log(
-        "⚠️ Email service disabled - app will continue without email functionality\n",
-      );
-      this.initialized = false;
+      console.log("✅ Brevo API email service ready!\n");
     }
   }
 
-  async sendEmail(to: string, subject: string, html: string): Promise<boolean> {
+  async sendEmail(
+    to: string,
+    subject: string,
+    htmlContent: string,
+  ): Promise<boolean> {
     try {
-      if (!this.initialized || !this.transporter) {
+      if (!this.initialized || !this.apiKey) {
         console.log(
           `⚠️ Email service not initialized - skipping email to ${to}`,
         );
         return false;
       }
 
-      if (!this.emailFrom) {
-        console.error("❌ EMAIL_FROM not configured");
-        return false;
+      // Extract sender email from EMAIL_FROM (remove the name part if present)
+      let senderEmail = "c.delrosario@fyberblizz.com";
+      if (this.emailFrom) {
+        const match = this.emailFrom.match(/<(.+)>/);
+        if (match) {
+          senderEmail = match[1];
+        } else if (this.emailFrom.includes("@")) {
+          senderEmail = this.emailFrom;
+        }
       }
 
-      const mailOptions = {
-        from: this.emailFrom,
-        to,
-        subject,
-        html,
-      };
-
-      console.log(`📧 Sending email to ${to}...`);
+      console.log(`📧 Sending email via Brevo API to ${to}...`);
       console.log(`   Subject: ${subject}`);
 
-      const info = await this.transporter.sendMail(mailOptions);
-      console.log(`✅ Email sent successfully to ${to}`);
-      console.log(`   Message ID: ${info.messageId}`);
+      const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          "api-key": this.apiKey,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          sender: {
+            name: "Mister Fyber",
+            email: senderEmail,
+          },
+          to: [{ email: to }],
+          subject: subject,
+          htmlContent: htmlContent,
+        }),
+      });
 
-      return true;
+      if (response.ok) {
+        const data: any = await response.json();
+        console.log(`✅ Email sent successfully to ${to}`);
+        console.log(`   Message ID: ${data.messageId || "N/A"}`);
+        return true;
+      } else {
+        const error = await response.text();
+        console.error(`❌ Brevo API error: ${response.status} - ${error}`);
+        return false;
+      }
     } catch (error) {
       console.error(`❌ Failed to send email to ${to}:`, error);
       return false;
