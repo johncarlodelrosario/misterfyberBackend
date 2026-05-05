@@ -26,6 +26,11 @@ class EmailService {
     ) {
       console.error("❌ SMTP configuration missing: Check your .env file");
     }
+
+    // Initialize transporter in background - don't block app startup
+    this.initTransporter().catch((err) => {
+      console.error("❌ Background email initialization failed:", err.message);
+    });
   }
 
   private async ensureTransporter() {
@@ -47,16 +52,18 @@ class EmailService {
         tls: {
           rejectUnauthorized: false,
         },
-        connectionTimeout: 60000,
-        greetingTimeout: 60000,
-        socketTimeout: 60000,
+        connectionTimeout: 30000,
+        greetingTimeout: 30000,
+        socketTimeout: 30000,
       };
 
       if (!smtpConfig.auth.user || !smtpConfig.auth.pass) {
-        throw new Error("SMTP credentials missing in environment variables");
+        console.error("❌ SMTP credentials missing in environment variables");
+        this.initialized = false;
+        return;
       }
 
-      console.log("📧 Connecting to SMTP...");
+      console.log("📧 Connecting to Brevo SMTP...");
       console.log(`Host: ${smtpConfig.host}`);
       console.log(`Port: ${smtpConfig.port}`);
 
@@ -64,14 +71,14 @@ class EmailService {
 
       await this.transporter.verify();
       this.initialized = true;
-      console.log("✅ Email service connected successfully!");
+      console.log("✅ Brevo email service connected successfully!");
     } catch (error: any) {
-      console.error("❌ SMTP connection failed:", error.message);
+      console.error("❌ Brevo SMTP connection failed:", error.message);
       console.log(
-        "⚠️ Email service will run in degraded mode - emails will not be sent",
+        "⚠️ Email service disabled - app will continue without email functionality",
       );
       this.initialized = false;
-      // DO NOT THROW ERROR - Allow app to start without email
+      // DO NOT THROW - App continues even without email
     }
   }
 
@@ -83,8 +90,6 @@ class EmailService {
         );
         return false;
       }
-
-      await this.ensureTransporter();
 
       const mailOptions = {
         from: process.env.EMAIL_FROM || "",
@@ -119,7 +124,7 @@ class EmailService {
     return await this.sendEmail(this.adminEmail, `[ADMIN] ${subject}`, html);
   }
 
-  // ==================== REGISTRATION EMAIL - FOR POSTMAN REGISTRATION ====================
+  // ==================== REGISTRATION EMAIL ====================
 
   async sendWelcomeEmail(user: IUser): Promise<void> {
     const loginUrl = `${process.env.FRONTEND_URL || "https://misterfyber-frontend.vercel.app"}/login`;
@@ -325,20 +330,12 @@ class EmailService {
             </html>
         `;
 
-    // Send to the user who registered
-    const userResult = await this.sendEmail(
+    await this.sendEmail(
       user.email,
       `🎉 Welcome to Mister Fyber, ${user.firstName || user.username}!`,
       html,
     );
 
-    if (userResult) {
-      console.log(`✅ Welcome email sent to ${user.email}`);
-    } else {
-      console.error(`❌ Failed to send welcome email to ${user.email}`);
-    }
-
-    // Also notify admin
     const adminHtml = `
             <!DOCTYPE html>
             <html>
@@ -412,7 +409,6 @@ class EmailService {
       html,
     );
 
-    // Notify admin
     const adminHtml = `
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
                 <h2 style="color: #f39c12;">📋 New Application</h2>
