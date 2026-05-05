@@ -12,6 +12,9 @@ import mongoose from "mongoose";
 
 interface AuthRequest extends Request {
   user?: any;
+  query: any;
+  params: any;
+  body: any;
 }
 
 // ==================== START BILLING WITH PRO-RATED CALCULATION ====================

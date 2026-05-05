@@ -10,7 +10,8 @@ import emailService from "../services/emailService";
 import fs from "fs";
 import path from "path";
 
-interface AuthRequest extends Request {
+// FIXED: Properly extend Express Request type
+export interface AuthRequest extends Request {
   user?: any;
   file?: any;
 }
@@ -385,7 +386,6 @@ export const getUsage = async (
   }
 };
 
-// ==================== FIXED BILLING SUMMARY ====================
 export const getBillingSummary = async (
   req: AuthRequest,
   res: Response,
@@ -410,7 +410,6 @@ export const getBillingSummary = async (
       .sort({ paidAt: -1 })
       .limit(5);
 
-    // FIXED: Get ALL bills, not just 6
     const billingHistory = await Billing.find({ userId })
       .sort({ createdAt: -1 })
       .limit(50);
@@ -653,8 +652,6 @@ export const createSupportTicket = async (
   }
 };
 
-// ==================== FIXED BILLING CYCLE FUNCTIONS ====================
-
 export const getUserBillingCycle = async (
   req: AuthRequest,
   res: Response,
@@ -668,7 +665,6 @@ export const getUserBillingCycle = async (
       status: "active",
     }).populate("planId", "name price speed description features");
 
-    // FIXED: Return 200 with null instead of 404
     if (!billingCycle) {
       return res.status(200).json({
         success: true,

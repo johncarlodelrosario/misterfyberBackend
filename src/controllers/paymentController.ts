@@ -11,6 +11,9 @@ import paymentService from "../services/paymentService";
 
 interface AuthRequest extends Request {
   user?: any;
+  query: any;
+  params: any;
+  body: any;
 }
 
 // @desc    Create payment (manual - pending status only)

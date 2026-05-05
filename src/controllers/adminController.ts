@@ -1,4 +1,3 @@
-// controllers/adminController.ts - COMPLETE FIXED FILE (NO DUPLICATES)
 import { Request, Response, NextFunction } from "express";
 import User from "../models/User";
 import Plan from "../models/Plan";
@@ -8,6 +7,9 @@ import BillingCycle from "../models/BillingCycle";
 
 interface AuthRequest extends Request {
   user?: any;
+  query: any;
+  params: any;
+  body: any;
 }
 
 export const getDashboardStats = async (

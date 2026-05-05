@@ -7,6 +7,9 @@ import Admin from "../models/Admin";
 interface AuthRequest extends Request {
   user?: any;
   admin?: any;
+  headers: any;
+  method: string;
+  url: string;
 }
 
 export const protect = async (
