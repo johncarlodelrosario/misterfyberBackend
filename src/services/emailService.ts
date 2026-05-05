@@ -47,9 +47,9 @@ class EmailService {
         tls: {
           rejectUnauthorized: false,
         },
-        connectionTimeout: 30000,
-        greetingTimeout: 30000,
-        socketTimeout: 30000,
+        connectionTimeout: 60000,
+        greetingTimeout: 60000,
+        socketTimeout: 60000,
       };
 
       if (!smtpConfig.auth.user || !smtpConfig.auth.pass) {
@@ -67,14 +67,23 @@ class EmailService {
       console.log("✅ Email service connected successfully!");
     } catch (error: any) {
       console.error("❌ SMTP connection failed:", error.message);
-      throw new Error(
-        "Email service initialization failed - cannot send emails",
+      console.log(
+        "⚠️ Email service will run in degraded mode - emails will not be sent",
       );
+      this.initialized = false;
+      // DO NOT THROW ERROR - Allow app to start without email
     }
   }
 
   async sendEmail(to: string, subject: string, html: string): Promise<boolean> {
     try {
+      if (!this.initialized) {
+        console.log(
+          `⚠️ Email service not initialized - skipping email to ${to}`,
+        );
+        return false;
+      }
+
       await this.ensureTransporter();
 
       const mailOptions = {
