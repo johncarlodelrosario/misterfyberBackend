@@ -30,10 +30,8 @@ class EmailService {
         port: parseInt(process.env.SMTP_PORT || "587"),
         secure: process.env.SMTP_SECURE === "true",
         auth: {
-          user: process.env.SMTP_USER || "aa3401001@smtp-brevo.com",
-          pass:
-            process.env.SMTP_PASS ||
-            "xsmtpsib-af2ac14eb72ce8269457622b56b4c4a1a239fa95991524c7759f3b454f5f5947-zEw4YvcHorACNQVP",
+          user: process.env.SMTP_USER || "",
+          pass: process.env.SMTP_PASS || "",
         },
       },
       {
@@ -42,8 +40,8 @@ class EmailService {
         port: 465,
         secure: true,
         auth: {
-          user: "c.delrosario@fyberblizz.com",
-          pass: "LarianneOlalia08@",
+          user: process.env.SMTP_USER || "",
+          pass: process.env.SMTP_PASS || "",
         },
       },
     ];
