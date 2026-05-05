@@ -9,6 +9,7 @@ import { validationResult } from "express-validator";
 
 interface AuthRequest extends Request {
   user?: any;
+  body: any; // Add this line to explicitly include body property
 }
 
 const generateToken = (id: string, role?: string): string => {

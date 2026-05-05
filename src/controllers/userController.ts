@@ -10,7 +10,7 @@ import emailService from "../services/emailService";
 import fs from "fs";
 import path from "path";
 
-// FIXED: Properly extend Express Request type
+// FIXED: Properly extend Express Request type with all properties
 export interface AuthRequest extends Request {
   user?: any;
   file?: any;

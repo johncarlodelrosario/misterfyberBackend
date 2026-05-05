@@ -9,6 +9,9 @@ import axios from "axios";
 interface AuthRequest extends Request {
   user?: any;
   file?: any;
+  body: any;
+  params: any;
+  query: any;
 }
 
 let allRegions: any[] = [];
