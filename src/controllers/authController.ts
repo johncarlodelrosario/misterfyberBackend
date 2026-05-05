@@ -1,4 +1,3 @@
-// controllers/authController.ts - COMPLETE FIXED FILE
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { randomBytes, createHash } from "crypto";
@@ -210,18 +209,7 @@ export const registerWithApplication = async (
       console.error("Failed to send welcome email:", error);
     }
 
-    // Send welcome SMS (if available)
-    if (user.phoneNumber) {
-      try {
-        const smsService = await import("../services/smsService");
-        await smsService.default.sendWelcomeSMS(
-          user.phoneNumber,
-          user.username,
-        );
-      } catch (error) {
-        console.error("Failed to send welcome SMS:", error);
-      }
-    }
+    // SMS functionality removed
 
     sendTokenResponse(user, 201, res, false);
   } catch (error: any) {
