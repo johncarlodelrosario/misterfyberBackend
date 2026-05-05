@@ -5,8 +5,44 @@ import { IPayment } from "../models/Payment";
 import dotenv from "dotenv";
 import path from "path";
 
-// Load environment variables at the top of this file
-dotenv.config({ path: path.join(__dirname, "../.env") });
+// FORCE LOAD .env from the correct path BEFORE anything else
+const envPath = path.resolve(process.cwd(), ".env");
+console.log("📁 Loading .env from:", envPath);
+const result = dotenv.config({ path: envPath });
+
+if (result.error) {
+  console.error("❌ Failed to load .env file:", result.error);
+} else {
+  console.log("✅ .env file loaded successfully");
+}
+
+// Debug: Print all environment variables (without sensitive data)
+console.log("🔍 ENVIRONMENT VARIABLES CHECK:");
+console.log(
+  "   ADMIN_EMAIL:",
+  process.env.ADMIN_EMAIL ? "✅ EXISTS" : "❌ MISSING",
+);
+console.log(
+  "   SUPPORT_EMAIL:",
+  process.env.SUPPORT_EMAIL ? "✅ EXISTS" : "❌ MISSING",
+);
+console.log(
+  "   EMAIL_FROM:",
+  process.env.EMAIL_FROM ? "✅ EXISTS" : "❌ MISSING",
+);
+console.log(
+  "   SMTP_HOST:",
+  process.env.SMTP_HOST ? "✅ EXISTS" : "❌ MISSING",
+);
+console.log(
+  "   SMTP_USER:",
+  process.env.SMTP_USER ? "✅ EXISTS" : "❌ MISSING",
+);
+console.log(
+  "   SMTP_PASS:",
+  process.env.SMTP_PASS ? "✅ EXISTS" : "❌ MISSING",
+);
+console.log("   FRONTEND_URL:", process.env.FRONTEND_URL || "❌ MISSING");
 
 class EmailService {
   private transporter: nodemailer.Transporter | null = null;
@@ -21,31 +57,18 @@ class EmailService {
     this.supportEmail = process.env.SUPPORT_EMAIL || "";
     this.emailFrom = process.env.EMAIL_FROM || "";
 
-    console.log("📧 EmailService Initialization:");
-    console.log("   ADMIN_EMAIL:", this.adminEmail ? "✅ SET" : "❌ MISSING");
-    console.log(
-      "   SUPPORT_EMAIL:",
-      this.supportEmail ? "✅ SET" : "❌ MISSING",
-    );
-    console.log("   EMAIL_FROM:", this.emailFrom ? "✅ SET" : "❌ MISSING");
-    console.log(
-      "   SMTP_HOST:",
-      process.env.SMTP_HOST ? "✅ SET" : "❌ MISSING",
-    );
-    console.log(
-      "   SMTP_USER:",
-      process.env.SMTP_USER ? "✅ SET" : "❌ MISSING",
-    );
-    console.log(
-      "   SMTP_PASS:",
-      process.env.SMTP_PASS ? "✅ SET" : "❌ MISSING",
-    );
+    console.log("\n📧 EmailService Constructor Values:");
+    console.log("   ADMIN_EMAIL:", this.adminEmail || "❌ MISSING");
+    console.log("   SUPPORT_EMAIL:", this.supportEmail || "❌ MISSING");
+    console.log("   EMAIL_FROM:", this.emailFrom || "❌ MISSING");
 
     // Check if all required configs are present
     if (!this.adminEmail || !this.supportEmail || !this.emailFrom) {
-      console.error(
-        "❌ Email configuration missing: ADMIN_EMAIL, SUPPORT_EMAIL, and EMAIL_FROM must be set in .env",
-      );
+      console.error("\n❌ Email configuration missing!");
+      console.error("   Please ensure these are in your .env file:");
+      console.error("   ADMIN_EMAIL=your_email@example.com");
+      console.error("   SUPPORT_EMAIL=support@example.com");
+      console.error("   EMAIL_FROM=noreply@example.com");
     }
 
     if (
@@ -53,10 +76,14 @@ class EmailService {
       !process.env.SMTP_USER ||
       !process.env.SMTP_PASS
     ) {
-      console.error("❌ SMTP configuration missing: Check your .env file");
+      console.error("\n❌ SMTP configuration missing!");
+      console.error("   Please ensure these are in your .env file:");
+      console.error("   SMTP_HOST=smtp-relay.brevo.com");
+      console.error("   SMTP_USER=your_smtp_user");
+      console.error("   SMTP_PASS=your_smtp_password");
     }
 
-    // Initialize transporter immediately
+    // Initialize transporter
     this.initTransporter();
   }
 
@@ -68,7 +95,7 @@ class EmailService {
         !process.env.SMTP_USER ||
         !process.env.SMTP_PASS
       ) {
-        console.error("❌ SMTP credentials missing in environment variables");
+        console.error("❌ SMTP credentials missing - email disabled");
         this.initialized = false;
         return;
       }
@@ -89,7 +116,7 @@ class EmailService {
         socketTimeout: 30000,
       };
 
-      console.log("📧 Connecting to Brevo SMTP...");
+      console.log("\n📧 Connecting to SMTP...");
       console.log(`   Host: ${smtpConfig.host}`);
       console.log(`   Port: ${smtpConfig.port}`);
       console.log(`   User: ${smtpConfig.auth.user}`);
@@ -99,11 +126,11 @@ class EmailService {
       // Verify connection
       await this.transporter.verify();
       this.initialized = true;
-      console.log("✅ Brevo email service connected successfully!");
+      console.log("✅ SMTP email service connected successfully!\n");
     } catch (error: any) {
-      console.error("❌ Brevo SMTP connection failed:", error.message);
+      console.error("❌ SMTP connection failed:", error.message);
       console.log(
-        "⚠️ Email service disabled - app will continue without email functionality",
+        "⚠️ Email service disabled - app will continue without email functionality\n",
       );
       this.initialized = false;
     }
@@ -119,7 +146,7 @@ class EmailService {
       }
 
       if (!this.emailFrom) {
-        console.error("❌ EMAIL_FROM not set in environment variables");
+        console.error("❌ EMAIL_FROM not configured");
         return false;
       }
 
