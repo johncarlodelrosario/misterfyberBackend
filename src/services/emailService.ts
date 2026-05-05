@@ -2,20 +2,49 @@ import nodemailer from "nodemailer";
 import { IUser } from "../models/User";
 import { IBilling } from "../models/Billing";
 import { IPayment } from "../models/Payment";
+import dotenv from "dotenv";
+import path from "path";
+
+// Load environment variables at the top of this file
+dotenv.config({ path: path.join(__dirname, "../.env") });
 
 class EmailService {
-  private transporter: nodemailer.Transporter;
+  private transporter: nodemailer.Transporter | null = null;
   private initialized: boolean = false;
   private adminEmail: string;
   private supportEmail: string;
+  private emailFrom: string;
 
   constructor() {
+    // Read environment variables directly from process.env
     this.adminEmail = process.env.ADMIN_EMAIL || "";
     this.supportEmail = process.env.SUPPORT_EMAIL || "";
+    this.emailFrom = process.env.EMAIL_FROM || "";
 
-    if (!this.adminEmail || !this.supportEmail) {
+    console.log("📧 EmailService Initialization:");
+    console.log("   ADMIN_EMAIL:", this.adminEmail ? "✅ SET" : "❌ MISSING");
+    console.log(
+      "   SUPPORT_EMAIL:",
+      this.supportEmail ? "✅ SET" : "❌ MISSING",
+    );
+    console.log("   EMAIL_FROM:", this.emailFrom ? "✅ SET" : "❌ MISSING");
+    console.log(
+      "   SMTP_HOST:",
+      process.env.SMTP_HOST ? "✅ SET" : "❌ MISSING",
+    );
+    console.log(
+      "   SMTP_USER:",
+      process.env.SMTP_USER ? "✅ SET" : "❌ MISSING",
+    );
+    console.log(
+      "   SMTP_PASS:",
+      process.env.SMTP_PASS ? "✅ SET" : "❌ MISSING",
+    );
+
+    // Check if all required configs are present
+    if (!this.adminEmail || !this.supportEmail || !this.emailFrom) {
       console.error(
-        "❌ Email configuration missing: ADMIN_EMAIL and SUPPORT_EMAIL must be set in .env",
+        "❌ Email configuration missing: ADMIN_EMAIL, SUPPORT_EMAIL, and EMAIL_FROM must be set in .env",
       );
     }
 
@@ -27,20 +56,23 @@ class EmailService {
       console.error("❌ SMTP configuration missing: Check your .env file");
     }
 
-    // Initialize transporter in background - don't block app startup
-    this.initTransporter().catch((err) => {
-      console.error("❌ Background email initialization failed:", err.message);
-    });
-  }
-
-  private async ensureTransporter() {
-    if (!this.initialized) {
-      await this.initTransporter();
-    }
+    // Initialize transporter immediately
+    this.initTransporter();
   }
 
   private async initTransporter() {
     try {
+      // Check if all required SMTP configs are present
+      if (
+        !process.env.SMTP_HOST ||
+        !process.env.SMTP_USER ||
+        !process.env.SMTP_PASS
+      ) {
+        console.error("❌ SMTP credentials missing in environment variables");
+        this.initialized = false;
+        return;
+      }
+
       const smtpConfig = {
         host: process.env.SMTP_HOST,
         port: parseInt(process.env.SMTP_PORT || "587"),
@@ -57,18 +89,14 @@ class EmailService {
         socketTimeout: 30000,
       };
 
-      if (!smtpConfig.auth.user || !smtpConfig.auth.pass) {
-        console.error("❌ SMTP credentials missing in environment variables");
-        this.initialized = false;
-        return;
-      }
-
       console.log("📧 Connecting to Brevo SMTP...");
-      console.log(`Host: ${smtpConfig.host}`);
-      console.log(`Port: ${smtpConfig.port}`);
+      console.log(`   Host: ${smtpConfig.host}`);
+      console.log(`   Port: ${smtpConfig.port}`);
+      console.log(`   User: ${smtpConfig.auth.user}`);
 
       this.transporter = nodemailer.createTransport(smtpConfig);
 
+      // Verify connection
       await this.transporter.verify();
       this.initialized = true;
       console.log("✅ Brevo email service connected successfully!");
@@ -78,36 +106,36 @@ class EmailService {
         "⚠️ Email service disabled - app will continue without email functionality",
       );
       this.initialized = false;
-      // DO NOT THROW - App continues even without email
     }
   }
 
   async sendEmail(to: string, subject: string, html: string): Promise<boolean> {
     try {
-      if (!this.initialized) {
+      if (!this.initialized || !this.transporter) {
         console.log(
           `⚠️ Email service not initialized - skipping email to ${to}`,
         );
         return false;
       }
 
+      if (!this.emailFrom) {
+        console.error("❌ EMAIL_FROM not set in environment variables");
+        return false;
+      }
+
       const mailOptions = {
-        from: process.env.EMAIL_FROM || "",
+        from: this.emailFrom,
         to,
         subject,
         html,
       };
 
-      if (!mailOptions.from) {
-        console.error("❌ EMAIL_FROM not set in environment variables");
-        return false;
-      }
-
       console.log(`📧 Sending email to ${to}...`);
-      console.log(`Subject: ${subject}`);
+      console.log(`   Subject: ${subject}`);
+
       const info = await this.transporter.sendMail(mailOptions);
-      console.log(`✅ Email sent successfully to ${to}: ${subject}`);
-      console.log(`📧 Message ID: ${info.messageId}`);
+      console.log(`✅ Email sent successfully to ${to}`);
+      console.log(`   Message ID: ${info.messageId}`);
 
       return true;
     } catch (error) {
