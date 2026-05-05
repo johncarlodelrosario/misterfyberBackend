@@ -3,7 +3,10 @@ import path from "path";
 import fs from "fs";
 import { Request } from "express";
 import { v2 as cloudinary } from "cloudinary";
-import { CloudinaryStorage } from "multer-storage-cloudinary";
+
+// FIXED: Import CloudinaryStorage ng tama
+const multerStorageCloudinary = require("multer-storage-cloudinary");
+const CloudinaryStorage = multerStorageCloudinary.CloudinaryStorage;
 
 // Configure Cloudinary gamit ang credentials mula sa .env
 cloudinary.config({
