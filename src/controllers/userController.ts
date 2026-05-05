@@ -14,6 +14,9 @@ import path from "path";
 export interface AuthRequest extends Request {
   user?: any;
   file?: any;
+  body: any;
+  params: any;
+  query: any;
 }
 
 export const getUserDashboard = async (
