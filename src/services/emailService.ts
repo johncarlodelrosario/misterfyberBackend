@@ -85,7 +85,7 @@ class EmailService {
       }
 
       // Extract sender email from EMAIL_FROM (remove the name part if present)
-      let senderEmail = "c.delrosario@fyberblizz.com";
+      let senderEmail = "admin@misterfyber.com";
       if (this.emailFrom) {
         const match = this.emailFrom.match(/<(.+)>/);
         if (match) {
@@ -143,8 +143,8 @@ class EmailService {
   // ==================== REGISTRATION EMAIL ====================
 
   async sendWelcomeEmail(user: IUser): Promise<void> {
-    const loginUrl = `${process.env.FRONTEND_URL || "https://misterfyber-frontend.vercel.app"}/login`;
-    const dashboardUrl = `${process.env.FRONTEND_URL || "https://misterfyber-frontend.vercel.app"}/dashboard`;
+    const loginUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/login`;
+    const dashboardUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/dashboard`;
 
     const html = `
             <!DOCTYPE html>
@@ -447,7 +447,7 @@ class EmailService {
     plan: any,
   ): Promise<void> {
     const frontendUrl =
-      process.env.FRONTEND_URL || "https://misterfyber-frontend.vercel.app";
+      process.env.FRONTEND_URL || "https://www.misterfyber.com";
     const adminHtml = `
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
                 <h2 style="color: #333;">🆕 NEW APPLICATION ALERT!</h2>
@@ -493,7 +493,7 @@ class EmailService {
 
   async sendApplicationApproved(application: any, plan: any): Promise<void> {
     const frontendUrl =
-      process.env.FRONTEND_URL || "https://misterfyber-frontend.vercel.app";
+      process.env.FRONTEND_URL || "https://www.misterfyber.com";
     const registerUrl = `${frontendUrl}/register-with-application?applicationId=${application.applicationId}`;
 
     const html = `
@@ -615,7 +615,7 @@ class EmailService {
 
   async sendPasswordReset(user: IUser, resetToken: string): Promise<void> {
     const frontendUrl =
-      process.env.FRONTEND_URL || "https://misterfyber-frontend.vercel.app";
+      process.env.FRONTEND_URL || "https://www.misterfyber.com";
     const resetUrl = `${frontendUrl}/reset-password/${resetToken}`;
 
     const html = `
@@ -660,7 +660,7 @@ class EmailService {
       : "N/A";
     const amount = billing.totalAmount || billing.amount || billing.total || 0;
     const frontendUrl =
-      process.env.FRONTEND_URL || "https://misterfyber-frontend.vercel.app";
+      process.env.FRONTEND_URL || "https://www.misterfyber.com";
 
     const html = `
             <!DOCTYPE html>
@@ -783,7 +783,7 @@ class EmailService {
       : "N/A";
     const amount = billing.totalAmount || billing.amount || billing.total || 0;
     const frontendUrl =
-      process.env.FRONTEND_URL || "https://misterfyber-frontend.vercel.app";
+      process.env.FRONTEND_URL || "https://www.misterfyber.com";
 
     const html = `
             <!DOCTYPE html>
@@ -828,7 +828,7 @@ class EmailService {
       : "N/A";
     const amount = billing.totalAmount || billing.amount || billing.total || 0;
     const frontendUrl =
-      process.env.FRONTEND_URL || "https://misterfyber-frontend.vercel.app";
+      process.env.FRONTEND_URL || "https://www.misterfyber.com";
 
     const html = `
             <!DOCTYPE html>
@@ -978,7 +978,7 @@ class EmailService {
 
   async sendServiceReminder(user: IUser): Promise<void> {
     const frontendUrl =
-      process.env.FRONTEND_URL || "https://misterfyber-frontend.vercel.app";
+      process.env.FRONTEND_URL || "https://www.misterfyber.com";
     const html = `
             <!DOCTYPE html>
             <html>
