@@ -58,7 +58,7 @@ class App {
         origin: [
           "http://localhost:3000",
           "http://localhost:5173",
-          "https://misterfyber-frontend.vercel.app",
+          "https://www.misterfyber.com",
           "https://misterfyberbackend.onrender.com",
         ],
         credentials: true,
@@ -97,7 +97,8 @@ class App {
       "http://localhost:3000",
       "http://localhost:5173",
       "http://localhost:5000",
-      "https://misterfyber-frontend.vercel.app",
+      "https://www.misterfyber.com",
+      "https://misterfyber.com",
       "https://misterfyberbackend.onrender.com",
       process.env.FRONTEND_URL || "",
     ].filter(Boolean);
@@ -105,14 +106,15 @@ class App {
     this.app.use(
       cors({
         origin: function (origin, callback) {
+          // Allow requests with no origin (like mobile apps or curl)
           if (!origin) return callback(null, true);
-          if (
-            allowedOrigins.indexOf(origin) !== -1 ||
-            process.env.NODE_ENV !== "production"
-          ) {
+
+          // Check if the origin is allowed
+          if (allowedOrigins.indexOf(origin) !== -1) {
             callback(null, true);
           } else {
             console.log("CORS blocked origin:", origin);
+            console.log("Allowed origins:", allowedOrigins);
             callback(new Error("Not allowed by CORS"));
           }
         },
@@ -279,7 +281,7 @@ class App {
         `📁 Uploads directory: ${path.join(__dirname, "../uploads")}`,
       );
       console.log(
-        `✅ CORS enabled for: http://localhost:3000, https://misterfyber-frontend.vercel.app`,
+        `✅ CORS enabled for: http://localhost:3000, https://www.misterfyber.com, https://misterfyber.com`,
       );
       console.log(
         `📡 API available at: ${process.env.BASE_URL || `http://localhost:${PORT}`}/api`,
