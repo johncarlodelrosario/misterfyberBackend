@@ -1,25 +1,24 @@
-// routes/authRoutes.ts - COMPLETE WITH REGISTER-WITH-APPLICATION
+// routes/authRoutes.ts - COMPLETE WITH CHECK APPLICATION ROUTE
 import express from "express";
 import { body } from "express-validator";
 import {
   register,
+  registerAdmin,
+  registerWithApplication,
+  createInitialAdmin,
   login,
   logout,
   getMe,
   updatePassword,
   forgotPassword,
   resetPassword,
-  registerAdmin,
-  createInitialAdmin,
-  registerWithApplication,
+  checkApplication,
 } from "../controllers/authController";
-import { protect, authorize } from "../middleware/auth";
+import { protect } from "../middleware/auth";
 
 const router = express.Router();
 
 // Public routes
-router.post("/create-initial-admin", createInitialAdmin);
-
 router.post(
   "/register",
   [
@@ -30,7 +29,6 @@ router.post(
       .withMessage("Password must be at least 6 characters"),
     body("firstName").notEmpty().withMessage("First name is required"),
     body("lastName").notEmpty().withMessage("Last name is required"),
-    body("phoneNumber").notEmpty().withMessage("Phone number is required"),
   ],
   register,
 );
@@ -49,6 +47,25 @@ router.post(
 );
 
 router.post(
+  "/register-admin",
+  [
+    body("username").notEmpty().withMessage("Username is required"),
+    body("email").isEmail().withMessage("Please provide a valid email"),
+    body("password")
+      .isLength({ min: 6 })
+      .withMessage("Password must be at least 6 characters"),
+    body("firstName").notEmpty().withMessage("First name is required"),
+    body("lastName").notEmpty().withMessage("Last name is required"),
+    body("role")
+      .isIn(["super_admin", "admin", "staff"])
+      .withMessage("Invalid role"),
+  ],
+  registerAdmin,
+);
+
+router.post("/create-initial-admin", createInitialAdmin);
+
+router.post(
   "/login",
   [
     body("email").isEmail().withMessage("Please provide a valid email"),
@@ -59,27 +76,15 @@ router.post(
 
 router.post("/logout", logout);
 
-router.post(
-  "/forgot-password",
-  [body("email").isEmail().withMessage("Please provide a valid email")],
-  forgotPassword,
-);
-
-router.put(
-  "/reset-password/:resettoken",
-  [
-    body("password")
-      .isLength({ min: 6 })
-      .withMessage("Password must be at least 6 characters"),
-  ],
-  resetPassword,
-);
+// ========== CHECK APPLICATION STATUS ROUTE (ADDED) ==========
+router.get("/check-application/:applicationId", checkApplication);
 
 // Protected routes
-router.use(protect);
-router.get("/me", getMe);
+router.get("/me", protect, getMe);
+
 router.put(
   "/update-password",
+  protect,
   [
     body("currentPassword")
       .notEmpty()
@@ -91,24 +96,12 @@ router.put(
   updatePassword,
 );
 
-// Admin only routes
 router.post(
-  "/register-admin",
-  authorize("super_admin"),
-  [
-    body("username").notEmpty().withMessage("Username is required"),
-    body("email").isEmail().withMessage("Please provide a valid email"),
-    body("password")
-      .isLength({ min: 6 })
-      .withMessage("Password must be at least 6 characters"),
-    body("firstName").notEmpty().withMessage("First name is required"),
-    body("lastName").notEmpty().withMessage("Last name is required"),
-    body("role")
-      .optional()
-      .isIn(["super_admin", "admin", "staff"])
-      .withMessage("Invalid role"),
-  ],
-  registerAdmin,
+  "/forgot-password",
+  [body("email").isEmail().withMessage("Please provide a valid email")],
+  forgotPassword,
 );
+
+router.put("/reset-password/:resettoken", resetPassword);
 
 export default router;

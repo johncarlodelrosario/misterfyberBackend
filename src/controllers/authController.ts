@@ -1,3 +1,4 @@
+// controllers/authController.ts - COMPLETE WITH CHECK APPLICATION FUNCTION
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { randomBytes, createHash } from "crypto";
@@ -9,7 +10,7 @@ import { validationResult } from "express-validator";
 
 interface AuthRequest extends Request {
   user?: any;
-  body: any; // Add this line to explicitly include body property
+  body: any;
 }
 
 const generateToken = (id: string, role?: string): string => {
@@ -62,6 +63,86 @@ const sendTokenResponse = (
   res.status(statusCode).cookie("token", token, options).json(responseData);
 };
 
+// ==================== CHECK APPLICATION STATUS (NEW) ====================
+
+export const checkApplication = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const { applicationId } = req.params;
+
+    console.log("[Auth] Checking application status:", applicationId);
+
+    if (!applicationId || applicationId.length < 8) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid Application ID format",
+      });
+    }
+
+    // Find the application by applicationId
+    const application = await Application.findOne({ applicationId }).populate(
+      "planId",
+      "name price speed description",
+    );
+
+    if (!application) {
+      return res.status(404).json({
+        success: false,
+        message: "Application ID not found. Please check your Application ID.",
+      });
+    }
+
+    // Check if application has already been used to register
+    let alreadyRegistered = false;
+    if (application.registeredUserId) {
+      const existingUser = await User.findById(application.registeredUserId);
+      if (existingUser && existingUser.status !== "inactive") {
+        alreadyRegistered = true;
+      }
+    }
+
+    // Return application status
+    const responseData: any = {
+      success: true,
+      data: {
+        status: application.status,
+        applicationId: application.applicationId,
+        email: application.email,
+        firstName: application.firstName,
+        lastName: application.lastName,
+        phoneNumber: application.phoneNumber,
+        planName: application.planId ? (application.planId as any).name : null,
+        alreadyRegistered,
+        createdAt: application.createdAt,
+      },
+    };
+
+    // Add rejection reason if applicable
+    if (application.status === "rejected" && application.adminNotes) {
+      responseData.data.rejectionReason = application.adminNotes;
+    }
+
+    // Add approval notes if applicable
+    if (application.status === "approved" && application.adminNotes) {
+      responseData.data.approvalNotes = application.adminNotes;
+    }
+
+    console.log("[Auth] Application status response:", {
+      applicationId,
+      status: application.status,
+      alreadyRegistered,
+    });
+
+    res.status(200).json(responseData);
+  } catch (error: any) {
+    console.error("[Auth] Check application error:", error);
+    next(error);
+  }
+};
+
 // ==================== REGISTER WITH APPLICATION ====================
 
 export const registerWithApplication = async (
@@ -100,7 +181,7 @@ export const registerWithApplication = async (
     // Check if account already created for this application
     if (application.registeredUserId) {
       const existingUser = await User.findById(application.registeredUserId);
-      if (existingUser) {
+      if (existingUser && existingUser.status !== "inactive") {
         return res.status(400).json({
           success: false,
           message:
@@ -209,8 +290,6 @@ export const registerWithApplication = async (
     } catch (error) {
       console.error("Failed to send welcome email:", error);
     }
-
-    // SMS functionality removed
 
     sendTokenResponse(user, 201, res, false);
   } catch (error: any) {
@@ -328,7 +407,7 @@ export const register = async (
   }
 };
 
-// ==================== CREATE INITIAL ADMIN (FIXED WITH SUPER_ADMIN) ====================
+// ==================== CREATE INITIAL ADMIN ====================
 
 export const createInitialAdmin = async (
   req: Request,
@@ -352,7 +431,6 @@ export const createInitialAdmin = async (
       });
     }
 
-    // FIXED: Create as super_admin to have full access
     const admin = await Admin.create({
       username: "superadmin",
       email: "admin@misterfyber.com",
@@ -678,4 +756,5 @@ export default {
   updatePassword,
   forgotPassword,
   resetPassword,
+  checkApplication,
 };

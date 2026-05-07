@@ -492,9 +492,7 @@ class EmailService {
   }
 
   async sendApplicationApproved(application: any, plan: any): Promise<void> {
-    const frontendUrl =
-      process.env.FRONTEND_URL || "https://www.misterfyber.com";
-    const registerUrl = `${frontendUrl}/register-with-application?applicationId=${application.applicationId}`;
+    const registerUrl = "https://www.misterfyber.com/register";
 
     const html = `
             <!DOCTYPE html>
@@ -1059,5 +1057,4 @@ class EmailService {
     await this.sendToAdmin(`Service Interruption: ${user.email}`, adminHtml);
   }
 }
-
 export default new EmailService();
