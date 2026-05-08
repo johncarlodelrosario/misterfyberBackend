@@ -1,4 +1,5 @@
-import mongoose, { Schema, Document } from "mongoose";
+// models/BillingCycle.ts - COMPLETE
+import mongoose, { Document, Schema } from "mongoose";
 
 export interface IBillingCycle extends Document {
   userId: mongoose.Types.ObjectId;
@@ -6,72 +7,64 @@ export interface IBillingCycle extends Document {
   billingStartDate: Date;
   billingEndDate: Date;
   nextBillingDate: Date;
-  status: "active" | "paused" | "completed" | "cancelled";
+  status: "active" | "paused" | "cancelled";
   monthlyRate: number;
   currentProRatedAmount: number;
-  reminderSent: boolean;
-  reminderSentAt: Date;
-  overdueReminderSent: boolean;
-  serviceSuspendedAt: Date;
-  pendingPlanChange: {
-    newPlanId: mongoose.Types.ObjectId;
-    requestedAt: Date;
-    effectiveDate: Date;
-    status: "pending" | "approved" | "rejected" | "cancelled";
-  } | null;
-  paymentHistory: {
+  proRatedPaid: boolean;
+  proRatedPaidAt?: Date;
+  paymentHistory: Array<{
     billingId: mongoose.Types.ObjectId;
     amount: number;
     paidAt: Date;
-  }[];
+  }>;
+  serviceSuspendedAt?: Date;
+  pendingPlanChange?: {
+    newPlanId: mongoose.Types.ObjectId;
+    requestedAt: Date;
+    effectiveDate: Date;
+    status: "pending" | "approved" | "rejected";
+  };
   createdAt: Date;
   updatedAt: Date;
 }
 
-const BillingCycleSchema: Schema = new Schema(
+const BillingCycleSchema = new Schema<IBillingCycle>(
   {
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
     planId: { type: Schema.Types.ObjectId, ref: "Plan", required: true },
     billingStartDate: { type: Date, required: true },
-    billingEndDate: { type: Date },
+    billingEndDate: { type: Date, required: true },
     nextBillingDate: { type: Date, required: true },
     status: {
       type: String,
-      enum: ["active", "paused", "completed", "cancelled"],
+      enum: ["active", "paused", "cancelled"],
       default: "active",
     },
     monthlyRate: { type: Number, required: true },
-    currentProRatedAmount: { type: Number, default: 0 },
-    reminderSent: { type: Boolean, default: false },
-    reminderSentAt: { type: Date },
-    overdueReminderSent: { type: Boolean, default: false },
-    serviceSuspendedAt: { type: Date },
-    pendingPlanChange: {
-      newPlanId: { type: Schema.Types.ObjectId, ref: "Plan" },
-      requestedAt: { type: Date },
-      effectiveDate: { type: Date },
-      status: {
-        type: String,
-        enum: ["pending", "approved", "rejected", "cancelled"],
-        default: "pending",
-      },
-    },
+    currentProRatedAmount: { type: Number, required: true },
+    proRatedPaid: { type: Boolean, default: false },
+    proRatedPaidAt: { type: Date },
     paymentHistory: [
       {
         billingId: { type: Schema.Types.ObjectId, ref: "Billing" },
-        amount: { type: Number },
-        paidAt: { type: Date },
+        amount: Number,
+        paidAt: Date,
       },
     ],
+    serviceSuspendedAt: { type: Date },
+    pendingPlanChange: {
+      newPlanId: { type: Schema.Types.ObjectId, ref: "Plan" },
+      requestedAt: Date,
+      effectiveDate: Date,
+      status: {
+        type: String,
+        enum: ["pending", "approved", "rejected"],
+        default: "pending",
+      },
+    },
   },
-  {
-    timestamps: true,
-  },
+  { timestamps: true },
 );
-
-BillingCycleSchema.index({ userId: 1, status: 1 });
-BillingCycleSchema.index({ nextBillingDate: 1 });
-BillingCycleSchema.index({ "pendingPlanChange.status": 1 });
 
 export default mongoose.model<IBillingCycle>(
   "BillingCycle",

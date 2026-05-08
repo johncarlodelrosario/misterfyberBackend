@@ -1,3 +1,4 @@
+// server.ts - COMPLETE
 import express, { Application, Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import cors from "cors";
@@ -22,7 +23,7 @@ import applicationRoutes from "./routes/applicationRoutes";
 import buildingRoutes from "./routes/buildingRoutes";
 
 import {
-  autoGenerateBills,
+  autoGenerateMonthlyBills,
   autoSendReminders,
   autoSuspendOverdue,
 } from "./controllers/billingController";
@@ -106,15 +107,11 @@ class App {
     this.app.use(
       cors({
         origin: function (origin, callback) {
-          // Allow requests with no origin (like mobile apps or curl)
           if (!origin) return callback(null, true);
-
-          // Check if the origin is allowed
           if (allowedOrigins.indexOf(origin) !== -1) {
             callback(null, true);
           } else {
             console.log("CORS blocked origin:", origin);
-            console.log("Allowed origins:", allowedOrigins);
             callback(new Error("Not allowed by CORS"));
           }
         },
@@ -135,7 +132,6 @@ class App {
     this.app.use(express.json({ limit: "50mb" }));
     this.app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
-    // Serve static files from uploads directory
     const uploadsPath = path.join(__dirname, "../uploads");
     this.app.use("/uploads", express.static(uploadsPath));
     console.log(`📁 Serving static files from: ${uploadsPath}`);
@@ -144,7 +140,6 @@ class App {
   }
 
   private initializeRoutes(): void {
-    // Root route
     this.app.get("/", (req: Request, res: Response) => {
       res.status(200).json({
         success: true,
@@ -193,8 +188,8 @@ class App {
       if (!settings) {
         await BillingSettings.create({
           reminderDays: [7, 3, 1],
-          dueDateDaysAfterPeriod: 7,
-          gracePeriodDays: 3,
+          dueDateDaysAfterPeriod: 5,
+          gracePeriodDays: 5,
           autoGenerateBills: true,
           autoSendReminders: true,
           autoSuspendOnNonPayment: true,
@@ -239,16 +234,18 @@ class App {
   private initializeScheduledJobs(): void {
     console.log("🔄 Initializing scheduled billing jobs...");
 
+    // Auto-generate monthly bills - runs daily at 1 AM
     cron.schedule("0 1 * * *", async () => {
       try {
-        console.log("🔄 Running auto-generate bills job...");
-        await autoGenerateBills();
-        console.log("✅ Auto-generate bills completed");
+        console.log("🔄 Running auto-generate monthly bills job...");
+        await autoGenerateMonthlyBills();
+        console.log("✅ Auto-generate monthly bills completed");
       } catch (error) {
-        console.error("❌ Auto-generate bills failed:", error);
+        console.error("❌ Auto-generate monthly bills failed:", error);
       }
     });
 
+    // Auto-send reminders - runs daily at 9 AM
     cron.schedule("0 9 * * *", async () => {
       try {
         console.log("🔄 Running auto-send reminders job...");
@@ -259,6 +256,7 @@ class App {
       }
     });
 
+    // Auto-suspend overdue - runs daily at 2 AM
     cron.schedule("0 2 * * *", async () => {
       try {
         console.log("🔄 Running auto-suspend overdue job...");
@@ -270,6 +268,9 @@ class App {
     });
 
     console.log("✅ Scheduled billing jobs initialized");
+    console.log("   - Monthly bills generated at 1:00 AM daily");
+    console.log("   - Reminders sent at 9:00 AM daily");
+    console.log("   - Overdue accounts suspended at 2:00 AM daily");
   }
 
   public start(): void {

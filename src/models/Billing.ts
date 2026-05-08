@@ -1,4 +1,4 @@
-// models/Billing.ts - COMPLETE WITH REMINDER TRACKING
+// models/Billing.ts - COMPLETE
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IBilling extends Document {
@@ -25,6 +25,7 @@ export interface IBilling extends Document {
   isProRated: boolean;
   proRatedDays: number;
   billingCycleId: mongoose.Types.ObjectId;
+  reminder7DaySent: boolean;
   reminder3DaySent: boolean;
   reminder1DaySent: boolean;
   reminderDueDateSent: boolean;
@@ -80,6 +81,7 @@ const BillingSchema: Schema = new Schema(
     isProRated: { type: Boolean, default: false },
     proRatedDays: { type: Number, default: 0 },
     billingCycleId: { type: Schema.Types.ObjectId, ref: "BillingCycle" },
+    reminder7DaySent: { type: Boolean, default: false },
     reminder3DaySent: { type: Boolean, default: false },
     reminder1DaySent: { type: Boolean, default: false },
     reminderDueDateSent: { type: Boolean, default: false },
@@ -90,7 +92,6 @@ const BillingSchema: Schema = new Schema(
   },
 );
 
-// Ensure invoiceNumber is generated before validation
 BillingSchema.pre("validate", function (next) {
   if (!this.invoiceNumber) {
     this.invoiceNumber = generateInvoiceNumber();
@@ -101,5 +102,6 @@ BillingSchema.pre("validate", function (next) {
 BillingSchema.index({ invoiceNumber: 1 });
 BillingSchema.index({ userId: 1, status: 1 });
 BillingSchema.index({ dueDate: 1 });
+BillingSchema.index({ isProRated: 1, status: 1 });
 
 export default mongoose.model<IBilling>("Billing", BillingSchema);

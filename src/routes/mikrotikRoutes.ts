@@ -8,6 +8,7 @@ import {
   getUserTraffic,
   applyPlanToUser,
   disableUser,
+  enableUser,
   removeUser,
   getInterfaces,
   getQueues,
@@ -42,6 +43,7 @@ router.post(
 router.post("/test", testConnection);
 router.post("/apply-plan/:userId", applyPlanToUser);
 router.post("/disable/:userId", disableUser);
+router.post("/enable/:userId", enableUser);
 router.delete("/user/:userId", removeUser);
 
 export default router;

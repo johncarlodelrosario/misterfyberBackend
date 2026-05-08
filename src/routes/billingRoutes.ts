@@ -1,46 +1,33 @@
-// routes/billingRoutes.ts - COMPLETE FIXED FILE
+// routes/billingRoutes.ts - COMPLETE FIXED
 import express from "express";
 import { body } from "express-validator";
 import {
-  getCurrentBill,
-  getBillingHistory,
-  requestPlanChange as userRequestPlanChange,
-  getUserBillingCycle,
-} from "../controllers/billingController";
-import {
   startBilling,
-  stopBilling,
-  approvePlanChange,
-  rejectPlanChange,
-  setReminder,
-  disconnectClient,
-  reconnectClient,
+  confirmProRatedPayment,
+  markBillAsPaid,
+  getPendingProRatedBills,
+  getBillingSummary,
+  getUserCurrentBilling,
   getAllBillingCycles,
   getAllBills,
-  getBillingSettings,
-  updateBillingSettings,
+  stopBilling,
+  reconnectClient,
+  disconnectClient,
+  autoGenerateMonthlyBills,
+  autoSendReminders,
+  autoSuspendOverdue,
 } from "../controllers/billingController";
 import { protect, authorize } from "../middleware/auth";
 
 const router = express.Router();
 
 // ==================== USER ROUTES ====================
-// These only require authentication, not admin role
-router.get("/current", protect, getCurrentBill);
-router.get("/history", protect, getBillingHistory);
-router.get("/my-cycle", protect, getUserBillingCycle);
-router.post(
-  "/request-plan-change",
-  protect,
-  [body("newPlanId").isMongoId().withMessage("Valid plan ID is required")],
-  userRequestPlanChange,
-);
+router.get("/my-status", protect, getUserCurrentBilling);
+router.get("/user/current", protect, getUserCurrentBilling);
 
 // ==================== ADMIN ROUTES ====================
-// All admin routes MUST have protect + authorize with ALL THREE roles
-// IMPORTANT: Do NOT use router.use() - apply middleware to each route individually
 
-// Billing Cycle Management
+// Billing cycles - GET /api/billing/cycles
 router.get(
   "/cycles",
   protect,
@@ -48,6 +35,7 @@ router.get(
   getAllBillingCycles,
 );
 
+// All bills - GET /api/billing/all-bills
 router.get(
   "/all-bills",
   protect,
@@ -55,20 +43,23 @@ router.get(
   getAllBills,
 );
 
+// Billing summary - GET /api/billing/summary
 router.get(
-  "/settings",
+  "/summary",
   protect,
   authorize("super_admin", "admin", "staff"),
-  getBillingSettings,
+  getBillingSummary,
 );
 
-router.put(
-  "/settings",
+// Pending pro-rated bills - GET /api/billing/pending-pro-rated
+router.get(
+  "/pending-pro-rated",
   protect,
   authorize("super_admin", "admin", "staff"),
-  updateBillingSettings,
+  getPendingProRatedBills,
 );
 
+// Start billing (with pro-rated calculation) - POST /api/billing/start
 router.post(
   "/start",
   protect,
@@ -81,6 +72,31 @@ router.post(
   startBilling,
 );
 
+// Confirm pro-rated payment (activate service) - POST /api/billing/confirm-pro-rated
+router.post(
+  "/confirm-pro-rated",
+  protect,
+  authorize("super_admin", "admin", "staff"),
+  [
+    body("userId").isMongoId().withMessage("User ID is required"),
+    body("paymentDetails").optional().isObject(),
+  ],
+  confirmProRatedPayment,
+);
+
+// Mark any bill as paid (admin override) - PUT /api/billing/mark-paid/:billId
+router.put(
+  "/mark-paid/:billId",
+  protect,
+  authorize("super_admin", "admin", "staff"),
+  [
+    body("referenceNumber").optional().isString(),
+    body("notes").optional().isString(),
+  ],
+  markBillAsPaid,
+);
+
+// Stop billing - POST /api/billing/stop
 router.post(
   "/stop",
   protect,
@@ -89,41 +105,7 @@ router.post(
   stopBilling,
 );
 
-router.post(
-  "/plan-change/approve",
-  protect,
-  authorize("super_admin", "admin", "staff"),
-  [
-    body("userId").isMongoId().withMessage("User ID is required"),
-    body("approvalNotes").optional().isString(),
-  ],
-  approvePlanChange,
-);
-
-router.post(
-  "/plan-change/reject",
-  protect,
-  authorize("super_admin", "admin", "staff"),
-  [
-    body("userId").isMongoId().withMessage("User ID is required"),
-    body("rejectionReason").optional().isString(),
-  ],
-  rejectPlanChange,
-);
-
-router.post(
-  "/set-reminder",
-  protect,
-  authorize("super_admin", "admin", "staff"),
-  [
-    body("userId").isMongoId().withMessage("User ID is required"),
-    body("reminderDate")
-      .isISO8601()
-      .withMessage("Valid reminder date is required"),
-  ],
-  setReminder,
-);
-
+// Disconnect/Reconnect
 router.post(
   "/disconnect",
   protect,
@@ -139,5 +121,10 @@ router.post(
   [body("userId").isMongoId().withMessage("User ID is required")],
   reconnectClient,
 );
+
+// ==================== CRON JOB ROUTES (Internal) ====================
+router.post("/auto-generate", autoGenerateMonthlyBills);
+router.post("/auto-reminders", autoSendReminders);
+router.post("/auto-suspend", autoSuspendOverdue);
 
 export default router;
