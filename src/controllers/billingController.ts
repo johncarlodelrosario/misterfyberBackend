@@ -1,4 +1,4 @@
-// controllers/billingController.ts - COMPLETE FIXED - WILL COMPILE
+// controllers/billingController.ts - COMPLETE FIXED WITH PROPER PRO-RATED LOGIC
 import { Request, Response, NextFunction } from "express";
 import Billing from "../models/Billing";
 import BillingCycle from "../models/BillingCycle";
@@ -10,10 +10,8 @@ import emailService from "../services/emailService";
 import mikrotikService from "../services/mikrotikService";
 import mongoose from "mongoose";
 
-// Use the base Request type directly instead of extending
 type AuthRequest = Request & { user?: any };
 
-// Helper function to generate invoice number
 function generateInvoiceNumber(): string {
   const date = new Date();
   const year = date.getFullYear();
@@ -143,24 +141,28 @@ export const startBilling = async (
     const dailyRate = monthlyRate / daysInMonth;
     const proRatedAmount = Math.round(dailyRate * proRatedDays * 100) / 100;
 
-    const firstFullBillingStart = new Date(installationDate);
-    firstFullBillingStart.setMonth(firstFullBillingStart.getMonth() + 1);
-    firstFullBillingStart.setDate(1);
-    firstFullBillingStart.setHours(0, 0, 0, 0);
+    // PRO-RATED BILL DUE DATE: 5 days after installation (not immediately)
+    const proRatedDueDate = new Date(installationDate);
+    proRatedDueDate.setDate(proRatedDueDate.getDate() + 5);
+    proRatedDueDate.setHours(23, 59, 59, 999);
 
-    const firstFullBillingEnd = new Date(firstFullBillingStart);
+    // NEXT BILLING DATE: Start of NEXT month (only after pro-rated is paid)
+    const nextBillingDate = new Date(installationDate);
+    nextBillingDate.setMonth(nextBillingDate.getMonth() + 1);
+    nextBillingDate.setDate(1);
+    nextBillingDate.setHours(0, 0, 0, 0);
+
+    // FIRST FULL MONTH BILL will be generated AFTER pro-rated is paid
+    // It will cover the next full month
+    const firstFullBillingStart = new Date(nextBillingDate);
+    const firstFullBillingEnd = new Date(nextBillingDate);
     firstFullBillingEnd.setMonth(firstFullBillingEnd.getMonth() + 1);
     firstFullBillingEnd.setDate(0);
     firstFullBillingEnd.setHours(23, 59, 59, 999);
 
-    const dueDate = new Date(firstFullBillingStart);
-    dueDate.setDate(5);
-    dueDate.setHours(23, 59, 59, 999);
-
-    const nextBillingDate = new Date(firstFullBillingStart);
-    nextBillingDate.setMonth(nextBillingDate.getMonth() + 1);
-    nextBillingDate.setDate(1);
-    nextBillingDate.setHours(0, 0, 0, 0);
+    const firstFullMonthDueDate = new Date(firstFullBillingStart);
+    firstFullMonthDueDate.setDate(5);
+    firstFullMonthDueDate.setHours(23, 59, 59, 999);
 
     const billingCycle = await BillingCycle.create(
       [
@@ -179,6 +181,7 @@ export const startBilling = async (
       { session },
     );
 
+    // Create PRO-RATED BILL only (due 5 days after installation)
     const proRatedBill = await Billing.create(
       [
         {
@@ -189,7 +192,7 @@ export const startBilling = async (
             start: installationDate,
             end: lastDayOfMonth,
           },
-          dueDate: installationDate,
+          dueDate: proRatedDueDate, // 5 days after installation
           items: [
             {
               description: `Pro-rated payment from ${installationDate.toLocaleDateString()} to ${lastDayOfMonth.toLocaleDateString()} (${proRatedDays} days)`,
@@ -205,43 +208,14 @@ export const startBilling = async (
           status: "sent",
           isProRated: true,
           proRatedDays: proRatedDays,
-          notes: notes || `Pro-rated billing upon installation`,
+          notes: notes || `Pro-rated billing upon installation - Due in 5 days`,
         },
       ],
       { session },
     );
 
-    const fullMonthBill = await Billing.create(
-      [
-        {
-          userId,
-          billingCycleId: billingCycle[0]._id,
-          invoiceNumber: generateInvoiceNumber(),
-          billingPeriod: {
-            start: firstFullBillingStart,
-            end: firstFullBillingEnd,
-          },
-          dueDate: dueDate,
-          items: [
-            {
-              description: `Monthly Subscription - ${firstFullBillingStart.toLocaleDateString()} to ${firstFullBillingEnd.toLocaleDateString()}`,
-              quantity: 1,
-              rate: monthlyRate,
-              amount: monthlyRate,
-            },
-          ],
-          subtotal: monthlyRate,
-          tax: 0,
-          discount: 0,
-          total: monthlyRate,
-          status: "draft",
-          isProRated: false,
-          proRatedDays: 0,
-          notes: "Pending payment of pro-rated amount",
-        },
-      ],
-      { session },
-    );
+    // DO NOT create monthly bill yet - wait until pro-rated is paid
+    // The monthly bill will be created in confirmProRatedPayment function
 
     await session.commitTransaction();
 
@@ -257,15 +231,14 @@ export const startBilling = async (
 
     res.status(200).json({
       success: true,
-      message: `Billing started. Pro-rated amount of ₱${proRatedAmount.toFixed(2)} required.`,
+      message: `Billing started. Pro-rated amount of ₱${proRatedAmount.toFixed(2)} is due by ${proRatedDueDate.toLocaleDateString()}. Service will be activated upon payment confirmation.`,
       data: {
         billingCycle: billingCycle[0],
         proRatedBill: proRatedBill[0],
-        fullMonthBill: fullMonthBill[0],
         proRatedAmount,
         proRatedDays,
+        proRatedDueDate: proRatedDueDate,
         nextBillingDate: nextBillingDate,
-        dueDateForNextBill: dueDate,
         requiresProRatedPayment: true,
       },
     });
@@ -299,7 +272,7 @@ export const confirmProRatedPayment = async (
     const billingCycle = await BillingCycle.findOne({
       userId,
       status: "active",
-    });
+    }).populate("planId");
 
     if (!billingCycle) {
       return res.status(404).json({
@@ -352,19 +325,62 @@ export const confirmProRatedPayment = async (
     billingCycle.proRatedPaidAt = new Date();
     await billingCycle.save({ session });
 
-    const fullMonthBill = await Billing.findOne({
-      userId,
-      billingCycleId: billingCycle._id,
-      isProRated: false,
-      status: "draft",
-    });
+    // NOW create the FIRST MONTHLY BILL for NEXT month
+    const plan = billingCycle.planId as any;
+    const nextBillingDate = billingCycle.nextBillingDate;
 
-    if (fullMonthBill) {
-      fullMonthBill.status = "sent";
-      await fullMonthBill.save({ session });
-      await emailService.sendInvoice(user, fullMonthBill);
-    }
+    const billingStart = new Date(nextBillingDate);
+    billingStart.setHours(0, 0, 0, 0);
 
+    const billingEnd = new Date(billingStart);
+    billingEnd.setMonth(billingEnd.getMonth() + 1);
+    billingEnd.setDate(0);
+    billingEnd.setHours(23, 59, 59, 999);
+
+    const dueDate = new Date(billingStart);
+    dueDate.setDate(5);
+    dueDate.setHours(23, 59, 59, 999);
+
+    const firstMonthlyBill = await Billing.create(
+      [
+        {
+          userId,
+          billingCycleId: billingCycle._id,
+          invoiceNumber: generateInvoiceNumber(),
+          billingPeriod: {
+            start: billingStart,
+            end: billingEnd,
+          },
+          dueDate: dueDate,
+          items: [
+            {
+              description: `Monthly Subscription - ${billingStart.toLocaleDateString()} to ${billingEnd.toLocaleDateString()}`,
+              quantity: 1,
+              rate: plan.price,
+              amount: plan.price,
+            },
+          ],
+          subtotal: plan.price,
+          tax: 0,
+          discount: 0,
+          total: plan.price,
+          status: "sent",
+          isProRated: false,
+          proRatedDays: 0,
+          notes: "First monthly bill after activation",
+        },
+      ],
+      { session },
+    );
+
+    // Update next billing date for future months
+    const futureNextDate = new Date(billingStart);
+    futureNextDate.setMonth(futureNextDate.getMonth() + 1);
+    futureNextDate.setDate(1);
+    billingCycle.nextBillingDate = futureNextDate;
+    await billingCycle.save({ session });
+
+    // Activate user
     user.status = "active";
     if (user.billingInfo) {
       user.billingInfo.currentBill = 0;
@@ -385,16 +401,20 @@ export const confirmProRatedPayment = async (
       user.email,
       "Service Activated - Welcome to Mister Fyber!",
       `<p>Your internet service has been activated!</p>
-       <p>Your next bill of ₱${(billingCycle.monthlyRate || 0).toFixed(2)} will be due on the 5th of next month.</p>`,
+       <p>Your first monthly bill of ₱${plan.price.toFixed(2)} will be due on ${dueDate.toLocaleDateString()}.</p>
+       <p>Thank you for choosing Mister Fyber!</p>`,
     );
+
+    await emailService.sendInvoice(user, firstMonthlyBill[0]);
 
     res.status(200).json({
       success: true,
       message: "Pro-rated payment confirmed. Service activated successfully!",
       data: {
         payment: payment[0],
-        nextBillDueDate: fullMonthBill?.dueDate,
-        nextBillAmount: fullMonthBill?.total,
+        firstMonthlyBill: firstMonthlyBill[0],
+        nextBillDueDate: dueDate,
+        nextBillAmount: plan.price,
       },
     });
   } catch (error) {
@@ -516,6 +536,7 @@ export const autoGenerateMonthlyBills = async () => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
+    // Only generate for cycles where pro-rated is paid AND nextBillingDate <= today
     const billingCycles = await BillingCycle.find({
       status: "active",
       proRatedPaid: true,
@@ -532,6 +553,7 @@ export const autoGenerateMonthlyBills = async () => {
 
       if (!user || !plan) continue;
 
+      // Check if there's an unpaid bill for this cycle
       const unpaidBills = await Billing.findOne({
         userId: user._id,
         billingCycleId: cycle._id,
@@ -771,9 +793,10 @@ export const getUserCurrentBilling = async (
           needsFirstPayment: true,
           firstBillAmount: proRatedBill?.total,
           firstBillDueDate: proRatedBill?.dueDate,
-          hasOverdue: false,
-          overdueCount: 0,
-          overdueAmount: 0,
+          hasOverdue: proRatedBill?.status === "overdue",
+          overdueCount: proRatedBill?.status === "overdue" ? 1 : 0,
+          overdueAmount:
+            proRatedBill?.status === "overdue" ? proRatedBill?.total || 0 : 0,
           upcomingBills: [],
           isPendingPayment: false,
         },
