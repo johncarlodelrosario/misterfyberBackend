@@ -1,69 +1,95 @@
-import mongoose, { Schema, Document } from 'mongoose';
+// models/Payment.ts - UPDATED WITH "manual" PAYMENT METHOD
+import mongoose, { Schema, Document } from "mongoose";
 
 export interface IPayment extends Document {
-    userId: mongoose.Types.ObjectId;
-    amount: number;
-    currency: string;
-    paymentMethod: 'paymongo' | 'dragonpay' | 'gcash' | 'maya' | 'card' | 'bank_transfer';
-    paymentType: 'subscription' | 'installation' | 'others';
-    status: 'pending' | 'processing' | 'completed' | 'failed' | 'refunded';
-    transactionId: string;
-    referenceNumber: string;
-    paymentDetails: {
-        gateway: string;
-        gatewayResponse: any;
-        paymentIntentId?: string;
-        paymentMethodId?: string;
-    };
-    billingId: mongoose.Types.ObjectId;
-    metadata: any;
-    paidAt: Date;
-    createdAt: Date;
-    updatedAt: Date;
+  userId: mongoose.Types.ObjectId;
+  amount: number;
+  currency: string;
+  paymentMethod:
+    | "paymongo"
+    | "dragonpay"
+    | "gcash"
+    | "maya"
+    | "card"
+    | "bank_transfer"
+    | "manual";
+  paymentType: "subscription" | "installation" | "others";
+  status: "pending" | "processing" | "completed" | "failed" | "refunded";
+  transactionId: string;
+  referenceNumber: string;
+  paymentDetails: {
+    gateway: string;
+    gatewayResponse: any;
+    paymentIntentId?: string;
+    paymentMethodId?: string;
+    notes?: string;
+    confirmedBy?: string;
+    confirmedAt?: Date;
+  };
+  billingId: mongoose.Types.ObjectId;
+  metadata: any;
+  paidAt: Date;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
-const PaymentSchema: Schema = new Schema({
-    userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+const PaymentSchema: Schema = new Schema(
+  {
+    userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
     amount: { type: Number, required: true },
-    currency: { type: String, default: 'PHP' },
-    paymentMethod: { 
-        type: String, 
-        enum: ['paymongo', 'dragonpay', 'gcash', 'maya', 'card', 'bank_transfer'],
-        required: true 
+    currency: { type: String, default: "PHP" },
+    paymentMethod: {
+      type: String,
+      enum: [
+        "paymongo",
+        "dragonpay",
+        "gcash",
+        "maya",
+        "card",
+        "bank_transfer",
+        "manual",
+      ],
+      required: true,
+      default: "manual",
     },
-    paymentType: { 
-        type: String, 
-        enum: ['subscription', 'installation', 'others'],
-        default: 'subscription'
+    paymentType: {
+      type: String,
+      enum: ["subscription", "installation", "others"],
+      default: "subscription",
     },
-    status: { 
-        type: String, 
-        enum: ['pending', 'processing', 'completed', 'failed', 'refunded'],
-        default: 'pending'
+    status: {
+      type: String,
+      enum: ["pending", "processing", "completed", "failed", "refunded"],
+      default: "pending",
     },
     transactionId: { type: String },
     referenceNumber: { type: String, unique: true },
     paymentDetails: {
-        gateway: { type: String },
-        gatewayResponse: { type: Schema.Types.Mixed },
-        paymentIntentId: { type: String },
-        paymentMethodId: { type: String }
+      gateway: { type: String, default: "manual" },
+      gatewayResponse: { type: Schema.Types.Mixed },
+      paymentIntentId: { type: String },
+      paymentMethodId: { type: String },
+      notes: { type: String },
+      confirmedBy: { type: String },
+      confirmedAt: { type: Date },
     },
-    billingId: { type: Schema.Types.ObjectId, ref: 'Billing' },
+    billingId: { type: Schema.Types.ObjectId, ref: "Billing" },
     metadata: { type: Schema.Types.Mixed },
-    paidAt: { type: Date }
-}, {
-    timestamps: true
-});
+    paidAt: { type: Date },
+  },
+  {
+    timestamps: true,
+  },
+);
 
 // Generate reference number before saving
-PaymentSchema.pre('save', function(next) {
-    if (!this.referenceNumber) {
-        const timestamp = Date.now().toString(36).toUpperCase();
-        const random = Math.random().toString(36).substring(2, 8).toUpperCase();
-        this.referenceNumber = `PAY-${timestamp}-${random}`;
-    }
-    next();
+PaymentSchema.pre("save", function (next) {
+  if (!this.referenceNumber) {
+    const timestamp = Date.now().toString(36).toUpperCase();
+    const random = Math.random().toString(36).substring(2, 8).toUpperCase();
+    this.referenceNumber = `PAY-${timestamp}-${random}`;
+  }
+  next();
 });
 
-export default mongoose.model<IPayment>('Payment', PaymentSchema);
+export default mongoose.model<IPayment>("Payment", PaymentSchema);
