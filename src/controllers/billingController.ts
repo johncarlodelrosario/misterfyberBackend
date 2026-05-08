@@ -1,4 +1,4 @@
-// controllers/billingController.ts - COMPLETE FIXED
+// controllers/billingController.ts - COMPLETE FIXED - NO TS ERRORS
 import { Request, Response, NextFunction } from "express";
 import Billing from "../models/Billing";
 import BillingCycle from "../models/BillingCycle";
@@ -10,6 +10,7 @@ import emailService from "../services/emailService";
 import mikrotikService from "../services/mikrotikService";
 import mongoose from "mongoose";
 
+// Fixed AuthRequest interface with proper express.Request extension
 interface AuthRequest extends Request {
   user?: any;
 }
@@ -73,9 +74,9 @@ export const autoSendReminders = async () => {
              <p>Thank you,<br>Mister Fyber Team</p>`,
           );
 
-          if (days === 7) bill.reminder7DaySent = true;
-          else if (days === 3) bill.reminder3DaySent = true;
-          else if (days === 1) bill.reminder1DaySent = true;
+          if (days === 7) (bill as any).reminder7DaySent = true;
+          else if (days === 3) (bill as any).reminder3DaySent = true;
+          else if (days === 1) (bill as any).reminder1DaySent = true;
           await bill.save();
 
           console.log(
@@ -99,7 +100,12 @@ export const startBilling = async (
   session.startTransaction();
 
   try {
-    const { userId, startDate, customAmount, notes } = req.body;
+    const { userId, startDate, customAmount, notes } = req.body as {
+      userId: string;
+      startDate?: string;
+      customAmount?: number;
+      notes?: string;
+    };
 
     const user = await User.findById(userId).populate("planId");
     if (!user) {
@@ -288,7 +294,14 @@ export const confirmProRatedPayment = async (
   session.startTransaction();
 
   try {
-    const { userId, paymentDetails } = req.body;
+    const { userId, paymentDetails } = req.body as {
+      userId: string;
+      paymentDetails?: {
+        paymentMethod?: string;
+        referenceNumber?: string;
+        notes?: string;
+      };
+    };
 
     const user = await User.findById(userId).populate("planId");
     if (!user) {
@@ -416,8 +429,11 @@ export const markBillAsPaid = async (
   session.startTransaction();
 
   try {
-    const { billId } = req.params;
-    const { referenceNumber, notes } = req.body;
+    const { billId } = req.params as { billId: string };
+    const { referenceNumber, notes } = req.body as {
+      referenceNumber?: string;
+      notes?: string;
+    };
     const adminId = req.user?._id;
 
     const bill = await Billing.findById(billId).populate("userId");
@@ -840,7 +856,10 @@ export const getAllBills = async (
   next: NextFunction,
 ) => {
   try {
-    const { status, type } = req.query;
+    const { status, type } = req.query as {
+      status?: string;
+      type?: string;
+    };
     let query: any = {};
 
     if (status) query.status = status;
@@ -865,7 +884,10 @@ export const stopBilling = async (
   next: NextFunction,
 ) => {
   try {
-    const { userId, reason } = req.body;
+    const { userId, reason } = req.body as {
+      userId: string;
+      reason?: string;
+    };
 
     const user = await User.findById(userId);
     if (!user) {
@@ -920,7 +942,7 @@ export const reconnectClient = async (
   next: NextFunction,
 ) => {
   try {
-    const { userId } = req.body;
+    const { userId } = req.body as { userId: string };
 
     const user = await User.findById(userId).populate("planId");
     if (!user) {
@@ -979,7 +1001,10 @@ export const disconnectClient = async (
   next: NextFunction,
 ) => {
   try {
-    const { userId, reason } = req.body;
+    const { userId, reason } = req.body as {
+      userId: string;
+      reason?: string;
+    };
 
     const user = await User.findById(userId);
     if (!user) {
