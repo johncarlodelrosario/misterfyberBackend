@@ -7,11 +7,15 @@ export interface IBillingCycle extends Document {
   billingStartDate: Date;
   billingEndDate: Date;
   nextBillingDate: Date;
-  status: "active" | "paused" | "cancelled";
+  status: "active" | "paused" | "cancelled" | "pending_activation";
   monthlyRate: number;
   currentProRatedAmount: number;
   proRatedPaid: boolean;
   proRatedPaidAt?: Date;
+  freeDays: number;
+  actualBillableDays: number;
+  manualBillStart: boolean;
+  manuallyStartedAt?: Date;
   paymentHistory: Array<{
     billingId: mongoose.Types.ObjectId;
     amount: number;
@@ -37,13 +41,17 @@ const BillingCycleSchema = new Schema<IBillingCycle>(
     nextBillingDate: { type: Date, required: true },
     status: {
       type: String,
-      enum: ["active", "paused", "cancelled"],
-      default: "active",
+      enum: ["active", "paused", "cancelled", "pending_activation"],
+      default: "pending_activation",
     },
     monthlyRate: { type: Number, required: true },
     currentProRatedAmount: { type: Number, required: true },
     proRatedPaid: { type: Boolean, default: false },
     proRatedPaidAt: { type: Date },
+    freeDays: { type: Number, default: 1 },
+    actualBillableDays: { type: Number, default: 0 },
+    manualBillStart: { type: Boolean, default: false },
+    manuallyStartedAt: { type: Date },
     paymentHistory: [
       {
         billingId: { type: Schema.Types.ObjectId, ref: "Billing" },

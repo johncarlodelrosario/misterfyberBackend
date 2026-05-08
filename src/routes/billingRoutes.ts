@@ -1,11 +1,13 @@
-// routes/billingRoutes.ts - COMPLETE FIXED
+// routes/billingRoutes.ts - COMPLETE FIXED with new routes
 import express from "express";
 import { body } from "express-validator";
 import {
   startBilling,
   confirmProRatedPayment,
+  startMonthlyBilling,
   markBillAsPaid,
   getPendingProRatedBills,
+  getPendingActivations,
   getBillingSummary,
   getUserCurrentBilling,
   getAllBillingCycles,
@@ -16,6 +18,8 @@ import {
   autoGenerateMonthlyBills,
   autoSendReminders,
   autoSuspendOverdue,
+  getBillingSettings,
+  updateBillingSettings,
 } from "../controllers/billingController";
 import { protect, authorize } from "../middleware/auth";
 
@@ -26,6 +30,20 @@ router.get("/my-status", protect, getUserCurrentBilling);
 router.get("/user/current", protect, getUserCurrentBilling);
 
 // ==================== ADMIN ROUTES ====================
+
+// Billing Settings
+router.get(
+  "/settings",
+  protect,
+  authorize("super_admin", "admin", "staff"),
+  getBillingSettings,
+);
+router.put(
+  "/settings",
+  protect,
+  authorize("super_admin", "admin", "staff"),
+  updateBillingSettings,
+);
 
 // Billing cycles - GET /api/billing/cycles
 router.get(
@@ -59,6 +77,14 @@ router.get(
   getPendingProRatedBills,
 );
 
+// Pending activations (pro-rated paid, waiting for admin to start monthly billing)
+router.get(
+  "/pending-activations",
+  protect,
+  authorize("super_admin", "admin", "staff"),
+  getPendingActivations,
+);
+
 // Start billing (with pro-rated calculation) - POST /api/billing/start
 router.post(
   "/start",
@@ -82,6 +108,15 @@ router.post(
     body("paymentDetails").optional().isObject(),
   ],
   confirmProRatedPayment,
+);
+
+// Start monthly billing (admin action after pro-rated payment) - POST /api/billing/start-monthly
+router.post(
+  "/start-monthly",
+  protect,
+  authorize("super_admin", "admin", "staff"),
+  [body("userId").isMongoId().withMessage("User ID is required")],
+  startMonthlyBilling,
 );
 
 // Mark any bill as paid (admin override) - PUT /api/billing/mark-paid/:billId

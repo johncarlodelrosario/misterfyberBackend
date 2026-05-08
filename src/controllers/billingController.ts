@@ -1,4 +1,4 @@
-// controllers/billingController.ts - COMPLETE FIXED WITH PROPER PRO-RATED LOGIC
+// controllers/billingController.ts - COMPLETE WITH FREE DAY AND MANUAL BILL START
 import { Request, Response, NextFunction } from "express";
 import Billing from "../models/Billing";
 import BillingCycle from "../models/BillingCycle";
@@ -22,6 +22,49 @@ function generateInvoiceNumber(): string {
     .padStart(3, "0");
   return `INV-${year}${month}-${timestamp}${random}`;
 }
+
+// ==================== GET BILLING SETTINGS ====================
+export const getBillingSettings = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    let settings = await BillingSettings.findOne();
+    if (!settings) {
+      settings = await BillingSettings.create({
+        reminderDays: [7, 3, 1],
+        dueDateDaysAfterPeriod: 5,
+        gracePeriodDays: 5,
+        autoGenerateBills: true,
+        autoSendReminders: true,
+        autoSuspendOnNonPayment: true,
+        billingCycleDay: 1,
+        freeDays: 1,
+      });
+    }
+    res.status(200).json({ success: true, data: settings });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ==================== UPDATE BILLING SETTINGS ====================
+export const updateBillingSettings = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const settings = await BillingSettings.findOneAndUpdate({}, req.body, {
+      new: true,
+      upsert: true,
+    });
+    res.status(200).json({ success: true, data: settings });
+  } catch (error) {
+    next(error);
+  }
+};
 
 // ==================== AUTO SEND REMINDERS ====================
 export const autoSendReminders = async () => {
@@ -86,7 +129,7 @@ export const autoSendReminders = async () => {
   }
 };
 
-// ==================== START BILLING (PRO-RATED) ====================
+// ==================== START BILLING (PRO-RATED with FREE DAY) ====================
 export const startBilling = async (
   req: AuthRequest,
   res: Response,
@@ -111,6 +154,9 @@ export const startBilling = async (
         .json({ success: false, message: "User has no plan assigned" });
     }
 
+    const settings = await BillingSettings.findOne();
+    const freeDays = settings?.freeDays || 1;
+
     const plan = user.planId as any;
     const monthlyRate = plan.price;
 
@@ -119,13 +165,13 @@ export const startBilling = async (
 
     const existingCycle = await BillingCycle.findOne({
       userId,
-      status: { $in: ["active", "paused"] },
+      status: { $in: ["active", "paused", "pending_activation"] },
     });
 
     if (existingCycle) {
       return res.status(400).json({
         success: false,
-        message: "User already has an active billing cycle",
+        message: "User already has a billing cycle",
         data: { billingCycle: existingCycle },
       });
     }
@@ -137,32 +183,28 @@ export const startBilling = async (
     );
     const daysInMonth = lastDayOfMonth.getDate();
     const installationDay = installationDate.getDate();
-    const proRatedDays = daysInMonth - installationDay + 1;
-    const dailyRate = monthlyRate / daysInMonth;
-    const proRatedAmount = Math.round(dailyRate * proRatedDays * 100) / 100;
+    const totalDaysInPeriod = daysInMonth - installationDay + 1;
 
-    // PRO-RATED BILL DUE DATE: 5 days after installation (not immediately)
+    // Apply free days: 1 day is free, so billable days = totalDaysInPeriod - freeDays
+    const actualBillableDays = Math.max(0, totalDaysInPeriod - freeDays);
+    const dailyRate = monthlyRate / daysInMonth;
+    let proRatedAmount = Math.round(dailyRate * actualBillableDays * 100) / 100;
+
+    // Override with custom amount if provided
+    if (customAmount) {
+      proRatedAmount = customAmount;
+    }
+
+    // PRO-RATED BILL DUE DATE: 5 days after installation
     const proRatedDueDate = new Date(installationDate);
     proRatedDueDate.setDate(proRatedDueDate.getDate() + 5);
     proRatedDueDate.setHours(23, 59, 59, 999);
 
-    // NEXT BILLING DATE: Start of NEXT month (only after pro-rated is paid)
+    // NEXT BILLING DATE for monthly bills (will be set when admin starts monthly billing)
     const nextBillingDate = new Date(installationDate);
     nextBillingDate.setMonth(nextBillingDate.getMonth() + 1);
     nextBillingDate.setDate(1);
     nextBillingDate.setHours(0, 0, 0, 0);
-
-    // FIRST FULL MONTH BILL will be generated AFTER pro-rated is paid
-    // It will cover the next full month
-    const firstFullBillingStart = new Date(nextBillingDate);
-    const firstFullBillingEnd = new Date(nextBillingDate);
-    firstFullBillingEnd.setMonth(firstFullBillingEnd.getMonth() + 1);
-    firstFullBillingEnd.setDate(0);
-    firstFullBillingEnd.setHours(23, 59, 59, 999);
-
-    const firstFullMonthDueDate = new Date(firstFullBillingStart);
-    firstFullMonthDueDate.setDate(5);
-    firstFullMonthDueDate.setHours(23, 59, 59, 999);
 
     const billingCycle = await BillingCycle.create(
       [
@@ -172,16 +214,24 @@ export const startBilling = async (
           billingStartDate: installationDate,
           billingEndDate: lastDayOfMonth,
           nextBillingDate: nextBillingDate,
-          status: "active",
+          status: "pending_activation",
           monthlyRate,
           currentProRatedAmount: proRatedAmount,
           proRatedPaid: false,
+          freeDays: freeDays,
+          actualBillableDays: actualBillableDays,
+          manualBillStart: false,
         },
       ],
       { session },
     );
 
-    // Create PRO-RATED BILL only (due 5 days after installation)
+    // Create PRO-RATED BILL only
+    const proRatedBillDescription =
+      freeDays === 1
+        ? `Pro-rated payment from ${installationDate.toLocaleDateString()} to ${lastDayOfMonth.toLocaleDateString()} (${totalDaysInPeriod} days total, ${freeDays} day free, ${actualBillableDays} days billable)`
+        : `Pro-rated payment from ${installationDate.toLocaleDateString()} to ${lastDayOfMonth.toLocaleDateString()} (${actualBillableDays} days)`;
+
     const proRatedBill = await Billing.create(
       [
         {
@@ -192,11 +242,11 @@ export const startBilling = async (
             start: installationDate,
             end: lastDayOfMonth,
           },
-          dueDate: proRatedDueDate, // 5 days after installation
+          dueDate: proRatedDueDate,
           items: [
             {
-              description: `Pro-rated payment from ${installationDate.toLocaleDateString()} to ${lastDayOfMonth.toLocaleDateString()} (${proRatedDays} days)`,
-              quantity: proRatedDays,
+              description: proRatedBillDescription,
+              quantity: actualBillableDays,
               rate: dailyRate,
               amount: proRatedAmount,
             },
@@ -207,15 +257,14 @@ export const startBilling = async (
           total: proRatedAmount,
           status: "sent",
           isProRated: true,
-          proRatedDays: proRatedDays,
-          notes: notes || `Pro-rated billing upon installation - Due in 5 days`,
+          proRatedDays: actualBillableDays,
+          notes:
+            notes ||
+            `Pro-rated billing - ${freeDays} day(s) free, due in 5 days`,
         },
       ],
       { session },
     );
-
-    // DO NOT create monthly bill yet - wait until pro-rated is paid
-    // The monthly bill will be created in confirmProRatedPayment function
 
     await session.commitTransaction();
 
@@ -231,15 +280,18 @@ export const startBilling = async (
 
     res.status(200).json({
       success: true,
-      message: `Billing started. Pro-rated amount of ₱${proRatedAmount.toFixed(2)} is due by ${proRatedDueDate.toLocaleDateString()}. Service will be activated upon payment confirmation.`,
+      message: `Billing started. Pro-rated amount of ₱${proRatedAmount.toFixed(2)} (${freeDays} day(s) free) is due by ${proRatedDueDate.toLocaleDateString()}. Monthly billing will start when admin activates the service.`,
       data: {
         billingCycle: billingCycle[0],
         proRatedBill: proRatedBill[0],
         proRatedAmount,
-        proRatedDays,
+        actualBillableDays,
+        freeDays,
+        totalDaysInPeriod,
         proRatedDueDate: proRatedDueDate,
         nextBillingDate: nextBillingDate,
         requiresProRatedPayment: true,
+        manualBillStartRequired: true,
       },
     });
   } catch (error) {
@@ -271,13 +323,13 @@ export const confirmProRatedPayment = async (
 
     const billingCycle = await BillingCycle.findOne({
       userId,
-      status: "active",
+      status: "pending_activation",
     }).populate("planId");
 
     if (!billingCycle) {
       return res.status(404).json({
         success: false,
-        message: "No active billing cycle found",
+        message: "No pending billing cycle found",
       });
     }
 
@@ -309,7 +361,8 @@ export const confirmProRatedPayment = async (
           paymentDetails: {
             gateway: "manual",
             gatewayResponse: paymentDetails,
-            notes: "Pro-rated payment - Service activated",
+            notes:
+              "Pro-rated payment - Awaiting admin to start monthly billing",
           },
           paidAt: new Date(),
         },
@@ -323,13 +376,85 @@ export const confirmProRatedPayment = async (
 
     billingCycle.proRatedPaid = true;
     billingCycle.proRatedPaidAt = new Date();
+    billingCycle.status = "pending_activation"; // Still pending, waiting for admin to start monthly billing
     await billingCycle.save({ session });
 
-    // NOW create the FIRST MONTHLY BILL for NEXT month
-    const plan = billingCycle.planId as any;
-    const nextBillingDate = billingCycle.nextBillingDate;
+    await session.commitTransaction();
 
-    const billingStart = new Date(nextBillingDate);
+    await emailService.sendEmail(
+      user.email,
+      "Pro-rated Payment Confirmed - Mister Fyber",
+      `<p>Dear ${user.firstName} ${user.lastName},</p>
+       <p>Your pro-rated payment of ₱${proRatedBill.total.toFixed(2)} has been confirmed.</p>
+       <p>Your account is now pending activation of monthly billing.</p>
+       <p>Once the admin starts your monthly billing cycle, you will receive your first monthly invoice.</p>
+       <p>Thank you for choosing Mister Fyber!</p>`,
+    );
+
+    res.status(200).json({
+      success: true,
+      message:
+        "Pro-rated payment confirmed. Waiting for admin to start monthly billing.",
+      data: {
+        payment: payment[0],
+        requiresManualBillStart: true,
+      },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
+// ==================== START MONTHLY BILLING (ADMIN ACTION) ====================
+export const startMonthlyBilling = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { userId } = req.body;
+
+    const user = await User.findById(userId).populate("planId");
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+    }
+
+    const billingCycle = await BillingCycle.findOne({
+      userId,
+      status: "pending_activation",
+      proRatedPaid: true,
+    }).populate("planId");
+
+    if (!billingCycle) {
+      return res.status(404).json({
+        success: false,
+        message:
+          "No pending billing cycle found or pro-rated payment not yet confirmed",
+      });
+    }
+
+    if (billingCycle.manualBillStart) {
+      return res.status(400).json({
+        success: false,
+        message: "Monthly billing has already been started for this user",
+      });
+    }
+
+    // Calculate first monthly bill period (starts on the 1st of next month)
+    const today = new Date();
+    let billingStart = new Date(today);
+
+    // Set to first day of next month
+    billingStart.setMonth(billingStart.getMonth() + 1);
+    billingStart.setDate(1);
     billingStart.setHours(0, 0, 0, 0);
 
     const billingEnd = new Date(billingStart);
@@ -340,6 +465,9 @@ export const confirmProRatedPayment = async (
     const dueDate = new Date(billingStart);
     dueDate.setDate(5);
     dueDate.setHours(23, 59, 59, 999);
+
+    const plan = billingCycle.planId as any;
+    const monthlyRate = plan.price;
 
     const firstMonthlyBill = await Billing.create(
       [
@@ -356,28 +484,33 @@ export const confirmProRatedPayment = async (
             {
               description: `Monthly Subscription - ${billingStart.toLocaleDateString()} to ${billingEnd.toLocaleDateString()}`,
               quantity: 1,
-              rate: plan.price,
-              amount: plan.price,
+              rate: monthlyRate,
+              amount: monthlyRate,
             },
           ],
-          subtotal: plan.price,
+          subtotal: monthlyRate,
           tax: 0,
           discount: 0,
-          total: plan.price,
+          total: monthlyRate,
           status: "sent",
           isProRated: false,
           proRatedDays: 0,
-          notes: "First monthly bill after activation",
+          notes: "First monthly bill - Service activated",
         },
       ],
       { session },
     );
 
-    // Update next billing date for future months
-    const futureNextDate = new Date(billingStart);
-    futureNextDate.setMonth(futureNextDate.getMonth() + 1);
-    futureNextDate.setDate(1);
-    billingCycle.nextBillingDate = futureNextDate;
+    // Update billing cycle
+    billingCycle.status = "active";
+    billingCycle.manualBillStart = true;
+    billingCycle.manuallyStartedAt = new Date();
+
+    // Set next billing date for auto-generation
+    const nextDate = new Date(billingStart);
+    nextDate.setMonth(nextDate.getMonth() + 1);
+    nextDate.setDate(1);
+    billingCycle.nextBillingDate = nextDate;
     await billingCycle.save({ session });
 
     // Activate user
@@ -387,6 +520,7 @@ export const confirmProRatedPayment = async (
     }
     await user.save({ session });
 
+    // Apply MikroTik plan if configured
     if (user.mikrotik && user.mikrotik.username && user.planId) {
       try {
         await mikrotikService.applyPlanToUser(user, user.planId);
@@ -399,9 +533,11 @@ export const confirmProRatedPayment = async (
 
     await emailService.sendEmail(
       user.email,
-      "Service Activated - Welcome to Mister Fyber!",
-      `<p>Your internet service has been activated!</p>
-       <p>Your first monthly bill of ₱${plan.price.toFixed(2)} will be due on ${dueDate.toLocaleDateString()}.</p>
+      "Your Internet Service is Now Active - Mister Fyber",
+      `<p>Dear ${user.firstName} ${user.lastName},</p>
+       <p>Your internet service has been activated!</p>
+       <p>Your first monthly bill of ₱${monthlyRate.toFixed(2)} for period ${billingStart.toLocaleDateString()} to ${billingEnd.toLocaleDateString()} is due on ${dueDate.toLocaleDateString()}.</p>
+       <p>You can view and pay your bill in your customer portal.</p>
        <p>Thank you for choosing Mister Fyber!</p>`,
     );
 
@@ -409,12 +545,11 @@ export const confirmProRatedPayment = async (
 
     res.status(200).json({
       success: true,
-      message: "Pro-rated payment confirmed. Service activated successfully!",
+      message: "Monthly billing started successfully. Service activated.",
       data: {
-        payment: payment[0],
         firstMonthlyBill: firstMonthlyBill[0],
         nextBillDueDate: dueDate,
-        nextBillAmount: plan.price,
+        nextBillAmount: monthlyRate,
       },
     });
   } catch (error) {
@@ -536,10 +671,15 @@ export const autoGenerateMonthlyBills = async () => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // Only generate for cycles where pro-rated is paid AND nextBillingDate <= today
+    // Only generate for cycles where:
+    // 1. Status is active
+    // 2. Pro-rated is paid
+    // 3. Manual bill start is true (admin has started monthly billing)
+    // 4. Next billing date <= today
     const billingCycles = await BillingCycle.find({
       status: "active",
       proRatedPaid: true,
+      manualBillStart: true,
       nextBillingDate: { $lte: today },
     }).populate("userId planId");
 
@@ -708,6 +848,31 @@ export const getPendingProRatedBills = async (
   }
 };
 
+// ==================== GET PENDING ACTIVATIONS (Pro-rated paid, waiting for admin to start monthly billing) ====================
+export const getPendingActivations = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const pendingCycles = await BillingCycle.find({
+      status: "pending_activation",
+      proRatedPaid: true,
+      manualBillStart: false,
+    })
+      .populate("userId", "firstName lastName email username phoneNumber")
+      .populate("planId", "name price")
+      .sort({ proRatedPaidAt: -1 });
+
+    res.status(200).json({
+      success: true,
+      data: pendingCycles,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // ==================== GET BILLING SUMMARY FOR ADMIN ====================
 export const getBillingSummary = async (
   req: AuthRequest,
@@ -718,10 +883,16 @@ export const getBillingSummary = async (
     const totalActiveCycles = await BillingCycle.countDocuments({
       status: "active",
       proRatedPaid: true,
+      manualBillStart: true,
     });
     const pendingProRated = await Billing.countDocuments({
       isProRated: true,
       status: "sent",
+    });
+    const pendingActivations = await BillingCycle.countDocuments({
+      status: "pending_activation",
+      proRatedPaid: true,
+      manualBillStart: false,
     });
     const overdueBills = await Billing.countDocuments({ status: "overdue" });
 
@@ -745,7 +916,8 @@ export const getBillingSummary = async (
       success: true,
       data: {
         activeSubscriptions: totalActiveCycles,
-        pendingActivations: pendingProRated,
+        pendingProRated: pendingProRated,
+        pendingActivations: pendingActivations,
         overdueAccounts: overdueBills,
         totalOutstanding: totalOutstanding,
         monthlyRevenue: monthlyRevenue[0]?.total || 0,
@@ -767,7 +939,7 @@ export const getUserCurrentBilling = async (
 
     const billingCycle = await BillingCycle.findOne({
       userId,
-      status: "active",
+      status: { $in: ["active", "pending_activation"] },
     }).populate("planId");
 
     if (!billingCycle) {
@@ -778,6 +950,7 @@ export const getUserCurrentBilling = async (
       });
     }
 
+    // Case 1: Pro-rated not yet paid
     if (!billingCycle.proRatedPaid) {
       const proRatedBill = await Billing.findOne({
         userId,
@@ -799,10 +972,31 @@ export const getUserCurrentBilling = async (
             proRatedBill?.status === "overdue" ? proRatedBill?.total || 0 : 0,
           upcomingBills: [],
           isPendingPayment: false,
+          waitingForAdminActivation: false,
+          freeDays: billingCycle.freeDays,
+          actualBillableDays: billingCycle.actualBillableDays,
         },
       });
     }
 
+    // Case 2: Pro-rated paid but waiting for admin to start monthly billing
+    if (billingCycle.proRatedPaid && !billingCycle.manualBillStart) {
+      return res.status(200).json({
+        success: true,
+        data: {
+          billingCycle,
+          currentBill: null,
+          needsFirstPayment: false,
+          waitingForAdminActivation: true,
+          message:
+            "Your pro-rated payment has been confirmed. Please wait for the admin to activate your monthly billing.",
+          freeDays: billingCycle.freeDays,
+          actualBillableDays: billingCycle.actualBillableDays,
+        },
+      });
+    }
+
+    // Case 3: Active monthly billing
     const currentBill = await Billing.findOne({
       userId,
       billingCycleId: billingCycle._id,
@@ -830,6 +1024,7 @@ export const getUserCurrentBilling = async (
         overdueAmount: hasOverdue ? currentBill?.total || 0 : 0,
         needsFirstPayment: false,
         isPendingPayment: false,
+        waitingForAdminActivation: false,
       },
     });
   } catch (error) {

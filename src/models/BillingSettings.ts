@@ -1,4 +1,4 @@
-// models/BillingSettings.ts - COMPLETE
+// models/BillingSettings.ts - COMPLETE with freeDays
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IBillingSettings extends Document {
@@ -9,6 +9,7 @@ export interface IBillingSettings extends Document {
   autoSendReminders: boolean;
   autoSuspendOnNonPayment: boolean;
   billingCycleDay: number;
+  freeDays: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -21,7 +22,7 @@ const BillingSettingsSchema: Schema = new Schema(
     },
     dueDateDaysAfterPeriod: {
       type: Number,
-      default: 7,
+      default: 5,
     },
     gracePeriodDays: {
       type: Number,
@@ -40,6 +41,10 @@ const BillingSettingsSchema: Schema = new Schema(
       default: true,
     },
     billingCycleDay: {
+      type: Number,
+      default: 1,
+    },
+    freeDays: {
       type: Number,
       default: 1,
     },
