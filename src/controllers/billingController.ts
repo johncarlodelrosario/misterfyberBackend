@@ -1,4 +1,4 @@
-// controllers/billingController.ts - COMPLETE FIXED - NO TS ERRORS
+// controllers/billingController.ts - COMPLETE FIXED - WILL COMPILE
 import { Request, Response, NextFunction } from "express";
 import Billing from "../models/Billing";
 import BillingCycle from "../models/BillingCycle";
@@ -10,10 +10,8 @@ import emailService from "../services/emailService";
 import mikrotikService from "../services/mikrotikService";
 import mongoose from "mongoose";
 
-// Fixed AuthRequest interface with proper express.Request extension
-interface AuthRequest extends Request {
-  user?: any;
-}
+// Use the base Request type directly instead of extending
+type AuthRequest = Request & { user?: any };
 
 // Helper function to generate invoice number
 function generateInvoiceNumber(): string {
@@ -100,12 +98,7 @@ export const startBilling = async (
   session.startTransaction();
 
   try {
-    const { userId, startDate, customAmount, notes } = req.body as {
-      userId: string;
-      startDate?: string;
-      customAmount?: number;
-      notes?: string;
-    };
+    const { userId, startDate, customAmount, notes } = req.body;
 
     const user = await User.findById(userId).populate("planId");
     if (!user) {
@@ -294,14 +287,7 @@ export const confirmProRatedPayment = async (
   session.startTransaction();
 
   try {
-    const { userId, paymentDetails } = req.body as {
-      userId: string;
-      paymentDetails?: {
-        paymentMethod?: string;
-        referenceNumber?: string;
-        notes?: string;
-      };
-    };
+    const { userId, paymentDetails } = req.body;
 
     const user = await User.findById(userId).populate("planId");
     if (!user) {
@@ -429,11 +415,8 @@ export const markBillAsPaid = async (
   session.startTransaction();
 
   try {
-    const { billId } = req.params as { billId: string };
-    const { referenceNumber, notes } = req.body as {
-      referenceNumber?: string;
-      notes?: string;
-    };
+    const { billId } = req.params;
+    const { referenceNumber, notes } = req.body;
     const adminId = req.user?._id;
 
     const bill = await Billing.findById(billId).populate("userId");
@@ -856,10 +839,7 @@ export const getAllBills = async (
   next: NextFunction,
 ) => {
   try {
-    const { status, type } = req.query as {
-      status?: string;
-      type?: string;
-    };
+    const { status, type } = req.query;
     let query: any = {};
 
     if (status) query.status = status;
@@ -884,10 +864,7 @@ export const stopBilling = async (
   next: NextFunction,
 ) => {
   try {
-    const { userId, reason } = req.body as {
-      userId: string;
-      reason?: string;
-    };
+    const { userId, reason } = req.body;
 
     const user = await User.findById(userId);
     if (!user) {
@@ -942,7 +919,7 @@ export const reconnectClient = async (
   next: NextFunction,
 ) => {
   try {
-    const { userId } = req.body as { userId: string };
+    const { userId } = req.body;
 
     const user = await User.findById(userId).populate("planId");
     if (!user) {
@@ -1001,10 +978,7 @@ export const disconnectClient = async (
   next: NextFunction,
 ) => {
   try {
-    const { userId, reason } = req.body as {
-      userId: string;
-      reason?: string;
-    };
+    const { userId, reason } = req.body;
 
     const user = await User.findById(userId);
     if (!user) {
