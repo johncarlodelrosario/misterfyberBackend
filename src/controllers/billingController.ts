@@ -362,13 +362,13 @@ export const confirmProRatedPayment = async (
       userId,
       billingCycleId: billingCycle._id,
       isProRated: true,
-      status: "sent",
+      status: "pending_confirmation",
     });
 
     if (!proRatedBill) {
       return res.status(404).json({
         success: false,
-        message: "Pro-rated bill not found",
+        message: "Pro-rated bill not found or not pending confirmation",
       });
     }
 
@@ -679,7 +679,88 @@ export const markBillAsPaid = async (
   }
 };
 
-// ==================== AUTO-GENERATE MONTHLY BILLS (FIXED) ====================
+// ==================== SUBMIT PRO-RATED PAYMENT (USER ACTION) ====================
+export const submitProRatedPayment = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { billId, referenceNumber, notes } = req.body;
+    const userId = req.user?._id;
+
+    const bill = await Billing.findOne({
+      _id: billId,
+      userId,
+      isProRated: true,
+      status: "sent",
+    });
+
+    if (!bill) {
+      return res.status(404).json({
+        success: false,
+        message: "Pro-rated bill not found or already paid",
+      });
+    }
+
+    bill.status = "pending_confirmation";
+    await bill.save({ session });
+
+    const payment = await Payment.create(
+      [
+        {
+          userId,
+          amount: bill.total,
+          paymentMethod: "manual",
+          paymentType: "subscription",
+          status: "pending",
+          referenceNumber: referenceNumber || `PAY-${Date.now()}`,
+          billingId: bill._id,
+          paymentDetails: {
+            gateway: "manual",
+            gatewayResponse: {
+              submittedBy: userId,
+              submittedAt: new Date(),
+              notes: notes || "Payment submitted by user",
+            },
+          },
+          paidAt: new Date(),
+        },
+      ],
+      { session },
+    );
+
+    bill.paymentId = payment[0]._id;
+    await bill.save({ session });
+
+    await session.commitTransaction();
+
+    console.log(
+      `💰 Pro-rated payment submitted for user ${userId}, bill ${bill.invoiceNumber}. Awaiting admin confirmation.`,
+    );
+
+    res.status(200).json({
+      success: true,
+      message:
+        "Payment submitted successfully! Please wait for admin confirmation.",
+      data: {
+        bill,
+        payment: payment[0],
+        status: "pending_confirmation",
+      },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
+// ==================== AUTO-GENERATE MONTHLY BILLS ====================
 export const autoGenerateMonthlyBills = async (
   req?: AuthRequest,
   res?: Response,
@@ -699,7 +780,6 @@ export const autoGenerateMonthlyBills = async (
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // Get all active billing cycles where nextBillingDate is today or earlier
     const billingCycles = await BillingCycle.find({
       status: "active",
       proRatedPaid: true,
@@ -719,7 +799,6 @@ export const autoGenerateMonthlyBills = async (
 
       if (!user || !plan) continue;
 
-      // Calculate the billing period for this cycle
       const billingStart = new Date(cycle.nextBillingDate);
       billingStart.setHours(0, 0, 0, 0);
 
@@ -732,8 +811,6 @@ export const autoGenerateMonthlyBills = async (
       dueDate.setDate(settings.dueDateDaysAfterPeriod || 5);
       dueDate.setHours(23, 59, 59, 999);
 
-      // FIXED: Check for existing bill for this SPECIFIC billing period only
-      // NOT any unpaid bill from any period
       const existingBillForThisPeriod = await Billing.findOne({
         userId: user._id,
         billingCycleId: cycle._id,
@@ -742,13 +819,11 @@ export const autoGenerateMonthlyBills = async (
         "billingPeriod.end": billingEnd,
       });
 
-      // If a bill for this exact period already exists, skip generation
       if (existingBillForThisPeriod) {
         console.log(
           `⏭️ Bill already exists for period ${billingStart.toLocaleDateString()} to ${billingEnd.toLocaleDateString()} for user ${user.email}`,
         );
 
-        // Check if this existing bill is overdue and handle suspension if needed
         if (existingBillForThisPeriod.status === "overdue") {
           const daysOverdue = Math.ceil(
             (today.getTime() - existingBillForThisPeriod.dueDate.getTime()) /
@@ -769,7 +844,6 @@ export const autoGenerateMonthlyBills = async (
         continue;
       }
 
-      // Create new bill for this period
       const bill = await Billing.create({
         userId: user._id,
         billingCycleId: cycle._id,
@@ -791,7 +865,6 @@ export const autoGenerateMonthlyBills = async (
         proRatedDays: 0,
       });
 
-      // Update next billing date to the 1st of next month
       const nextDate = new Date(billingStart);
       nextDate.setMonth(nextDate.getMonth() + 1);
       nextDate.setDate(1);
@@ -897,7 +970,7 @@ export const autoSuspendOverdue = async (req?: AuthRequest, res?: Response) => {
   }
 };
 
-// ==================== GET ALL PENDING PRO-RATED BILLS ====================
+// ==================== GET PENDING PRO-RATED PAYMENTS ====================
 export const getPendingProRatedBills = async (
   req: AuthRequest,
   res: Response,
@@ -906,7 +979,7 @@ export const getPendingProRatedBills = async (
   try {
     const pendingBills = await Billing.find({
       isProRated: true,
-      status: "sent",
+      status: "pending_confirmation",
     })
       .populate("userId", "firstName lastName email username phoneNumber")
       .sort({ createdAt: -1 });
@@ -945,6 +1018,29 @@ export const getPendingActivations = async (
   }
 };
 
+// ==================== GET ALL UNPAID PRO-RATED BILLS ====================
+export const getUnpaidProRatedBills = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const unpaidBills = await Billing.find({
+      isProRated: true,
+      status: "sent",
+    })
+      .populate("userId", "firstName lastName email username phoneNumber")
+      .sort({ dueDate: 1 });
+
+    res.status(200).json({
+      success: true,
+      data: unpaidBills,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // ==================== GET BILLING SUMMARY FOR ADMIN ====================
 export const getBillingSummary = async (
   req: AuthRequest,
@@ -957,19 +1053,31 @@ export const getBillingSummary = async (
       proRatedPaid: true,
       manualBillStart: true,
     });
+
     const pendingProRated = await Billing.countDocuments({
       isProRated: true,
-      status: "sent",
+      status: "pending_confirmation",
     });
+
     const pendingActivations = await BillingCycle.countDocuments({
       status: "pending_activation",
       proRatedPaid: true,
       manualBillStart: false,
     });
+
     const overdueBills = await Billing.countDocuments({ status: "overdue" });
 
+    const unpaidProRated = await Billing.countDocuments({
+      isProRated: true,
+      status: "sent",
+    });
+
     const outstandingResult = await Billing.aggregate([
-      { $match: { status: { $in: ["sent", "overdue"] } } },
+      {
+        $match: {
+          status: { $in: ["sent", "overdue", "pending_confirmation"] },
+        },
+      },
       { $group: { _id: null, total: { $sum: "$total" } } },
     ]);
 
@@ -993,6 +1101,7 @@ export const getBillingSummary = async (
         overdueAccounts: overdueBills,
         totalOutstanding: totalOutstanding,
         monthlyRevenue: monthlyRevenue[0]?.total || 0,
+        unpaidProRated: unpaidProRated,
       },
     });
   } catch (error) {
@@ -1022,20 +1131,24 @@ export const getUserCurrentBilling = async (
       });
     }
 
-    // Case 1: Pro-rated not yet paid
     if (!billingCycle.proRatedPaid) {
       const proRatedBill = await Billing.findOne({
         userId,
         billingCycleId: billingCycle._id,
         isProRated: true,
+        status: { $in: ["sent", "pending_confirmation"] },
       });
+
+      const isPendingConfirmation =
+        proRatedBill?.status === "pending_confirmation";
 
       return res.status(200).json({
         success: true,
         data: {
           billingCycle,
           currentBill: proRatedBill,
-          needsFirstPayment: true,
+          needsFirstPayment: !isPendingConfirmation,
+          isPendingConfirmation: isPendingConfirmation,
           firstBillAmount: proRatedBill?.total,
           firstBillDueDate: proRatedBill?.dueDate,
           hasOverdue: proRatedBill?.status === "overdue",
@@ -1043,7 +1156,6 @@ export const getUserCurrentBilling = async (
           overdueAmount:
             proRatedBill?.status === "overdue" ? proRatedBill?.total || 0 : 0,
           upcomingBills: [],
-          isPendingPayment: false,
           waitingForAdminActivation: false,
           freeDays: billingCycle.freeDays,
           actualBillableDays: billingCycle.actualBillableDays,
@@ -1051,7 +1163,6 @@ export const getUserCurrentBilling = async (
       });
     }
 
-    // Case 2: Pro-rated paid but waiting for admin to start monthly billing
     if (billingCycle.proRatedPaid && !billingCycle.manualBillStart) {
       return res.status(200).json({
         success: true,
@@ -1068,7 +1179,6 @@ export const getUserCurrentBilling = async (
       });
     }
 
-    // Case 3: Active monthly billing - Get current unpaid bill for THIS period only
     const currentBill = await Billing.findOne({
       userId,
       billingCycleId: billingCycle._id,
