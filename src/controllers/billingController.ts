@@ -679,7 +679,7 @@ export const markBillAsPaid = async (
   }
 };
 
-// ==================== AUTO-GENERATE MONTHLY BILLS ====================
+// ==================== AUTO-GENERATE MONTHLY BILLS (FIXED) ====================
 export const autoGenerateMonthlyBills = async (
   req?: AuthRequest,
   res?: Response,
@@ -699,6 +699,7 @@ export const autoGenerateMonthlyBills = async (
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
+    // Get all active billing cycles where nextBillingDate is today or earlier
     const billingCycles = await BillingCycle.find({
       status: "active",
       proRatedPaid: true,
@@ -718,36 +719,7 @@ export const autoGenerateMonthlyBills = async (
 
       if (!user || !plan) continue;
 
-      const unpaidBills = await Billing.findOne({
-        userId: user._id,
-        billingCycleId: cycle._id,
-        isProRated: false,
-        status: { $in: ["sent", "overdue"] },
-      });
-
-      if (unpaidBills) {
-        const daysOverdue = Math.ceil(
-          (today.getTime() - unpaidBills.dueDate.getTime()) /
-            (1000 * 60 * 60 * 24),
-        );
-
-        if (daysOverdue > 0 && unpaidBills.status !== "overdue") {
-          unpaidBills.status = "overdue";
-          await unpaidBills.save();
-          console.log(`⚠️ Bill ${unpaidBills.invoiceNumber} marked as overdue`);
-        }
-
-        if (
-          daysOverdue >= settings.gracePeriodDays &&
-          user.status !== "suspended"
-        ) {
-          user.status = "suspended";
-          await user.save();
-          console.log(`🔴 User ${user.email} suspended due to non-payment`);
-        }
-        continue;
-      }
-
+      // Calculate the billing period for this cycle
       const billingStart = new Date(cycle.nextBillingDate);
       billingStart.setHours(0, 0, 0, 0);
 
@@ -760,49 +732,85 @@ export const autoGenerateMonthlyBills = async (
       dueDate.setDate(settings.dueDateDaysAfterPeriod || 5);
       dueDate.setHours(23, 59, 59, 999);
 
-      const existingBill = await Billing.findOne({
+      // FIXED: Check for existing bill for this SPECIFIC billing period only
+      // NOT any unpaid bill from any period
+      const existingBillForThisPeriod = await Billing.findOne({
         userId: user._id,
         billingCycleId: cycle._id,
+        isProRated: false,
         "billingPeriod.start": billingStart,
+        "billingPeriod.end": billingEnd,
       });
 
-      if (!existingBill) {
-        const bill = await Billing.create({
-          userId: user._id,
-          billingCycleId: cycle._id,
-          invoiceNumber: generateInvoiceNumber(),
-          billingPeriod: { start: billingStart, end: billingEnd },
-          dueDate: dueDate,
-          items: [
-            {
-              description: `Monthly Subscription - ${billingStart.toLocaleDateString()} to ${billingEnd.toLocaleDateString()}`,
-              quantity: 1,
-              rate: plan.price,
-              amount: plan.price,
-            },
-          ],
-          subtotal: plan.price,
-          total: plan.price,
-          status: "sent",
-          isProRated: false,
-          proRatedDays: 0,
-        });
+      // If a bill for this exact period already exists, skip generation
+      if (existingBillForThisPeriod) {
+        console.log(
+          `⏭️ Bill already exists for period ${billingStart.toLocaleDateString()} to ${billingEnd.toLocaleDateString()} for user ${user.email}`,
+        );
 
-        const nextDate = new Date(billingStart);
-        nextDate.setMonth(nextDate.getMonth() + 1);
-        nextDate.setDate(1);
-        cycle.nextBillingDate = nextDate;
-        await cycle.save();
+        // Check if this existing bill is overdue and handle suspension if needed
+        if (existingBillForThisPeriod.status === "overdue") {
+          const daysOverdue = Math.ceil(
+            (today.getTime() - existingBillForThisPeriod.dueDate.getTime()) /
+              (1000 * 60 * 60 * 24),
+          );
 
-        try {
-          await emailService.sendInvoice(user, bill);
-        } catch (emailError) {
-          console.error("Failed to send invoice email:", emailError);
+          if (
+            daysOverdue >= (settings.gracePeriodDays || 5) &&
+            user.status !== "suspended"
+          ) {
+            user.status = "suspended";
+            await user.save();
+            console.log(
+              `🔴 User ${user.email} suspended due to non-payment of bill ${existingBillForThisPeriod.invoiceNumber}`,
+            );
+          }
         }
-
-        generatedCount++;
-        console.log(`✅ Generated bill for ${user.email}: ₱${plan.price}`);
+        continue;
       }
+
+      // Create new bill for this period
+      const bill = await Billing.create({
+        userId: user._id,
+        billingCycleId: cycle._id,
+        invoiceNumber: generateInvoiceNumber(),
+        billingPeriod: { start: billingStart, end: billingEnd },
+        dueDate: dueDate,
+        items: [
+          {
+            description: `Monthly Subscription - ${billingStart.toLocaleDateString()} to ${billingEnd.toLocaleDateString()}`,
+            quantity: 1,
+            rate: plan.price,
+            amount: plan.price,
+          },
+        ],
+        subtotal: plan.price,
+        total: plan.price,
+        status: "sent",
+        isProRated: false,
+        proRatedDays: 0,
+      });
+
+      // Update next billing date to the 1st of next month
+      const nextDate = new Date(billingStart);
+      nextDate.setMonth(nextDate.getMonth() + 1);
+      nextDate.setDate(1);
+      cycle.nextBillingDate = nextDate;
+      await cycle.save();
+
+      try {
+        await emailService.sendInvoice(user, bill);
+        console.log(
+          `📧 Sent invoice email for ${bill.invoiceNumber} to ${user.email}`,
+        );
+      } catch (emailError) {
+        console.error("Failed to send invoice email:", emailError);
+      }
+
+      generatedCount++;
+      console.log(
+        `✅ Generated bill for ${user.email}: ₱${plan.price} for period ${billingStart.toLocaleDateString()} to ${billingEnd.toLocaleDateString()}`,
+      );
     }
 
     if (res) {
@@ -1060,7 +1068,7 @@ export const getUserCurrentBilling = async (
       });
     }
 
-    // Case 3: Active monthly billing
+    // Case 3: Active monthly billing - Get current unpaid bill for THIS period only
     const currentBill = await Billing.findOne({
       userId,
       billingCycleId: billingCycle._id,
