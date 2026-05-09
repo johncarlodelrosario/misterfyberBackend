@@ -1,4 +1,3 @@
-// models/BillingSettings.ts - COMPLETE with freeDays
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IBillingSettings extends Document {
@@ -53,6 +52,24 @@ const BillingSettingsSchema: Schema = new Schema(
     timestamps: true,
   },
 );
+
+// Create default settings if none exist
+BillingSettingsSchema.statics.getDefaultSettings = async function () {
+  let settings = await this.findOne();
+  if (!settings) {
+    settings = await this.create({
+      reminderDays: [7, 3, 1],
+      dueDateDaysAfterPeriod: 5,
+      gracePeriodDays: 5,
+      autoGenerateBills: true,
+      autoSendReminders: true,
+      autoSuspendOnNonPayment: true,
+      billingCycleDay: 1,
+      freeDays: 1,
+    });
+  }
+  return settings;
+};
 
 export default mongoose.model<IBillingSettings>(
   "BillingSettings",

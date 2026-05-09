@@ -1,4 +1,4 @@
-// models/Billing.ts - COMPLETE
+// models/Billing.ts - COMPLETE FIXED
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IBilling extends Document {

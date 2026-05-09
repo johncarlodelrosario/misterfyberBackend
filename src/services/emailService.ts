@@ -1057,4 +1057,5 @@ class EmailService {
     await this.sendToAdmin(`Service Interruption: ${user.email}`, adminHtml);
   }
 }
+
 export default new EmailService();

@@ -1,4 +1,4 @@
-// routes/billingRoutes.ts - COMPLETE FIXED with new routes
+// routes/billingRoutes.ts - COMPLETE FIXED
 import express from "express";
 import { body } from "express-validator";
 import {
@@ -10,6 +10,7 @@ import {
   getPendingActivations,
   getBillingSummary,
   getUserCurrentBilling,
+  getUserBillingHistory,
   getAllBillingCycles,
   getAllBills,
   stopBilling,
@@ -28,6 +29,7 @@ const router = express.Router();
 // ==================== USER ROUTES ====================
 router.get("/my-status", protect, getUserCurrentBilling);
 router.get("/user/current", protect, getUserCurrentBilling);
+router.get("/user/history", protect, getUserBillingHistory);
 
 // ==================== ADMIN ROUTES ====================
 
@@ -45,7 +47,7 @@ router.put(
   updateBillingSettings,
 );
 
-// Billing cycles - GET /api/billing/cycles
+// Billing cycles
 router.get(
   "/cycles",
   protect,
@@ -53,7 +55,7 @@ router.get(
   getAllBillingCycles,
 );
 
-// All bills - GET /api/billing/all-bills
+// All bills
 router.get(
   "/all-bills",
   protect,
@@ -61,7 +63,7 @@ router.get(
   getAllBills,
 );
 
-// Billing summary - GET /api/billing/summary
+// Billing summary
 router.get(
   "/summary",
   protect,
@@ -69,7 +71,7 @@ router.get(
   getBillingSummary,
 );
 
-// Pending pro-rated bills - GET /api/billing/pending-pro-rated
+// Pending pro-rated bills
 router.get(
   "/pending-pro-rated",
   protect,
@@ -77,7 +79,7 @@ router.get(
   getPendingProRatedBills,
 );
 
-// Pending activations (pro-rated paid, waiting for admin to start monthly billing)
+// Pending activations
 router.get(
   "/pending-activations",
   protect,
@@ -85,7 +87,7 @@ router.get(
   getPendingActivations,
 );
 
-// Start billing (with pro-rated calculation) - POST /api/billing/start
+// Start billing
 router.post(
   "/start",
   protect,
@@ -98,7 +100,7 @@ router.post(
   startBilling,
 );
 
-// Confirm pro-rated payment (activate service) - POST /api/billing/confirm-pro-rated
+// Confirm pro-rated payment
 router.post(
   "/confirm-pro-rated",
   protect,
@@ -110,7 +112,7 @@ router.post(
   confirmProRatedPayment,
 );
 
-// Start monthly billing (admin action after pro-rated payment) - POST /api/billing/start-monthly
+// Start monthly billing
 router.post(
   "/start-monthly",
   protect,
@@ -119,7 +121,7 @@ router.post(
   startMonthlyBilling,
 );
 
-// Mark any bill as paid (admin override) - PUT /api/billing/mark-paid/:billId
+// Mark bill as paid
 router.put(
   "/mark-paid/:billId",
   protect,
@@ -131,7 +133,7 @@ router.put(
   markBillAsPaid,
 );
 
-// Stop billing - POST /api/billing/stop
+// Stop billing
 router.post(
   "/stop",
   protect,
