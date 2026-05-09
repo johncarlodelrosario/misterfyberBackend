@@ -760,6 +760,107 @@ export const submitProRatedPayment = async (
   }
 };
 
+// ==================== SUBMIT MONTHLY PAYMENT (USER ACTION) - CURRENT MONTH ONLY ====================
+export const submitMonthlyPayment = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { billId, referenceNumber, notes } = req.body;
+    const userId = req.user?._id;
+
+    const bill = await Billing.findOne({
+      _id: billId,
+      userId,
+      isProRated: false,
+      status: "sent",
+    });
+
+    if (!bill) {
+      return res.status(404).json({
+        success: false,
+        message: "Bill not found or already paid",
+      });
+    }
+
+    // ONLY ALLOW PAYMENT FOR CURRENT MONTH'S BILL
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const billStartDate = new Date(bill.billingPeriod.start);
+    const currentMonth = today.getMonth();
+    const currentYear = today.getFullYear();
+    const billMonth = billStartDate.getMonth();
+    const billYear = billStartDate.getFullYear();
+
+    const isCurrentMonth =
+      billYear === currentYear && billMonth === currentMonth;
+
+    if (!isCurrentMonth) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "You can only pay for the current month's bill. Please contact admin for older bills.",
+      });
+    }
+
+    bill.status = "pending_confirmation";
+    await bill.save({ session });
+
+    const payment = await Payment.create(
+      [
+        {
+          userId,
+          amount: bill.total,
+          paymentMethod: "manual",
+          paymentType: "subscription",
+          status: "pending",
+          referenceNumber: referenceNumber || `PAY-${Date.now()}`,
+          billingId: bill._id,
+          paymentDetails: {
+            gateway: "manual",
+            gatewayResponse: {
+              submittedBy: userId,
+              submittedAt: new Date(),
+              notes: notes || "Payment submitted by user",
+            },
+          },
+          paidAt: new Date(),
+        },
+      ],
+      { session },
+    );
+
+    bill.paymentId = payment[0]._id;
+    await bill.save({ session });
+
+    await session.commitTransaction();
+
+    console.log(
+      `💰 Monthly payment submitted for user ${userId}, bill ${bill.invoiceNumber}. Awaiting admin confirmation.`,
+    );
+
+    res.status(200).json({
+      success: true,
+      message:
+        "Payment submitted successfully! Please wait for admin confirmation.",
+      data: {
+        bill,
+        payment: payment[0],
+        status: "pending_confirmation",
+      },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
 // ==================== AUTO-GENERATE MONTHLY BILLS ====================
 export const autoGenerateMonthlyBills = async (
   req?: AuthRequest,

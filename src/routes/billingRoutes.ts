@@ -1,4 +1,3 @@
-// routes/billingRoutes.ts - COMPLETE FIXED
 import express from "express";
 import { body } from "express-validator";
 import {
@@ -21,6 +20,8 @@ import {
   autoSuspendOverdue,
   getBillingSettings,
   updateBillingSettings,
+  submitProRatedPayment,
+  submitMonthlyPayment,
 } from "../controllers/billingController";
 import { protect, authorize } from "../middleware/auth";
 
@@ -30,6 +31,8 @@ const router = express.Router();
 router.get("/my-status", protect, getUserCurrentBilling);
 router.get("/user/current", protect, getUserCurrentBilling);
 router.get("/user/history", protect, getUserBillingHistory);
+router.post("/user/submit-pro-rated", protect, submitProRatedPayment);
+router.post("/user/submit-monthly", protect, submitMonthlyPayment);
 
 // ==================== ADMIN ROUTES ====================
 

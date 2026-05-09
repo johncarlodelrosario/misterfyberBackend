@@ -1,4 +1,3 @@
-// models/BillingCycle.ts - COMPLETE
 import mongoose, { Document, Schema } from "mongoose";
 
 export interface IBillingCycle extends Document {

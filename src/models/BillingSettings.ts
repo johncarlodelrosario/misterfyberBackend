@@ -53,7 +53,6 @@ const BillingSettingsSchema: Schema = new Schema(
   },
 );
 
-// Create default settings if none exist
 BillingSettingsSchema.statics.getDefaultSettings = async function () {
   let settings = await this.findOne();
   if (!settings) {

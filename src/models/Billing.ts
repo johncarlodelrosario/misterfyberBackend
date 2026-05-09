@@ -1,4 +1,3 @@
-// models/Billing.ts - COMPLETE FIXED
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IBilling extends Document {
@@ -19,7 +18,13 @@ export interface IBilling extends Document {
   tax: number;
   discount: number;
   total: number;
-  status: "draft" | "sent" | "paid" | "overdue" | "cancelled";
+  status:
+    | "draft"
+    | "sent"
+    | "paid"
+    | "overdue"
+    | "cancelled"
+    | "pending_confirmation";
   paymentId: mongoose.Types.ObjectId;
   notes: string;
   isProRated: boolean;
@@ -73,7 +78,14 @@ const BillingSchema: Schema = new Schema(
     total: { type: Number, required: true },
     status: {
       type: String,
-      enum: ["draft", "sent", "paid", "overdue", "cancelled"],
+      enum: [
+        "draft",
+        "sent",
+        "paid",
+        "overdue",
+        "cancelled",
+        "pending_confirmation",
+      ],
       default: "draft",
     },
     paymentId: { type: Schema.Types.ObjectId, ref: "Payment" },
