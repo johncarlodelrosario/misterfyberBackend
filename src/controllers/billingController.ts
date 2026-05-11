@@ -1210,7 +1210,7 @@ export const getBillingSummary = async (
   }
 };
 
-// ==================== GET USER'S CURRENT BILLING STATUS ====================
+// ==================== GET USER'S CURRENT BILLING STATUS (FIXED) ====================
 export const getUserCurrentBilling = async (
   req: AuthRequest,
   res: Response,
@@ -1232,16 +1232,29 @@ export const getUserCurrentBilling = async (
       });
     }
 
-    if (!billingCycle.proRatedPaid) {
-      const proRatedBill = await Billing.findOne({
-        userId,
-        billingCycleId: billingCycle._id,
-        isProRated: true,
-        status: { $in: ["sent", "pending_confirmation"] },
-      });
+    // Get the pro-rated bill
+    const proRatedBill = await Billing.findOne({
+      userId,
+      billingCycleId: billingCycle._id,
+      isProRated: true,
+    });
 
+    // CHECK IF PRO-RATED BILL IS ALREADY PAID
+    const isProRatedBillPaid = proRatedBill?.status === "paid";
+    const isProRatedPaid =
+      billingCycle.proRatedPaid === true || isProRatedBillPaid;
+
+    // If pro-rated bill is paid but billing cycle not updated, update it
+    if (isProRatedBillPaid && !billingCycle.proRatedPaid) {
+      billingCycle.proRatedPaid = true;
+      billingCycle.proRatedPaidAt = new Date();
+      await billingCycle.save();
+    }
+
+    // CASE 1: Pro-rated bill exists and is NOT paid (needs first payment)
+    if (proRatedBill && !isProRatedPaid) {
       const isPendingConfirmation =
-        proRatedBill?.status === "pending_confirmation";
+        proRatedBill.status === "pending_confirmation";
 
       return res.status(200).json({
         success: true,
@@ -1249,13 +1262,13 @@ export const getUserCurrentBilling = async (
           billingCycle,
           currentBill: proRatedBill,
           needsFirstPayment: !isPendingConfirmation,
-          isPendingConfirmation: isPendingConfirmation,
-          firstBillAmount: proRatedBill?.total,
-          firstBillDueDate: proRatedBill?.dueDate,
-          hasOverdue: proRatedBill?.status === "overdue",
-          overdueCount: proRatedBill?.status === "overdue" ? 1 : 0,
+          isPendingPayment: isPendingConfirmation,
+          firstBillAmount: proRatedBill.total,
+          firstBillDueDate: proRatedBill.dueDate,
+          hasOverdue: proRatedBill.status === "overdue",
+          overdueCount: proRatedBill.status === "overdue" ? 1 : 0,
           overdueAmount:
-            proRatedBill?.status === "overdue" ? proRatedBill?.total || 0 : 0,
+            proRatedBill.status === "overdue" ? proRatedBill.total : 0,
           upcomingBills: [],
           waitingForAdminActivation: false,
           freeDays: billingCycle.freeDays,
@@ -1264,7 +1277,8 @@ export const getUserCurrentBilling = async (
       });
     }
 
-    if (billingCycle.proRatedPaid && !billingCycle.manualBillStart) {
+    // CASE 2: Pro-rated is paid but monthly billing not started yet
+    if (isProRatedPaid && !billingCycle.manualBillStart) {
       return res.status(200).json({
         success: true,
         data: {
@@ -1280,6 +1294,7 @@ export const getUserCurrentBilling = async (
       });
     }
 
+    // CASE 3: Monthly billing is active - get current unpaid bill
     const currentBill = await Billing.findOne({
       userId,
       billingCycleId: billingCycle._id,
