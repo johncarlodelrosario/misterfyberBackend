@@ -320,7 +320,7 @@ export const startBilling = async (
   }
 };
 
-// ==================== CONFIRM PRO-RATED PAYMENT ====================
+// ==================== CONFIRM PRO-RATED PAYMENT (FIXED - Updates billing cycle status) ====================
 export const confirmProRatedPayment = async (
   req: AuthRequest,
   res: Response,
@@ -400,8 +400,14 @@ export const confirmProRatedPayment = async (
     proRatedBill.paymentId = payment[0]._id;
     await proRatedBill.save({ session });
 
+    // FIX: Update billing cycle - mark pro-rated as paid
     billingCycle.proRatedPaid = true;
     billingCycle.proRatedPaidAt = new Date();
+
+    // FIX: Update billing cycle status from pending_activation to active
+    // This is the key fix - change status to active when payment is confirmed
+    billingCycle.status = "active";
+
     await billingCycle.save({ session });
 
     await session.commitTransaction();
@@ -411,18 +417,16 @@ export const confirmProRatedPayment = async (
       "Pro-rated Payment Confirmed - Mister Fyber",
       `<p>Dear ${user.firstName || user.username} ${user.lastName || ""},</p>
        <p>Your pro-rated payment of ₱${proRatedBill.total.toFixed(2)} has been confirmed.</p>
-       <p>Your account is now pending activation of monthly billing.</p>
-       <p>Once the admin starts your monthly billing cycle, you will receive your first monthly invoice.</p>
+       <p>Your billing cycle is now active. Your monthly bills will be generated automatically.</p>
        <p>Thank you for choosing Mister Fyber!</p>`,
     );
 
     res.status(200).json({
       success: true,
-      message:
-        "Pro-rated payment confirmed. Waiting for admin to start monthly billing.",
+      message: "Pro-rated payment confirmed. Billing cycle is now active.",
       data: {
         payment: payment[0],
-        requiresManualBillStart: true,
+        billingCycle: billingCycle,
       },
     });
   } catch (error) {
@@ -577,7 +581,7 @@ export const startMonthlyBilling = async (
   }
 };
 
-// ==================== MARK BILL AS PAID ====================
+// ==================== MARK BILL AS PAID (FIXED - Updates billing cycle status for pro-rated bills) ====================
 export const markBillAsPaid = async (
   req: AuthRequest,
   res: Response,
@@ -642,6 +646,17 @@ export const markBillAsPaid = async (
         amount: bill.total,
         paidAt: new Date(),
       });
+
+      // FIX: If this is a pro-rated bill being marked as paid, update the billing cycle
+      if (bill.isProRated && !billingCycle.proRatedPaid) {
+        billingCycle.proRatedPaid = true;
+        billingCycle.proRatedPaidAt = new Date();
+        // Also update status from pending_activation to active
+        if (billingCycle.status === "pending_activation") {
+          billingCycle.status = "active";
+        }
+      }
+
       await billingCycle.save({ session });
     }
 
@@ -1248,6 +1263,10 @@ export const getUserCurrentBilling = async (
     if (isProRatedBillPaid && !billingCycle.proRatedPaid) {
       billingCycle.proRatedPaid = true;
       billingCycle.proRatedPaidAt = new Date();
+      // Also update status if it's still pending_activation
+      if (billingCycle.status === "pending_activation") {
+        billingCycle.status = "active";
+      }
       await billingCycle.save();
     }
 
@@ -1277,60 +1296,58 @@ export const getUserCurrentBilling = async (
       });
     }
 
-    // CASE 2: Pro-rated is paid but monthly billing not started yet
-    if (isProRatedPaid && !billingCycle.manualBillStart) {
+    // CASE 2: Pro-rated is paid - billing cycle is active
+    if (isProRatedPaid) {
+      // Get current unpaid bill (monthly)
+      const currentBill = await Billing.findOne({
+        userId,
+        billingCycleId: billingCycle._id,
+        isProRated: false,
+        status: { $in: ["sent", "overdue"] },
+      }).sort({ dueDate: 1 });
+
+      const upcomingBills = await Billing.find({
+        userId,
+        billingCycleId: billingCycle._id,
+        isProRated: false,
+        status: "draft",
+      }).sort({ dueDate: 1 });
+
+      const hasOverdue = currentBill?.status === "overdue";
+
       return res.status(200).json({
         success: true,
         data: {
           billingCycle,
-          currentBill: null,
+          currentBill: currentBill || null,
+          upcomingBills,
+          hasOverdue: hasOverdue || false,
+          overdueCount: hasOverdue ? 1 : 0,
+          overdueAmount: hasOverdue ? currentBill?.total || 0 : 0,
           needsFirstPayment: false,
-          waitingForAdminActivation: true,
-          message:
-            "Your pro-rated payment has been confirmed. Please wait for the admin to activate your monthly billing.",
+          isPendingPayment: false,
+          waitingForAdminActivation: false,
           freeDays: billingCycle.freeDays,
           actualBillableDays: billingCycle.actualBillableDays,
         },
       });
     }
 
-    // CASE 3: Monthly billing is active - get current unpaid bill
-    const currentBill = await Billing.findOne({
-      userId,
-      billingCycleId: billingCycle._id,
-      isProRated: false,
-      status: { $in: ["sent", "overdue"] },
-    }).sort({ dueDate: 1 });
-
-    const paidHistory = await Billing.find({
-      userId,
-      billingCycleId: billingCycle._id,
-      isProRated: false,
-      status: "paid",
-    }).sort({ dueDate: -1 });
-
-    const upcomingBills = await Billing.find({
-      userId,
-      billingCycleId: billingCycle._id,
-      isProRated: false,
-      status: "draft",
-    }).sort({ dueDate: 1 });
-
-    const hasOverdue = currentBill?.status === "overdue";
-
+    // Default fallback
     res.status(200).json({
       success: true,
       data: {
         billingCycle,
-        currentBill,
-        upcomingBills,
-        hasOverdue,
-        overdueCount: hasOverdue ? 1 : 0,
-        overdueAmount: hasOverdue ? currentBill?.total || 0 : 0,
+        currentBill: null,
+        upcomingBills: [],
+        hasOverdue: false,
+        overdueCount: 0,
+        overdueAmount: 0,
         needsFirstPayment: false,
         isPendingPayment: false,
         waitingForAdminActivation: false,
-        paidHistory,
+        freeDays: billingCycle.freeDays,
+        actualBillableDays: billingCycle.actualBillableDays,
       },
     });
   } catch (error) {
