@@ -320,7 +320,7 @@ export const startBilling = async (
   }
 };
 
-// ==================== CONFIRM PRO-RATED PAYMENT (FIXED - Updates billing cycle status) ====================
+// ==================== CONFIRM PRO-RATED PAYMENT ====================
 export const confirmProRatedPayment = async (
   req: AuthRequest,
   res: Response,
@@ -400,17 +400,11 @@ export const confirmProRatedPayment = async (
     proRatedBill.paymentId = payment[0]._id;
     await proRatedBill.save({ session });
 
-    // Update billing cycle - mark pro-rated as paid
     billingCycle.proRatedPaid = true;
     billingCycle.proRatedPaidAt = new Date();
-
-    // IMPORTANT FIX: Update billing cycle status from pending_activation to active
-    // This allows the user to see they have paid and are now active
     billingCycle.status = "active";
-
     await billingCycle.save({ session });
 
-    // Also update user status to active
     user.status = "active";
     await user.save({ session });
 
@@ -441,7 +435,7 @@ export const confirmProRatedPayment = async (
   }
 };
 
-// ==================== START MONTHLY BILLING (ADMIN ACTION) ====================
+// ==================== START MONTHLY BILLING ====================
 export const startMonthlyBilling = async (
   req: AuthRequest,
   res: Response,
@@ -585,7 +579,7 @@ export const startMonthlyBilling = async (
   }
 };
 
-// ==================== MARK BILL AS PAID (FIXED - Updates billing cycle status for pro-rated bills) ====================
+// ==================== MARK BILL AS PAID ====================
 export const markBillAsPaid = async (
   req: AuthRequest,
   res: Response,
@@ -651,11 +645,9 @@ export const markBillAsPaid = async (
         paidAt: new Date(),
       });
 
-      // IMPORTANT FIX: If this is a pro-rated bill being marked as paid, update the billing cycle
       if (bill.isProRated && !billingCycle.proRatedPaid) {
         billingCycle.proRatedPaid = true;
         billingCycle.proRatedPaidAt = new Date();
-        // Also update status from pending_activation to active
         if (billingCycle.status === "pending_activation") {
           billingCycle.status = "active";
         }
@@ -664,7 +656,6 @@ export const markBillAsPaid = async (
       await billingCycle.save({ session });
     }
 
-    // Update user status to active if it was pending activation
     if (user.status === "pending_activation") {
       user.status = "active";
       await user.save({ session });
@@ -704,7 +695,7 @@ export const markBillAsPaid = async (
   }
 };
 
-// ==================== SUBMIT PRO-RATED PAYMENT (USER ACTION) ====================
+// ==================== SUBMIT PRO-RATED PAYMENT ====================
 export const submitProRatedPayment = async (
   req: AuthRequest,
   res: Response,
@@ -785,7 +776,7 @@ export const submitProRatedPayment = async (
   }
 };
 
-// ==================== SUBMIT MONTHLY PAYMENT (USER ACTION) - CURRENT MONTH ONLY ====================
+// ==================== SUBMIT MONTHLY PAYMENT ====================
 export const submitMonthlyPayment = async (
   req: AuthRequest,
   res: Response,
@@ -812,7 +803,6 @@ export const submitMonthlyPayment = async (
       });
     }
 
-    // ONLY ALLOW PAYMENT FOR CURRENT MONTH'S BILL
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const billStartDate = new Date(bill.billingPeriod.start);
@@ -1235,7 +1225,7 @@ export const getBillingSummary = async (
   }
 };
 
-// ==================== GET USER'S CURRENT BILLING STATUS (COMPLETELY FIXED) ====================
+// ==================== GET USER'S CURRENT BILLING STATUS (FIXED - RETURNS PRO-RATED BILL) ====================
 export const getUserCurrentBilling = async (
   req: AuthRequest,
   res: Response,
@@ -1246,6 +1236,7 @@ export const getUserCurrentBilling = async (
 
     console.log(`🔍 Getting current billing for user: ${userId}`);
 
+    // Get billing cycle
     const billingCycle = await BillingCycle.findOne({
       userId,
       status: { $in: ["active", "pending_activation"] },
@@ -1260,64 +1251,27 @@ export const getUserCurrentBilling = async (
       });
     }
 
-    console.log(
-      `Found billing cycle: ${billingCycle._id}, status: ${billingCycle.status}, proRatedPaid: ${billingCycle.proRatedPaid}`,
-    );
-
-    // Get the pro-rated bill
+    // Get the pro-rated bill (THIS IS THE IMPORTANT PART)
     const proRatedBill = await Billing.findOne({
       userId,
       billingCycleId: billingCycle._id,
       isProRated: true,
     });
 
-    // FIX: Check if pro-rated bill is paid (either through status or through billing cycle flag)
+    // Check if pro-rated bill is paid
     const isProRatedBillPaid = proRatedBill?.status === "paid";
     const isProRatedPaid =
       billingCycle.proRatedPaid === true || isProRatedBillPaid;
 
-    console.log(
-      `Pro-rated bill paid status: bill=${isProRatedBillPaid}, cycle=${billingCycle.proRatedPaid}, combined=${isProRatedPaid}`,
-    );
-
-    // CRITICAL FIX: If pro-rated bill is paid but billing cycle status is still pending_activation, update it
-    if (isProRatedBillPaid && !billingCycle.proRatedPaid) {
+    console.log(`Pro-rated bill found: ${proRatedBill ? "YES" : "NO"}`);
+    if (proRatedBill) {
       console.log(
-        `FIX: Updating billing cycle ${billingCycle._id} - marking pro-rated as paid`,
+        `Pro-rated bill amount: ₱${proRatedBill.total}, status: ${proRatedBill.status}`,
       );
-      billingCycle.proRatedPaid = true;
-      billingCycle.proRatedPaidAt = new Date();
-
-      // Also update status to active
-      if (billingCycle.status === "pending_activation") {
-        billingCycle.status = "active";
-        console.log(
-          `FIX: Updated billing cycle status from pending_activation to active`,
-        );
-      }
-      await billingCycle.save();
     }
+    console.log(`Is pro-rated paid: ${isProRatedPaid}`);
 
-    // If pro-rated is paid and billing cycle is pending_activation, mark as active
-    if (isProRatedPaid && billingCycle.status === "pending_activation") {
-      console.log(
-        `FIX: Billing cycle ${billingCycle._id} has pro-rated paid but status is pending_activation - updating to active`,
-      );
-      billingCycle.status = "active";
-      await billingCycle.save();
-    }
-
-    // Update user status if needed
-    const user = await User.findById(userId);
-    if (user && isProRatedPaid && user.status !== "active") {
-      console.log(
-        `FIX: Updating user ${userId} status from ${user.status} to active`,
-      );
-      user.status = "active";
-      await user.save();
-    }
-
-    // CASE 1: Pro-rated bill exists and is NOT paid (needs first payment)
+    // CRITICAL FIX: If pro-rated bill exists and is NOT paid, return the PRO-RATED BILL
     if (proRatedBill && !isProRatedPaid) {
       const isPendingConfirmation =
         proRatedBill.status === "pending_confirmation";
@@ -1325,15 +1279,13 @@ export const getUserCurrentBilling = async (
         proRatedBill.status === "overdue" ||
         new Date(proRatedBill.dueDate) < new Date();
 
-      console.log(
-        `Case 1: Pro-rated bill not paid - status: ${proRatedBill.status}`,
-      );
+      console.log(`RETURNING PRO-RATED BILL: ₱${proRatedBill.total}`);
 
       return res.status(200).json({
         success: true,
         data: {
           billingCycle,
-          currentBill: proRatedBill,
+          currentBill: proRatedBill, // <-- THIS IS THE PRO-RATED BILL (₱1,096.13)
           needsFirstPayment: !isPendingConfirmation && !isOverdue,
           isPendingPayment: isPendingConfirmation,
           firstBillAmount: proRatedBill.total,
@@ -1349,13 +1301,10 @@ export const getUserCurrentBilling = async (
       });
     }
 
-    // CASE 2: Pro-rated is paid - billing cycle is active
+    // If pro-rated is paid, then show monthly bills
     if (isProRatedPaid) {
-      console.log(
-        `Case 2: Pro-rated is paid - billing cycle status: ${billingCycle.status}`,
-      );
+      console.log(`Pro-rated is paid, showing monthly bills`);
 
-      // Get current unpaid monthly bill
       const currentBill = await Billing.findOne({
         userId,
         billingCycleId: billingCycle._id,
@@ -1371,7 +1320,6 @@ export const getUserCurrentBilling = async (
       }).sort({ dueDate: 1 });
 
       const hasOverdue = currentBill?.status === "overdue";
-      const isActive = billingCycle.status === "active";
 
       return res.status(200).json({
         success: true,
@@ -1387,14 +1335,13 @@ export const getUserCurrentBilling = async (
           waitingForAdminActivation: false,
           freeDays: billingCycle.freeDays,
           actualBillableDays: billingCycle.actualBillableDays,
-          isActive: isActive,
+          isActive: true,
           proRatedPaid: true,
         },
       });
     }
 
     // Default fallback
-    console.log(`Case 3: Default fallback - no pro-rated bill found`);
     res.status(200).json({
       success: true,
       data: {
