@@ -600,7 +600,6 @@ export const markBillAsPaid = async (
         .json({ success: false, message: "Bill not found" });
     }
 
-    // FIX: Prevent duplicate payment - check if bill is already paid
     if (bill.status === "paid") {
       return res
         .status(400)
@@ -609,7 +608,6 @@ export const markBillAsPaid = async (
 
     const user = bill.userId as any;
 
-    // FIX: Check if there's already a completed payment for this bill
     const existingPayment = await Payment.findOne({
       billingId: bill._id,
       status: "completed",
@@ -723,7 +721,6 @@ export const submitProRatedPayment = async (
     const { billId, referenceNumber, notes } = req.body;
     const userId = req.user?._id;
 
-    // FIX: Check if bill exists and is in correct state
     const bill = await Billing.findOne({
       _id: billId,
       userId,
@@ -737,7 +734,6 @@ export const submitProRatedPayment = async (
       });
     }
 
-    // FIX: Prevent duplicate submission - check if already paid or pending
     if (bill.status === "paid") {
       return res.status(400).json({
         success: false,
@@ -752,7 +748,6 @@ export const submitProRatedPayment = async (
       });
     }
 
-    // FIX: Check if there's already a pending payment
     const existingPendingPayment = await Payment.findOne({
       billingId: bill._id,
       status: "pending",
@@ -845,7 +840,6 @@ export const submitMonthlyPayment = async (
       });
     }
 
-    // FIX: Prevent duplicate payment
     if (bill.status === "paid") {
       return res.status(400).json({
         success: false,
@@ -860,7 +854,6 @@ export const submitMonthlyPayment = async (
       });
     }
 
-    // FIX: Check for existing pending payment
     const existingPendingPayment = await Payment.findOne({
       billingId: bill._id,
       status: "pending",
@@ -1240,6 +1233,10 @@ export const getBillingSummary = async (
       manualBillStart: true,
     });
 
+    const totalPausedCycles = await BillingCycle.countDocuments({
+      status: "paused",
+    });
+
     const pendingProRated = await Billing.countDocuments({
       isProRated: true,
       status: "pending_confirmation",
@@ -1282,6 +1279,7 @@ export const getBillingSummary = async (
       success: true,
       data: {
         activeSubscriptions: totalActiveCycles,
+        pausedSubscriptions: totalPausedCycles,
         pendingProRated: pendingProRated,
         pendingActivations: pendingActivations,
         overdueAccounts: overdueBills,
@@ -1527,7 +1525,7 @@ export const getAllBills = async (
   }
 };
 
-// ==================== STOP BILLING (FIXED) ====================
+// ==================== STOP BILLING ====================
 export const stopBilling = async (
   req: AuthRequest,
   res: Response,
@@ -1558,7 +1556,6 @@ export const stopBilling = async (
       });
     }
 
-    // Check for unpaid bills
     const unpaidBills = await Billing.findOne({
       userId,
       status: { $in: ["sent", "overdue", "pending_confirmation"] },
@@ -1576,11 +1573,9 @@ export const stopBilling = async (
     billingCycle.billingEndDate = new Date();
     await billingCycle.save({ session });
 
-    // Update user status
     user.status = "inactive";
     await user.save({ session });
 
-    // Disable in MikroTik if configured
     if (user.mikrotik?.username) {
       try {
         await mikrotikService.disablePPPoEUser(user);
@@ -1591,7 +1586,6 @@ export const stopBilling = async (
 
     await session.commitTransaction();
 
-    // Send notification email
     await emailService.sendEmail(
       user.email,
       "Your Billing Has Been Stopped - Mister Fyber",
@@ -1615,7 +1609,7 @@ export const stopBilling = async (
   }
 };
 
-// ==================== PAUSE BILLING (FOR VACATION) - NEW FUNCTION ====================
+// ==================== PAUSE BILLING (FOR VACATION) ====================
 export const pauseBilling = async (
   req: AuthRequest,
   res: Response,
@@ -1646,7 +1640,6 @@ export const pauseBilling = async (
       });
     }
 
-    // Check for unpaid bills
     const unpaidBills = await Billing.findOne({
       userId,
       status: { $in: ["sent", "overdue", "pending_confirmation"] },
@@ -1668,11 +1661,9 @@ export const pauseBilling = async (
       : undefined;
     await billingCycle.save({ session });
 
-    // Update user status
     user.status = "paused";
     await user.save({ session });
 
-    // Disable in MikroTik if configured
     if (user.mikrotik?.username) {
       try {
         await mikrotikService.disablePPPoEUser(user);
@@ -1683,7 +1674,6 @@ export const pauseBilling = async (
 
     await session.commitTransaction();
 
-    // Send notification email
     await emailService.sendEmail(
       user.email,
       "Your Service Has Been Paused - Mister Fyber",
@@ -1709,7 +1699,7 @@ export const pauseBilling = async (
   }
 };
 
-// ==================== RESUME BILLING (AFTER PAUSE) - NEW FUNCTION ====================
+// ==================== RESUME BILLING (AFTER PAUSE) ====================
 export const resumeBilling = async (
   req: AuthRequest,
   res: Response,
@@ -1753,11 +1743,9 @@ export const resumeBilling = async (
     billingCycle.pauseUntil = undefined;
     await billingCycle.save({ session });
 
-    // Update user status
     user.status = "active";
     await user.save({ session });
 
-    // Re-apply MikroTik plan if configured
     if (user.mikrotik?.username && user.planId) {
       try {
         await mikrotikService.applyPlanToUser(user, user.planId);
@@ -1768,7 +1756,6 @@ export const resumeBilling = async (
 
     await session.commitTransaction();
 
-    // Send notification email
     await emailService.sendEmail(
       user.email,
       "Your Service Has Been Resumed - Mister Fyber",
@@ -1791,7 +1778,7 @@ export const resumeBilling = async (
   }
 };
 
-// ==================== RECONNECT SERVICE (FIXED) ====================
+// ==================== RECONNECT SERVICE ====================
 export const reconnectClient = async (
   req: AuthRequest,
   res: Response,
@@ -1810,7 +1797,6 @@ export const reconnectClient = async (
         .json({ success: false, message: "User not found" });
     }
 
-    // Check for unpaid bills
     const unpaidBills = await Billing.findOne({
       userId,
       status: { $in: ["sent", "overdue"] },
@@ -1829,7 +1815,6 @@ export const reconnectClient = async (
     });
 
     if (billingCycle && billingCycle.status === "paused") {
-      // If paused, handle resume instead
       billingCycle.status = "active";
       const resumeDate = new Date();
       const nextBillingDate = new Date(resumeDate);
@@ -1877,7 +1862,7 @@ export const reconnectClient = async (
   }
 };
 
-// ==================== DISCONNECT SERVICE (FIXED) ====================
+// ==================== DISCONNECT SERVICE ====================
 export const disconnectClient = async (
   req: AuthRequest,
   res: Response,
@@ -1896,7 +1881,6 @@ export const disconnectClient = async (
         .json({ success: false, message: "User not found" });
     }
 
-    // Check for unpaid bills before disconnecting
     const unpaidBills = await Billing.findOne({
       userId,
       status: { $in: ["sent", "overdue"] },

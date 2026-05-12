@@ -1,4 +1,4 @@
-// models/User.ts - UPDATED (REMOVED ADMIN FIELDS)
+// models/User.ts - UPDATED (ADDED "paused" to status enum)
 import mongoose, { Schema, Document } from "mongoose";
 import bcrypt from "bcryptjs";
 
@@ -24,7 +24,7 @@ export interface IUser extends Document {
   idImage?: string;
   profilePicture?: string;
   planId?: mongoose.Types.ObjectId;
-  status: "active" | "inactive" | "suspended" | "pending";
+  status: "active" | "inactive" | "suspended" | "pending" | "paused";
   lastLogin?: Date;
   failedLoginAttempts: number;
   lastFailedLogin?: Date;
@@ -89,7 +89,7 @@ const UserSchema: Schema = new Schema(
     planId: { type: Schema.Types.ObjectId, ref: "Plan" },
     status: {
       type: String,
-      enum: ["active", "inactive", "suspended", "pending"],
+      enum: ["active", "inactive", "suspended", "pending", "paused"],
       default: "pending",
     },
     lastLogin: { type: Date },
