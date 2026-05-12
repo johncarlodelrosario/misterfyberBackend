@@ -579,7 +579,7 @@ export const startMonthlyBilling = async (
   }
 };
 
-// ==================== MARK BILL AS PAID (FIXED - NO DUPLICATE PAYMENTS) ====================
+// ==================== MARK BILL AS PAID ====================
 export const markBillAsPaid = async (
   req: AuthRequest,
   res: Response,
@@ -708,7 +708,7 @@ export const markBillAsPaid = async (
   }
 };
 
-// ==================== SUBMIT PRO-RATED PAYMENT (FIXED - NO DUPLICATE) ====================
+// ==================== SUBMIT PRO-RATED PAYMENT ====================
 export const submitProRatedPayment = async (
   req: AuthRequest,
   res: Response,
@@ -814,7 +814,7 @@ export const submitProRatedPayment = async (
   }
 };
 
-// ==================== SUBMIT MONTHLY PAYMENT (FIXED - NO DUPLICATE) ====================
+// ==================== SUBMIT MONTHLY PAYMENT ====================
 export const submitMonthlyPayment = async (
   req: AuthRequest,
   res: Response,
@@ -1699,17 +1699,23 @@ export const pauseBilling = async (
   }
 };
 
-// ==================== RESUME BILLING (AFTER PAUSE) ====================
+// ==================== RESUME BILLING (AFTER PAUSE) - FIXED ====================
 export const resumeBilling = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
   try {
     const { userId } = req.body;
+
+    console.log(`🔄 Resuming billing for user: ${userId}`);
+
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        message: "User ID is required",
+      });
+    }
 
     const user = await User.findById(userId).populate("planId");
     if (!user) {
@@ -1726,7 +1732,7 @@ export const resumeBilling = async (
     if (!billingCycle) {
       return res.status(404).json({
         success: false,
-        message: "No paused billing cycle found",
+        message: "No paused billing cycle found for this user",
       });
     }
 
@@ -1734,28 +1740,32 @@ export const resumeBilling = async (
     const nextBillingDate = new Date(resumeDate);
     nextBillingDate.setMonth(nextBillingDate.getMonth() + 1);
     nextBillingDate.setDate(1);
+    nextBillingDate.setHours(0, 0, 0, 0);
 
+    // Update billing cycle
     billingCycle.status = "active";
     billingCycle.resumedAt = resumeDate;
     billingCycle.nextBillingDate = nextBillingDate;
     billingCycle.pausedAt = undefined;
     billingCycle.pauseReason = undefined;
     billingCycle.pauseUntil = undefined;
-    await billingCycle.save({ session });
+    await billingCycle.save();
 
+    // Update user status
     user.status = "active";
-    await user.save({ session });
+    await user.save();
 
-    if (user.mikrotik?.username && user.planId) {
+    // Re-apply MikroTik plan if configured
+    if (user.mikrotik && user.mikrotik.username && user.planId) {
       try {
         await mikrotikService.applyPlanToUser(user, user.planId);
+        console.log(`✅ MikroTik user ${user.mikrotik.username} re-enabled`);
       } catch (error) {
         console.error("Error enabling user in MikroTik:", error);
       }
     }
 
-    await session.commitTransaction();
-
+    // Send notification email
     await emailService.sendEmail(
       user.email,
       "Your Service Has Been Resumed - Mister Fyber",
@@ -1768,13 +1778,16 @@ export const resumeBilling = async (
     res.status(200).json({
       success: true,
       message: `Service resumed for ${user.firstName} ${user.lastName}`,
-      data: { billingCycle, resumeDate, nextBillingDate },
+      data: {
+        billingCycle,
+        resumeDate,
+        nextBillingDate,
+        userStatus: user.status,
+      },
     });
   } catch (error) {
-    await session.abortTransaction();
+    console.error("Error in resumeBilling:", error);
     next(error);
-  } finally {
-    session.endSession();
   }
 };
 
