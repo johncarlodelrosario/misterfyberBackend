@@ -1,15 +1,12 @@
-// middleware/auth.ts - COMPLETE FIXED FILE
+// middleware/auth.ts - COMPLETE FIXED (NO DUPLICATES)
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import User from "../models/User";
 import Admin from "../models/Admin";
 
-interface AuthRequest extends Request {
+export interface AuthRequest extends Request {
   user?: any;
   admin?: any;
-  headers: any;
-  method: string;
-  url: string;
 }
 
 export const protect = async (
@@ -17,19 +14,25 @@ export const protect = async (
   res: Response,
   next: NextFunction,
 ) => {
-  let token;
+  let token: string | undefined;
 
+  // Check for token in headers
   if (
     req.headers.authorization &&
     req.headers.authorization.startsWith("Bearer")
   ) {
     token = req.headers.authorization.split(" ")[1];
   }
+  // Check for token in cookies
+  else if (req.cookies && req.cookies.token) {
+    token = req.cookies.token;
+  }
 
   if (!token) {
+    console.log("[Auth] No token found");
     return res.status(401).json({
       success: false,
-      message: "Not authorized to access this route",
+      message: "Not authorized to access this route. Please login.",
     });
   }
 
@@ -38,6 +41,11 @@ export const protect = async (
       id: string;
       role?: string;
     };
+
+    console.log("[Auth] Decoded token:", {
+      id: decoded.id,
+      role: decoded.role,
+    });
 
     // Check if it's an admin token (has role field)
     if (decoded.role) {
@@ -48,8 +56,7 @@ export const protect = async (
           .json({ success: false, message: "Admin not found" });
       }
       req.user = admin;
-      req.admin = admin;
-      console.log(`✅ Authenticated: ${admin.email} (${admin.role})`);
+      console.log(`✅ Authenticated Admin: ${admin.email} (${admin.role})`);
     } else {
       // Regular user (no role field in token)
       const user = await User.findById(decoded.id);
@@ -59,15 +66,15 @@ export const protect = async (
           .json({ success: false, message: "User not found" });
       }
       req.user = user;
-      console.log(`✅ Authenticated: ${user.email} (user)`);
+      console.log(`✅ Authenticated User: ${user.email}`);
     }
 
     next();
-  } catch (error) {
-    console.error("Auth error:", error);
+  } catch (error: any) {
+    console.error("[Auth] Verification error:", error.message);
     return res.status(401).json({
       success: false,
-      message: "Not authorized to access this route",
+      message: "Not authorized. Invalid or expired token.",
     });
   }
 };
@@ -76,8 +83,9 @@ export const authorize = (...roles: string[]) => {
   return (req: AuthRequest, res: Response, next: NextFunction) => {
     const userRole = req.user?.role;
 
-    console.log(`🔐 Authorize - User role: ${userRole}`);
-    console.log(`🔐 Authorize - Allowed roles: [${roles.join(", ")}]`);
+    console.log(
+      `🔐 Authorize - User role: ${userRole}, Allowed: [${roles.join(", ")}]`,
+    );
 
     if (!userRole) {
       return res.status(403).json({
@@ -86,7 +94,6 @@ export const authorize = (...roles: string[]) => {
       });
     }
 
-    // Check if user role is in allowed roles
     if (!roles.includes(userRole)) {
       return res.status(403).json({
         success: false,
@@ -94,7 +101,7 @@ export const authorize = (...roles: string[]) => {
       });
     }
 
-    console.log(`✅ Authorized: ${userRole} -> ${req.method} ${req.url}`);
+    console.log(`✅ Authorized: ${userRole}`);
     next();
   };
 };
@@ -105,16 +112,16 @@ export const adminOnly = (
   next: NextFunction,
 ) => {
   if (!req.user) {
-    return res.status(401).json({ message: "Not authorized" });
+    return res.status(401).json({ success: false, message: "Not authorized" });
   }
 
   if (
     !req.user.role ||
-    (req.user.role !== "super_admin" &&
-      req.user.role !== "admin" &&
-      req.user.role !== "staff")
+    (req.user.role !== "super_admin" && req.user.role !== "admin")
   ) {
-    return res.status(403).json({ message: "Admin access required" });
+    return res
+      .status(403)
+      .json({ success: false, message: "Admin access required" });
   }
 
   next();
@@ -126,7 +133,7 @@ export const staffOrAdmin = (
   next: NextFunction,
 ) => {
   if (!req.user) {
-    return res.status(401).json({ message: "Not authorized" });
+    return res.status(401).json({ success: false, message: "Not authorized" });
   }
 
   const role = req.user.role;
@@ -134,7 +141,9 @@ export const staffOrAdmin = (
     !role ||
     (role !== "super_admin" && role !== "admin" && role !== "staff")
   ) {
-    return res.status(403).json({ message: "Staff or admin access required" });
+    return res
+      .status(403)
+      .json({ success: false, message: "Staff or admin access required" });
   }
 
   next();

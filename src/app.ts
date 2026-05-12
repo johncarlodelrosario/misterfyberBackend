@@ -1,10 +1,11 @@
-// server.ts - COMPLETE
+// server.ts - COMPLETE FIXED
 import express, { Application, Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
 import compression from "compression";
+import cookieParser from "cookie-parser"; // ADD THIS IMPORT
 import dotenv from "dotenv";
 import path from "path";
 import { createServer } from "http";
@@ -76,7 +77,12 @@ class App {
   }
 
   private ensureUploadDirectories(): void {
-    const dirs = ["uploads/id-cards", "uploads/payments", "uploads/temp"];
+    const dirs = [
+      "uploads/id-cards",
+      "uploads/payments",
+      "uploads/temp",
+      "uploads/profiles",
+    ];
     dirs.forEach((dir) => {
       const fullPath = path.join(__dirname, "../", dir);
       if (!fs.existsSync(fullPath)) {
@@ -122,11 +128,13 @@ class App {
           "Authorization",
           "X-Requested-With",
           "Accept",
+          "Cookie",
         ],
         exposedHeaders: ["Content-Range", "X-Content-Range"],
       }),
     );
 
+    this.app.use(cookieParser()); // ADD THIS LINE - CRITICAL!
     this.app.use(compression());
     this.app.use(morgan("dev"));
     this.app.use(express.json({ limit: "50mb" }));
@@ -234,7 +242,6 @@ class App {
   private initializeScheduledJobs(): void {
     console.log("🔄 Initializing scheduled billing jobs...");
 
-    // Auto-generate monthly bills - runs daily at 1 AM
     cron.schedule("0 1 * * *", async () => {
       try {
         console.log("🔄 Running auto-generate monthly bills job...");
@@ -245,7 +252,6 @@ class App {
       }
     });
 
-    // Auto-send reminders - runs daily at 9 AM
     cron.schedule("0 9 * * *", async () => {
       try {
         console.log("🔄 Running auto-send reminders job...");
@@ -256,7 +262,6 @@ class App {
       }
     });
 
-    // Auto-suspend overdue - runs daily at 2 AM
     cron.schedule("0 2 * * *", async () => {
       try {
         console.log("🔄 Running auto-suspend overdue job...");
@@ -268,9 +273,6 @@ class App {
     });
 
     console.log("✅ Scheduled billing jobs initialized");
-    console.log("   - Monthly bills generated at 1:00 AM daily");
-    console.log("   - Reminders sent at 9:00 AM daily");
-    console.log("   - Overdue accounts suspended at 2:00 AM daily");
   }
 
   public start(): void {
@@ -282,13 +284,10 @@ class App {
         `📁 Uploads directory: ${path.join(__dirname, "../uploads")}`,
       );
       console.log(
-        `✅ CORS enabled for: http://localhost:3000, https://www.misterfyber.com, https://misterfyber.com`,
+        `✅ CORS enabled for: http://localhost:3000, https://www.misterfyber.com`,
       );
       console.log(
         `📡 API available at: ${process.env.BASE_URL || `http://localhost:${PORT}`}/api`,
-      );
-      console.log(
-        `📁 Static files served from: ${process.env.BASE_URL || `http://localhost:${PORT}`}/uploads`,
       );
       console.log(`\n✅ All systems ready!\n`);
     });
