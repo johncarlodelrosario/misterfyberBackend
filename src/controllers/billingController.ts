@@ -1,3 +1,4 @@
+// billingController.ts - COMPLETE WORKING CODE
 import { Request, Response, NextFunction } from "express";
 import Billing from "../models/Billing";
 import BillingCycle from "../models/BillingCycle";
@@ -1609,17 +1610,23 @@ export const stopBilling = async (
   }
 };
 
-// ==================== PAUSE BILLING (FOR VACATION) ====================
+// ==================== PAUSE BILLING (FOR VACATION) - FIXED ====================
 export const pauseBilling = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
   try {
     const { userId, reason, pauseUntilDate } = req.body;
+
+    console.log(`⏸️ Pausing billing for user: ${userId}`);
+
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        message: "User ID is required",
+      });
+    }
 
     const user = await User.findById(userId);
     if (!user) {
@@ -1659,20 +1666,19 @@ export const pauseBilling = async (
     billingCycle.pauseUntil = pauseUntilDate
       ? new Date(pauseUntilDate)
       : undefined;
-    await billingCycle.save({ session });
+    await billingCycle.save();
 
     user.status = "paused";
-    await user.save({ session });
+    await user.save();
 
     if (user.mikrotik?.username) {
       try {
         await mikrotikService.disablePPPoEUser(user);
+        console.log(`🔌 MikroTik user ${user.mikrotik.username} disabled`);
       } catch (error) {
         console.error("Error disabling user in MikroTik:", error);
       }
     }
-
-    await session.commitTransaction();
 
     await emailService.sendEmail(
       user.email,
@@ -1692,10 +1698,8 @@ export const pauseBilling = async (
       data: { billingCycle, pauseDate, pauseUntil: pauseUntilDate },
     });
   } catch (error) {
-    await session.abortTransaction();
+    console.error("Error in pauseBilling:", error);
     next(error);
-  } finally {
-    session.endSession();
   }
 };
 
@@ -1742,7 +1746,6 @@ export const resumeBilling = async (
     nextBillingDate.setDate(1);
     nextBillingDate.setHours(0, 0, 0, 0);
 
-    // Update billing cycle
     billingCycle.status = "active";
     billingCycle.resumedAt = resumeDate;
     billingCycle.nextBillingDate = nextBillingDate;
@@ -1751,11 +1754,9 @@ export const resumeBilling = async (
     billingCycle.pauseUntil = undefined;
     await billingCycle.save();
 
-    // Update user status
     user.status = "active";
     await user.save();
 
-    // Re-apply MikroTik plan if configured
     if (user.mikrotik && user.mikrotik.username && user.planId) {
       try {
         await mikrotikService.applyPlanToUser(user, user.planId);
@@ -1765,7 +1766,6 @@ export const resumeBilling = async (
       }
     }
 
-    // Send notification email
     await emailService.sendEmail(
       user.email,
       "Your Service Has Been Resumed - Mister Fyber",
