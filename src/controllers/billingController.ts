@@ -1,3 +1,4 @@
+// controllers/billingController.ts - COMPLETE FIXED VERSION
 import { Request, Response, NextFunction } from "express";
 import Billing from "../models/Billing";
 import BillingCycle from "../models/BillingCycle";
@@ -1221,7 +1222,7 @@ export const getUnpaidProRatedBills = async (
 };
 
 // ==================== GET BILLING SUMMARY FOR ADMIN ====================
-export const getBillingSummary = async (
+export const getBillingSummaryAdmin = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
