@@ -21,6 +21,11 @@ export interface IBillingCycle extends Document {
     paidAt: Date;
   }>;
   serviceSuspendedAt?: Date;
+  pausedAt?: Date;
+  resumedAt?: Date;
+  pauseReason?: string;
+  pauseUntil?: Date;
+  disconnectReason?: string;
   pendingPlanChange?: {
     newPlanId: mongoose.Types.ObjectId;
     requestedAt: Date;
@@ -59,6 +64,11 @@ const BillingCycleSchema = new Schema<IBillingCycle>(
       },
     ],
     serviceSuspendedAt: { type: Date },
+    pausedAt: { type: Date },
+    resumedAt: { type: Date },
+    pauseReason: { type: String },
+    pauseUntil: { type: Date },
+    disconnectReason: { type: String },
     pendingPlanChange: {
       newPlanId: { type: Schema.Types.ObjectId, ref: "Plan" },
       requestedAt: Date,

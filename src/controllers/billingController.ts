@@ -579,7 +579,7 @@ export const startMonthlyBilling = async (
   }
 };
 
-// ==================== MARK BILL AS PAID ====================
+// ==================== MARK BILL AS PAID (FIXED - NO DUPLICATE PAYMENTS) ====================
 export const markBillAsPaid = async (
   req: AuthRequest,
   res: Response,
@@ -600,13 +600,28 @@ export const markBillAsPaid = async (
         .json({ success: false, message: "Bill not found" });
     }
 
+    // FIX: Prevent duplicate payment - check if bill is already paid
     if (bill.status === "paid") {
       return res
         .status(400)
-        .json({ success: false, message: "Bill already paid" });
+        .json({ success: false, message: "Bill is already paid" });
     }
 
     const user = bill.userId as any;
+
+    // FIX: Check if there's already a completed payment for this bill
+    const existingPayment = await Payment.findOne({
+      billingId: bill._id,
+      status: "completed",
+    });
+
+    if (existingPayment) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment already exists for this bill",
+        data: { payment: existingPayment },
+      });
+    }
 
     const payment = await Payment.create(
       [
@@ -695,7 +710,7 @@ export const markBillAsPaid = async (
   }
 };
 
-// ==================== SUBMIT PRO-RATED PAYMENT ====================
+// ==================== SUBMIT PRO-RATED PAYMENT (FIXED - NO DUPLICATE) ====================
 export const submitProRatedPayment = async (
   req: AuthRequest,
   res: Response,
@@ -708,17 +723,45 @@ export const submitProRatedPayment = async (
     const { billId, referenceNumber, notes } = req.body;
     const userId = req.user?._id;
 
+    // FIX: Check if bill exists and is in correct state
     const bill = await Billing.findOne({
       _id: billId,
       userId,
       isProRated: true,
-      status: "sent",
     });
 
     if (!bill) {
       return res.status(404).json({
         success: false,
-        message: "Pro-rated bill not found or already paid",
+        message: "Pro-rated bill not found",
+      });
+    }
+
+    // FIX: Prevent duplicate submission - check if already paid or pending
+    if (bill.status === "paid") {
+      return res.status(400).json({
+        success: false,
+        message: "This bill has already been paid",
+      });
+    }
+
+    if (bill.status === "pending_confirmation") {
+      return res.status(400).json({
+        success: false,
+        message: "Payment already submitted and pending admin confirmation",
+      });
+    }
+
+    // FIX: Check if there's already a pending payment
+    const existingPendingPayment = await Payment.findOne({
+      billingId: bill._id,
+      status: "pending",
+    });
+
+    if (existingPendingPayment) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment already pending confirmation. Please wait for admin.",
       });
     }
 
@@ -776,7 +819,7 @@ export const submitProRatedPayment = async (
   }
 };
 
-// ==================== SUBMIT MONTHLY PAYMENT ====================
+// ==================== SUBMIT MONTHLY PAYMENT (FIXED - NO DUPLICATE) ====================
 export const submitMonthlyPayment = async (
   req: AuthRequest,
   res: Response,
@@ -793,13 +836,40 @@ export const submitMonthlyPayment = async (
       _id: billId,
       userId,
       isProRated: false,
-      status: "sent",
     });
 
     if (!bill) {
       return res.status(404).json({
         success: false,
-        message: "Bill not found or already paid",
+        message: "Bill not found",
+      });
+    }
+
+    // FIX: Prevent duplicate payment
+    if (bill.status === "paid") {
+      return res.status(400).json({
+        success: false,
+        message: "This bill has already been paid",
+      });
+    }
+
+    if (bill.status === "pending_confirmation") {
+      return res.status(400).json({
+        success: false,
+        message: "Payment already submitted and pending admin confirmation",
+      });
+    }
+
+    // FIX: Check for existing pending payment
+    const existingPendingPayment = await Payment.findOne({
+      billingId: bill._id,
+      status: "pending",
+    });
+
+    if (existingPendingPayment) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment already pending confirmation. Please wait for admin.",
       });
     }
 
@@ -1225,7 +1295,7 @@ export const getBillingSummary = async (
   }
 };
 
-// ==================== GET USER'S CURRENT BILLING STATUS (FIXED - RETURNS PRO-RATED BILL) ====================
+// ==================== GET USER'S CURRENT BILLING STATUS ====================
 export const getUserCurrentBilling = async (
   req: AuthRequest,
   res: Response,
@@ -1236,10 +1306,9 @@ export const getUserCurrentBilling = async (
 
     console.log(`🔍 Getting current billing for user: ${userId}`);
 
-    // Get billing cycle
     const billingCycle = await BillingCycle.findOne({
       userId,
-      status: { $in: ["active", "pending_activation"] },
+      status: { $in: ["active", "pending_activation", "paused"] },
     }).populate("planId");
 
     if (!billingCycle) {
@@ -1251,14 +1320,12 @@ export const getUserCurrentBilling = async (
       });
     }
 
-    // Get the pro-rated bill (THIS IS THE IMPORTANT PART)
     const proRatedBill = await Billing.findOne({
       userId,
       billingCycleId: billingCycle._id,
       isProRated: true,
     });
 
-    // Check if pro-rated bill is paid
     const isProRatedBillPaid = proRatedBill?.status === "paid";
     const isProRatedPaid =
       billingCycle.proRatedPaid === true || isProRatedBillPaid;
@@ -1271,7 +1338,6 @@ export const getUserCurrentBilling = async (
     }
     console.log(`Is pro-rated paid: ${isProRatedPaid}`);
 
-    // CRITICAL FIX: If pro-rated bill exists and is NOT paid, return the PRO-RATED BILL
     if (proRatedBill && !isProRatedPaid) {
       const isPendingConfirmation =
         proRatedBill.status === "pending_confirmation";
@@ -1285,7 +1351,7 @@ export const getUserCurrentBilling = async (
         success: true,
         data: {
           billingCycle,
-          currentBill: proRatedBill, // <-- THIS IS THE PRO-RATED BILL (₱1,096.13)
+          currentBill: proRatedBill,
           needsFirstPayment: !isPendingConfirmation && !isOverdue,
           isPendingPayment: isPendingConfirmation,
           firstBillAmount: proRatedBill.total,
@@ -1297,11 +1363,11 @@ export const getUserCurrentBilling = async (
           waitingForAdminActivation: false,
           freeDays: billingCycle.freeDays,
           actualBillableDays: billingCycle.actualBillableDays,
+          isPaused: billingCycle.status === "paused",
         },
       });
     }
 
-    // If pro-rated is paid, then show monthly bills
     if (isProRatedPaid) {
       console.log(`Pro-rated is paid, showing monthly bills`);
 
@@ -1337,11 +1403,11 @@ export const getUserCurrentBilling = async (
           actualBillableDays: billingCycle.actualBillableDays,
           isActive: true,
           proRatedPaid: true,
+          isPaused: billingCycle.status === "paused",
         },
       });
     }
 
-    // Default fallback
     res.status(200).json({
       success: true,
       data: {
@@ -1356,6 +1422,7 @@ export const getUserCurrentBilling = async (
         waitingForAdminActivation: false,
         freeDays: billingCycle.freeDays,
         actualBillableDays: billingCycle.actualBillableDays,
+        isPaused: billingCycle.status === "paused",
       },
     });
   } catch (error) {
@@ -1460,12 +1527,15 @@ export const getAllBills = async (
   }
 };
 
-// ==================== STOP BILLING ====================
+// ==================== STOP BILLING (FIXED) ====================
 export const stopBilling = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
     const { userId, reason } = req.body;
 
@@ -1484,13 +1554,14 @@ export const stopBilling = async (
     if (!billingCycle) {
       return res.status(404).json({
         success: false,
-        message: "No active billing cycle found",
+        message: "No active billing cycle found to stop",
       });
     }
 
+    // Check for unpaid bills
     const unpaidBills = await Billing.findOne({
       userId,
-      status: { $in: ["sent", "overdue"] },
+      status: { $in: ["sent", "overdue", "pending_confirmation"] },
     });
 
     if (unpaidBills) {
@@ -1503,7 +1574,33 @@ export const stopBilling = async (
 
     billingCycle.status = "cancelled";
     billingCycle.billingEndDate = new Date();
-    await billingCycle.save();
+    await billingCycle.save({ session });
+
+    // Update user status
+    user.status = "inactive";
+    await user.save({ session });
+
+    // Disable in MikroTik if configured
+    if (user.mikrotik?.username) {
+      try {
+        await mikrotikService.disablePPPoEUser(user);
+      } catch (error) {
+        console.error("Error disabling user in MikroTik:", error);
+      }
+    }
+
+    await session.commitTransaction();
+
+    // Send notification email
+    await emailService.sendEmail(
+      user.email,
+      "Your Billing Has Been Stopped - Mister Fyber",
+      `<p>Dear ${user.firstName || user.username} ${user.lastName || ""},</p>
+       <p>Your billing cycle has been stopped.</p>
+       <p>Reason: ${reason || "Admin action"}</p>
+       <p>If you have any questions, please contact our support team.</p>
+       <p>Thank you,<br>Mister Fyber Team</p>`,
+    );
 
     res.status(200).json({
       success: true,
@@ -1511,16 +1608,116 @@ export const stopBilling = async (
       data: { billingCycle },
     });
   } catch (error) {
+    await session.abortTransaction();
     next(error);
+  } finally {
+    session.endSession();
   }
 };
 
-// ==================== RECONNECT SERVICE ====================
-export const reconnectClient = async (
+// ==================== PAUSE BILLING (FOR VACATION) - NEW FUNCTION ====================
+export const pauseBilling = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { userId, reason, pauseUntilDate } = req.body;
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+    }
+
+    const billingCycle = await BillingCycle.findOne({
+      userId,
+      status: "active",
+    });
+
+    if (!billingCycle) {
+      return res.status(404).json({
+        success: false,
+        message: "No active billing cycle found to pause",
+      });
+    }
+
+    // Check for unpaid bills
+    const unpaidBills = await Billing.findOne({
+      userId,
+      status: { $in: ["sent", "overdue", "pending_confirmation"] },
+    });
+
+    if (unpaidBills) {
+      return res.status(400).json({
+        success: false,
+        message: "User has unpaid bills. Please settle before pausing.",
+      });
+    }
+
+    const pauseDate = new Date();
+    billingCycle.status = "paused";
+    billingCycle.pausedAt = pauseDate;
+    billingCycle.pauseReason = reason || "User requested pause (vacation)";
+    billingCycle.pauseUntil = pauseUntilDate
+      ? new Date(pauseUntilDate)
+      : undefined;
+    await billingCycle.save({ session });
+
+    // Update user status
+    user.status = "paused";
+    await user.save({ session });
+
+    // Disable in MikroTik if configured
+    if (user.mikrotik?.username) {
+      try {
+        await mikrotikService.disablePPPoEUser(user);
+      } catch (error) {
+        console.error("Error disabling user in MikroTik:", error);
+      }
+    }
+
+    await session.commitTransaction();
+
+    // Send notification email
+    await emailService.sendEmail(
+      user.email,
+      "Your Service Has Been Paused - Mister Fyber",
+      `<p>Dear ${user.firstName || user.username} ${user.lastName || ""},</p>
+       <p>Your internet service has been paused as requested.</p>
+       <p>Reason: ${reason || "Vacation/Requested pause"}</p>
+       ${pauseUntilDate ? `<p>Your service will automatically resume on: ${new Date(pauseUntilDate).toLocaleDateString()}</p>` : ""}
+       <p>No bills will be generated during the pause period.</p>
+       <p>To resume your service, please contact our support team or use the resume button in your dashboard.</p>
+       <p>Thank you,<br>Mister Fyber Team</p>`,
+    );
+
+    res.status(200).json({
+      success: true,
+      message: `Service paused for ${user.firstName} ${user.lastName}. No bills will be generated during pause.`,
+      data: { billingCycle, pauseDate, pauseUntil: pauseUntilDate },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
+// ==================== RESUME BILLING (AFTER PAUSE) - NEW FUNCTION ====================
+export const resumeBilling = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
     const { userId } = req.body;
 
@@ -1531,6 +1728,89 @@ export const reconnectClient = async (
         .json({ success: false, message: "User not found" });
     }
 
+    const billingCycle = await BillingCycle.findOne({
+      userId,
+      status: "paused",
+    });
+
+    if (!billingCycle) {
+      return res.status(404).json({
+        success: false,
+        message: "No paused billing cycle found",
+      });
+    }
+
+    const resumeDate = new Date();
+    const nextBillingDate = new Date(resumeDate);
+    nextBillingDate.setMonth(nextBillingDate.getMonth() + 1);
+    nextBillingDate.setDate(1);
+
+    billingCycle.status = "active";
+    billingCycle.resumedAt = resumeDate;
+    billingCycle.nextBillingDate = nextBillingDate;
+    billingCycle.pausedAt = undefined;
+    billingCycle.pauseReason = undefined;
+    billingCycle.pauseUntil = undefined;
+    await billingCycle.save({ session });
+
+    // Update user status
+    user.status = "active";
+    await user.save({ session });
+
+    // Re-apply MikroTik plan if configured
+    if (user.mikrotik?.username && user.planId) {
+      try {
+        await mikrotikService.applyPlanToUser(user, user.planId);
+      } catch (error) {
+        console.error("Error enabling user in MikroTik:", error);
+      }
+    }
+
+    await session.commitTransaction();
+
+    // Send notification email
+    await emailService.sendEmail(
+      user.email,
+      "Your Service Has Been Resumed - Mister Fyber",
+      `<p>Dear ${user.firstName || user.username} ${user.lastName || ""},</p>
+       <p>Your internet service has been resumed.</p>
+       <p>Your next billing date is: ${nextBillingDate.toLocaleDateString()}</p>
+       <p>Thank you for choosing Mister Fyber!</p>`,
+    );
+
+    res.status(200).json({
+      success: true,
+      message: `Service resumed for ${user.firstName} ${user.lastName}`,
+      data: { billingCycle, resumeDate, nextBillingDate },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
+// ==================== RECONNECT SERVICE (FIXED) ====================
+export const reconnectClient = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { userId } = req.body;
+
+    const user = await User.findById(userId).populate("planId");
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+    }
+
+    // Check for unpaid bills
     const unpaidBills = await Billing.findOne({
       userId,
       status: { $in: ["sent", "overdue"] },
@@ -1543,18 +1823,28 @@ export const reconnectClient = async (
       });
     }
 
-    user.status = "active";
-    await user.save();
-
     const billingCycle = await BillingCycle.findOne({
       userId,
-      status: "paused",
+      status: { $in: ["paused", "cancelled"] },
     });
 
-    if (billingCycle) {
+    if (billingCycle && billingCycle.status === "paused") {
+      // If paused, handle resume instead
       billingCycle.status = "active";
-      await billingCycle.save();
+      const resumeDate = new Date();
+      const nextBillingDate = new Date(resumeDate);
+      nextBillingDate.setMonth(nextBillingDate.getMonth() + 1);
+      nextBillingDate.setDate(1);
+      billingCycle.nextBillingDate = nextBillingDate;
+      billingCycle.resumedAt = resumeDate;
+      billingCycle.pausedAt = undefined;
+      billingCycle.pauseReason = undefined;
+      billingCycle.pauseUntil = undefined;
+      await billingCycle.save({ session });
     }
+
+    user.status = "active";
+    await user.save({ session });
 
     if (user.mikrotik?.username && user.planId) {
       try {
@@ -1564,22 +1854,38 @@ export const reconnectClient = async (
       }
     }
 
+    await session.commitTransaction();
+
+    await emailService.sendEmail(
+      user.email,
+      "Your Service Has Been Reconnected - Mister Fyber",
+      `<p>Dear ${user.firstName || user.username} ${user.lastName || ""},</p>
+       <p>Your internet service has been reconnected.</p>
+       <p>Thank you for choosing Mister Fyber!</p>`,
+    );
+
     res.status(200).json({
       success: true,
       message: `Service reconnected for ${user.firstName} ${user.lastName}`,
       data: { userId: user._id, status: "active" },
     });
   } catch (error) {
+    await session.abortTransaction();
     next(error);
+  } finally {
+    session.endSession();
   }
 };
 
-// ==================== DISCONNECT SERVICE ====================
+// ==================== DISCONNECT SERVICE (FIXED) ====================
 export const disconnectClient = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
     const { userId, reason } = req.body;
 
@@ -1590,8 +1896,18 @@ export const disconnectClient = async (
         .json({ success: false, message: "User not found" });
     }
 
-    user.status = "suspended";
-    await user.save();
+    // Check for unpaid bills before disconnecting
+    const unpaidBills = await Billing.findOne({
+      userId,
+      status: { $in: ["sent", "overdue"] },
+    });
+
+    if (unpaidBills) {
+      return res.status(400).json({
+        success: false,
+        message: "User has unpaid bills. Please settle before disconnecting.",
+      });
+    }
 
     const billingCycle = await BillingCycle.findOne({
       userId,
@@ -1601,8 +1917,12 @@ export const disconnectClient = async (
     if (billingCycle) {
       billingCycle.status = "paused";
       billingCycle.serviceSuspendedAt = new Date();
-      await billingCycle.save();
+      billingCycle.disconnectReason = reason || "Admin initiated disconnect";
+      await billingCycle.save({ session });
     }
+
+    user.status = "suspended";
+    await user.save({ session });
 
     if (user.mikrotik?.username) {
       try {
@@ -1612,11 +1932,27 @@ export const disconnectClient = async (
       }
     }
 
+    await session.commitTransaction();
+
+    await emailService.sendEmail(
+      user.email,
+      "Your Service Has Been Disconnected - Mister Fyber",
+      `<p>Dear ${user.firstName || user.username} ${user.lastName || ""},</p>
+       <p>Your internet service has been disconnected.</p>
+       <p>Reason: ${reason || "Admin action"}</p>
+       <p>To have your service reconnected, please contact our support team and settle any outstanding balance.</p>
+       <p>Thank you,<br>Mister Fyber Team</p>`,
+    );
+
     res.status(200).json({
       success: true,
       message: `Service disconnected for ${user.firstName} ${user.lastName}`,
+      data: { userId: user._id, status: "suspended", disconnectReason: reason },
     });
   } catch (error) {
+    await session.abortTransaction();
     next(error);
+  } finally {
+    session.endSession();
   }
 };

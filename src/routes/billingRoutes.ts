@@ -22,6 +22,8 @@ import {
   updateBillingSettings,
   submitProRatedPayment,
   submitMonthlyPayment,
+  pauseBilling,
+  resumeBilling,
 } from "../controllers/billingController";
 import { protect, authorize } from "../middleware/auth";
 
@@ -136,7 +138,7 @@ router.put(
   markBillAsPaid,
 );
 
-// Stop billing
+// Stop billing (permanent cancellation)
 router.post(
   "/stop",
   protect,
@@ -145,7 +147,29 @@ router.post(
   stopBilling,
 );
 
-// Disconnect/Reconnect
+// Pause billing (for vacation/temporary)
+router.post(
+  "/pause",
+  protect,
+  authorize("super_admin", "admin", "staff"),
+  [
+    body("userId").isMongoId().withMessage("User ID is required"),
+    body("reason").optional().isString(),
+    body("pauseUntilDate").optional().isISO8601(),
+  ],
+  pauseBilling,
+);
+
+// Resume billing (after pause)
+router.post(
+  "/resume",
+  protect,
+  authorize("super_admin", "admin", "staff"),
+  [body("userId").isMongoId().withMessage("User ID is required")],
+  resumeBilling,
+);
+
+// Disconnect/Reconnect (service suspension)
 router.post(
   "/disconnect",
   protect,
