@@ -1,11 +1,10 @@
-// server.ts - COMPLETE FIXED
 import express, { Application, Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
 import compression from "compression";
-import cookieParser from "cookie-parser"; // ADD THIS IMPORT
+import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 import path from "path";
 import { createServer } from "http";
@@ -134,7 +133,7 @@ class App {
       }),
     );
 
-    this.app.use(cookieParser()); // ADD THIS LINE - CRITICAL!
+    this.app.use(cookieParser());
     this.app.use(compression());
     this.app.use(morgan("dev"));
     this.app.use(express.json({ limit: "50mb" }));
@@ -202,6 +201,7 @@ class App {
           autoSendReminders: true,
           autoSuspendOnNonPayment: true,
           billingCycleDay: 1,
+          freeDays: 1,
         });
         console.log("✅ Default billing settings initialized");
       }

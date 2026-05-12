@@ -390,7 +390,7 @@ export const register = async (
       firstName,
       lastName,
       phoneNumber: phoneNumber || "",
-      status: "active", // Changed from "pending" to "active" for immediate login
+      status: "active",
     });
 
     console.log("[Auth] Regular registration successful for:", user.email);
@@ -475,7 +475,7 @@ export const login = async (
       });
     }
 
-    // Try to find as Admin first
+    // Check if user exists in Admin collection
     let admin = await Admin.findOne({ email }).select("+password");
     if (admin) {
       const isMatch = await admin.comparePassword(password);
@@ -501,7 +501,7 @@ export const login = async (
       return sendTokenResponse(admin, 200, res, true);
     }
 
-    // Then try as regular User
+    // Check if user exists in User collection
     const user = await User.findOne({ email }).select("+password");
     if (!user) {
       console.log("[Auth] User not found for email:", email);
@@ -518,6 +518,7 @@ export const login = async (
         .json({ success: false, message: "Invalid credentials" });
     }
 
+    // Check user status
     if (user.status === "suspended") {
       return res.status(403).json({
         success: false,
