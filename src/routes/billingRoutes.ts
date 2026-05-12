@@ -1,3 +1,4 @@
+// routes/billingRoutes.ts - COMPLETE FIXED VERSION
 import express from "express";
 import { body } from "express-validator";
 import {
@@ -7,7 +8,7 @@ import {
   markBillAsPaid,
   getPendingProRatedBills,
   getPendingActivations,
-  getBillingSummary,
+  getBillingSummaryAdmin, // FIXED: Changed from getBillingSummary
   getUserCurrentBilling,
   getUserBillingHistory,
   getAllBillingCycles,
@@ -68,12 +69,12 @@ router.get(
   getAllBills,
 );
 
-// Billing summary
+// Billing summary - FIXED: Using correct function name
 router.get(
   "/summary",
   protect,
   authorize("super_admin", "admin", "staff"),
-  getBillingSummary,
+  getBillingSummaryAdmin, // FIXED: Changed from getBillingSummary
 );
 
 // Pending pro-rated bills

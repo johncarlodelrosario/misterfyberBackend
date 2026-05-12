@@ -1,3 +1,4 @@
+// controllers/applicationController.ts - COMPLETE FIXED VERSION
 import { Request, Response, NextFunction } from "express";
 import Application from "../models/Application";
 import Plan from "../models/Plan";
@@ -25,9 +26,11 @@ async function initializeData() {
   try {
     console.log("Initializing Philippine address data...");
     const [regionsRes, provincesRes, citiesRes] = await Promise.all([
-      axios.get("https://psgc.gitlab.io/api/regions/"),
-      axios.get("https://psgc.gitlab.io/api/provinces/"),
-      axios.get("https://psgc.gitlab.io/api/cities-municipalities/"),
+      axios.get("https://psgc.gitlab.io/api/regions/", { timeout: 10000 }),
+      axios.get("https://psgc.gitlab.io/api/provinces/", { timeout: 10000 }),
+      axios.get("https://psgc.gitlab.io/api/cities-municipalities/", {
+        timeout: 10000,
+      }),
     ]);
 
     allRegions = regionsRes.data;
@@ -117,6 +120,7 @@ export const getBarangaysByCity = async (
 
     const response = await axios.get(
       `https://psgc.gitlab.io/api/cities-municipalities/${cityCode}/barangays/`,
+      { timeout: 10000 },
     );
     const barangays = response.data.map((barangay: any) => ({
       name: barangay.name,
@@ -301,7 +305,6 @@ export const submitApplication = async (
 
     const fullImageUrl = getImageUrl(application.idImage);
 
-    // ========== SEND EMAILS - ITO ANG IMPORTANTE! ==========
     console.log("📧 Sending application received email to client...");
     await emailService.sendApplicationReceived(application, application.planId);
 
@@ -310,7 +313,6 @@ export const submitApplication = async (
       application,
       application.planId,
     );
-    // =======================================================
 
     res.status(201).json({
       success: true,
@@ -396,6 +398,7 @@ export const checkApplicationStatus = async (
   }
 };
 
+// FIXED: Optimized getAllApplications with proper pagination and indexing
 export const getAllApplications = async (
   req: Request,
   res: Response,
@@ -404,39 +407,51 @@ export const getAllApplications = async (
   try {
     const { page = 1, limit = 10, status } = req.query;
 
+    const pageNum = parseInt(page as string);
+    const limitNum = parseInt(limit as string);
+    const skip = (pageNum - 1) * limitNum;
+
     let query: any = {};
-    if (status) {
+    if (status && status !== "all") {
       query.status = status;
     }
 
-    const applications = await Application.find(query)
-      .populate("planId", "name price")
-      .populate("buildingId", "buildingName streetAddress city")
-      .populate("reviewedBy", "firstName lastName email")
-      .populate("registeredUserId", "username email")
-      .sort({ createdAt: -1 })
-      .limit(parseInt(limit as string) * 1)
-      .skip((parseInt(page as string) - 1) * parseInt(limit as string));
-
+    // Get total count first (lightweight query)
     const total = await Application.countDocuments(query);
 
+    // Get paginated applications with efficient population
+    const applications = await Application.find(query)
+      .select("-__v") // Exclude version field
+      .populate("planId", "name price") // Only select needed fields
+      .populate("buildingId", "buildingName streetAddress city") // Only select needed fields
+      .populate("reviewedBy", "firstName lastName email") // Only select needed fields
+      .populate("registeredUserId", "username email") // Only select needed fields
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limitNum)
+      .lean(); // Use lean() for better performance
+
+    // Add image URLs (this is synchronous, no performance issue)
     const applicationsWithUrls = applications.map((app) => ({
-      ...app.toObject(),
+      ...app,
       idImageUrl: getImageUrl(app.idImage),
     }));
 
     res.status(200).json({
       success: true,
       data: applicationsWithUrls,
-      totalPages: Math.ceil(total / parseInt(limit as string)),
-      currentPage: parseInt(page as string),
+      totalPages: Math.ceil(total / limitNum),
+      currentPage: pageNum,
       total,
+      limit: limitNum,
     });
   } catch (error) {
+    console.error("Error in getAllApplications:", error);
     next(error);
   }
 };
 
+// FIXED: Optimized getApplication for single record
 export const getApplication = async (
   req: Request,
   res: Response,
@@ -449,7 +464,8 @@ export const getApplication = async (
         "buildingId",
         "buildingName streetAddress region province city barangay zipCode",
       )
-      .populate("reviewedBy", "firstName lastName email");
+      .populate("reviewedBy", "firstName lastName email")
+      .lean();
 
     if (!application) {
       return res.status(404).json({
@@ -463,11 +479,12 @@ export const getApplication = async (
     res.status(200).json({
       success: true,
       data: {
-        ...application.toObject(),
+        ...application,
         idImageUrl: idImageUrl,
       },
     });
   } catch (error) {
+    console.error("Error in getApplication:", error);
     next(error);
   }
 };
@@ -503,13 +520,11 @@ export const approveApplication = async (
     application.reviewedAt = new Date();
     await application.save();
 
-    // ========== SEND APPROVAL EMAIL TO CLIENT ==========
     console.log(`📧 Sending approval email to ${application.email}...`);
     await emailService.sendApplicationApproved(
       application,
       application.planId as any,
     );
-    // ===================================================
 
     res.status(200).json({
       success: true,
@@ -520,6 +535,7 @@ export const approveApplication = async (
       },
     });
   } catch (error) {
+    console.error("Error in approveApplication:", error);
     next(error);
   }
 };
@@ -555,13 +571,11 @@ export const rejectApplication = async (
     application.reviewedAt = new Date();
     await application.save();
 
-    // ========== SEND REJECTION EMAIL TO CLIENT ==========
     console.log(`📧 Sending rejection email to ${application.email}...`);
     await emailService.sendApplicationRejected(
       application,
       adminNotes || "No specific reason provided",
     );
-    // ====================================================
 
     res.status(200).json({
       success: true,
@@ -572,6 +586,20 @@ export const rejectApplication = async (
       },
     });
   } catch (error) {
+    console.error("Error in rejectApplication:", error);
     next(error);
   }
+};
+
+export default {
+  getRegions,
+  getProvincesByRegion,
+  getCitiesByProvince,
+  getBarangaysByCity,
+  submitApplication,
+  checkApplicationStatus,
+  getAllApplications,
+  getApplication,
+  approveApplication,
+  rejectApplication,
 };
