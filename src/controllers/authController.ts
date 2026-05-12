@@ -1,4 +1,3 @@
-// controllers/authController.ts - COMPLETE WITH CHECK APPLICATION FUNCTION
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { randomBytes, createHash } from "crypto";
@@ -63,7 +62,7 @@ const sendTokenResponse = (
   res.status(statusCode).cookie("token", token, options).json(responseData);
 };
 
-// ==================== CHECK APPLICATION STATUS (NEW) ====================
+// ==================== CHECK APPLICATION STATUS ====================
 
 export const checkApplication = async (
   req: Request,
@@ -82,7 +81,6 @@ export const checkApplication = async (
       });
     }
 
-    // Find the application by applicationId
     const application = await Application.findOne({ applicationId }).populate(
       "planId",
       "name price speed description",
@@ -95,7 +93,6 @@ export const checkApplication = async (
       });
     }
 
-    // Check if application has already been used to register
     let alreadyRegistered = false;
     if (application.registeredUserId) {
       const existingUser = await User.findById(application.registeredUserId);
@@ -104,7 +101,6 @@ export const checkApplication = async (
       }
     }
 
-    // Return application status
     const responseData: any = {
       success: true,
       data: {
@@ -120,12 +116,10 @@ export const checkApplication = async (
       },
     };
 
-    // Add rejection reason if applicable
     if (application.status === "rejected" && application.adminNotes) {
       responseData.data.rejectionReason = application.adminNotes;
     }
 
-    // Add approval notes if applicable
     if (application.status === "approved" && application.adminNotes) {
       responseData.data.approvalNotes = application.adminNotes;
     }
@@ -158,7 +152,12 @@ export const registerWithApplication = async (
 
     const { username, email, password, applicationId } = req.body;
 
-    // Find the application
+    console.log("[Auth] Registration attempt with application:", {
+      username,
+      email,
+      applicationId,
+    });
+
     const application = await Application.findOne({ applicationId }).populate(
       "planId",
     );
@@ -170,7 +169,6 @@ export const registerWithApplication = async (
       });
     }
 
-    // Check if application is approved
     if (application.status !== "approved") {
       return res.status(400).json({
         success: false,
@@ -178,7 +176,6 @@ export const registerWithApplication = async (
       });
     }
 
-    // Check if account already created for this application
     if (application.registeredUserId) {
       const existingUser = await User.findById(application.registeredUserId);
       if (existingUser && existingUser.status !== "inactive") {
@@ -190,7 +187,6 @@ export const registerWithApplication = async (
       }
     }
 
-    // Verify email matches application email
     if (application.email !== email) {
       return res.status(400).json({
         success: false,
@@ -199,7 +195,6 @@ export const registerWithApplication = async (
       });
     }
 
-    // Check if username already exists
     const existingUsername = await User.findOne({ username });
     if (existingUsername) {
       return res.status(400).json({
@@ -208,11 +203,9 @@ export const registerWithApplication = async (
       });
     }
 
-    // Check if user already exists with this email
     let user = await User.findOne({ email: application.email });
 
     if (user) {
-      // Update existing user
       user.username = username;
       user.password = password;
       user.firstName = application.firstName;
@@ -230,7 +223,6 @@ export const registerWithApplication = async (
 
       await user.save();
     } else {
-      // Create new user
       user = await User.create({
         username,
         email: application.email,
@@ -261,11 +253,9 @@ export const registerWithApplication = async (
       });
     }
 
-    // Link the application to the user
     application.registeredUserId = user._id;
     await application.save();
 
-    // Set up MikroTik credentials
     if (!user.mikrotik) {
       user.mikrotik = {
         username: "",
@@ -284,12 +274,13 @@ export const registerWithApplication = async (
       await user.save();
     }
 
-    // Send welcome email
     try {
       await emailService.sendWelcomeEmail(user);
     } catch (error) {
       console.error("Failed to send welcome email:", error);
     }
+
+    console.log("[Auth] Registration successful for:", user.email);
 
     sendTokenResponse(user, 201, res, false);
   } catch (error: any) {
@@ -382,6 +373,8 @@ export const register = async (
     const { username, email, password, firstName, lastName, phoneNumber } =
       req.body;
 
+    console.log("[Auth] Regular registration attempt:", { username, email });
+
     const existingUser = await User.findOne({ $or: [{ email }, { username }] });
     if (existingUser) {
       return res.status(400).json({
@@ -396,9 +389,11 @@ export const register = async (
       password,
       firstName,
       lastName,
-      phoneNumber,
-      status: "pending",
+      phoneNumber: phoneNumber || "",
+      status: "active", // Changed from "pending" to "active" for immediate login
     });
+
+    console.log("[Auth] Regular registration successful for:", user.email);
 
     sendTokenResponse(user, 201, res, false);
   } catch (error: any) {
@@ -461,7 +456,7 @@ export const createInitialAdmin = async (
   }
 };
 
-// ==================== LOGIN ====================
+// ==================== LOGIN (FIXED) ====================
 
 export const login = async (
   req: Request,
@@ -470,6 +465,8 @@ export const login = async (
 ) => {
   try {
     const { email, password } = req.body;
+
+    console.log("[Auth] Login attempt for email:", email);
 
     if (!email || !password) {
       return res.status(400).json({
@@ -483,6 +480,7 @@ export const login = async (
     if (admin) {
       const isMatch = await admin.comparePassword(password);
       if (!isMatch) {
+        console.log("[Auth] Admin password mismatch for:", email);
         return res
           .status(401)
           .json({ success: false, message: "Invalid credentials" });
@@ -506,6 +504,7 @@ export const login = async (
     // Then try as regular User
     const user = await User.findOne({ email }).select("+password");
     if (!user) {
+      console.log("[Auth] User not found for email:", email);
       return res
         .status(401)
         .json({ success: false, message: "Invalid credentials" });
@@ -513,6 +512,7 @@ export const login = async (
 
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
+      console.log("[Auth] User password mismatch for:", email);
       return res
         .status(401)
         .json({ success: false, message: "Invalid credentials" });
@@ -542,8 +542,11 @@ export const login = async (
     user.lastLogin = new Date();
     await user.save();
 
+    console.log(`✅ User logged in: ${user.email}`);
+
     sendTokenResponse(user, 200, res, false);
   } catch (error) {
+    console.error("[Auth] Login error:", error);
     next(error);
   }
 };
@@ -742,8 +745,6 @@ export const resetPassword = async (
     next(error);
   }
 };
-
-// ==================== EXPORT ALL FUNCTIONS ====================
 
 export default {
   register,

@@ -1,4 +1,3 @@
-// routes/authRoutes.ts - COMPLETE WITH CHECK APPLICATION ROUTE
 import express from "express";
 import { body } from "express-validator";
 import {
@@ -18,7 +17,9 @@ import { protect } from "../middleware/auth";
 
 const router = express.Router();
 
-// Public routes
+// ==================== PUBLIC REGISTRATION ROUTES ====================
+
+// Regular user registration (direct - no application needed)
 router.post(
   "/register",
   [
@@ -33,6 +34,7 @@ router.post(
   register,
 );
 
+// Registration with application ID (for approved applications)
 router.post(
   "/register-with-application",
   [
@@ -45,6 +47,8 @@ router.post(
   ],
   registerWithApplication,
 );
+
+// ==================== ADMIN ROUTES ====================
 
 router.post(
   "/register-admin",
@@ -65,6 +69,8 @@ router.post(
 
 router.post("/create-initial-admin", createInitialAdmin);
 
+// ==================== LOGIN/LOGOUT ====================
+
 router.post(
   "/login",
   [
@@ -76,10 +82,12 @@ router.post(
 
 router.post("/logout", logout);
 
-// ========== CHECK APPLICATION STATUS ROUTE (ADDED) ==========
+// ==================== CHECK APPLICATION STATUS ====================
+
 router.get("/check-application/:applicationId", checkApplication);
 
-// Protected routes
+// ==================== PROTECTED ROUTES ====================
+
 router.get("/me", protect, getMe);
 
 router.put(
@@ -95,6 +103,8 @@ router.put(
   ],
   updatePassword,
 );
+
+// ==================== PASSWORD RESET ====================
 
 router.post(
   "/forgot-password",
