@@ -1,4 +1,3 @@
-// billingController.ts - COMPLETE WORKING CODE
 import { Request, Response, NextFunction } from "express";
 import Billing from "../models/Billing";
 import BillingCycle from "../models/BillingCycle";
@@ -1610,7 +1609,7 @@ export const stopBilling = async (
   }
 };
 
-// ==================== PAUSE BILLING (FOR VACATION) - FIXED ====================
+// ==================== PAUSE BILLING (FOR VACATION) ====================
 export const pauseBilling = async (
   req: AuthRequest,
   res: Response,
@@ -1703,7 +1702,7 @@ export const pauseBilling = async (
   }
 };
 
-// ==================== RESUME BILLING (AFTER PAUSE) - FIXED ====================
+// ==================== RESUME BILLING (AFTER PAUSE) ====================
 export const resumeBilling = async (
   req: AuthRequest,
   res: Response,
