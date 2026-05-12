@@ -440,6 +440,77 @@ export const getBillingSummary = async (
   }
 };
 
+// FIXED: Added missing getCurrentBill function
+export const getCurrentBill = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const userId = req.user?._id;
+
+    const currentBill = await Billing.findOne({
+      userId,
+      status: { $in: ["sent", "overdue"] },
+    })
+      .sort({ dueDate: 1 })
+      .populate("billingCycleId");
+
+    if (!currentBill) {
+      return res.status(200).json({
+        success: true,
+        data: null,
+        message: "No current bill found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: currentBill,
+    });
+  } catch (error) {
+    console.error("Error in getCurrentBill:", error);
+    next(error);
+  }
+};
+
+// FIXED: Added missing getBillingHistory function
+export const getBillingHistory = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const userId = req.user?._id;
+    const { page = 1, limit = 10 } = req.query;
+
+    const skip = (parseInt(page as string) - 1) * parseInt(limit as string);
+    const limitNum = parseInt(limit as string);
+
+    const bills = await Billing.find({ userId })
+      .sort({ createdAt: -1 })
+      .limit(limitNum)
+      .skip(skip)
+      .populate("paymentId");
+
+    const total = await Billing.countDocuments({ userId });
+
+    res.status(200).json({
+      success: true,
+      data: bills,
+      pagination: {
+        total,
+        page: parseInt(page as string),
+        limit: limitNum,
+        totalPages: Math.ceil(total / limitNum),
+      },
+    });
+  } catch (error) {
+    console.error("Error in getBillingHistory:", error);
+    next(error);
+  }
+};
+
 export const requestDeletion = async (
   req: AuthRequest,
   res: Response,
@@ -697,67 +768,6 @@ export const getUserBillingCycle = async (
         overdueCount: overdueBills.length,
         overdueAmount: overdueBills.reduce((sum, bill) => sum + bill.total, 0),
       },
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const getCurrentBill = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  try {
-    const userId = req.user?._id;
-
-    const currentBill = await Billing.findOne({
-      userId,
-      status: { $in: ["sent", "overdue"] },
-    })
-      .sort({ dueDate: 1 })
-      .populate("billingCycleId");
-
-    if (!currentBill) {
-      return res.status(200).json({
-        success: true,
-        data: null,
-        message: "No current bill found",
-      });
-    }
-
-    res.status(200).json({
-      success: true,
-      data: currentBill,
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const getBillingHistory = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  try {
-    const userId = req.user?._id;
-    const { page = 1, limit = 10 } = req.query;
-
-    const bills = await Billing.find({ userId })
-      .sort({ createdAt: -1 })
-      .limit(parseInt(limit as string))
-      .skip((parseInt(page as string) - 1) * parseInt(limit as string))
-      .populate("paymentId");
-
-    const total = await Billing.countDocuments({ userId });
-
-    res.status(200).json({
-      success: true,
-      data: bills,
-      totalPages: Math.ceil(total / parseInt(limit as string)),
-      currentPage: parseInt(page as string),
-      total,
     });
   } catch (error) {
     next(error);

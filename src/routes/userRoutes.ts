@@ -43,7 +43,18 @@ router.post(
 );
 
 // ==================== PASSWORD ====================
-router.put("/change-password", changePassword);
+router.put(
+  "/change-password",
+  [
+    body("currentPassword")
+      .notEmpty()
+      .withMessage("Current password is required"),
+    body("newPassword")
+      .isLength({ min: 6 })
+      .withMessage("New password must be at least 6 characters"),
+  ],
+  changePassword,
+);
 
 // ==================== PLAN ====================
 router.put(
