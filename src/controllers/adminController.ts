@@ -12,94 +12,238 @@ interface AuthRequest extends Request {
   body: any;
 }
 
+// Cache for dashboard stats (5 minutes)
+let dashboardCache: any = null;
+let dashboardCacheTime = 0;
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
 export const getDashboardStats = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ) => {
   try {
-    const totalUsers = await User.countDocuments();
-    const activeUsers = await User.countDocuments({ status: "active" });
-    const pendingUsers = await User.countDocuments({ status: "pending" });
-    const suspendedUsers = await User.countDocuments({ status: "suspended" });
+    // Check cache
+    const now = Date.now();
+    if (dashboardCache && now - dashboardCacheTime < CACHE_TTL) {
+      return res.status(200).json({
+        success: true,
+        data: dashboardCache,
+      });
+    }
 
-    const totalRevenue = await Payment.aggregate([
-      { $match: { status: "completed" } },
-      { $group: { _id: null, total: { $sum: "$amount" } } },
-    ]);
-
-    const monthlyRevenue = await Payment.aggregate([
-      {
-        $match: {
-          status: "completed",
-          createdAt: {
-            $gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
+    // Run ALL queries in PARALLEL - MUCH FASTER!
+    const [
+      totalUsers,
+      activeUsers,
+      pendingUsers,
+      suspendedUsers,
+      totalRevenue,
+      monthlyRevenue,
+      overdueBills,
+      upcomingBills,
+      activeBillingCycles,
+      pendingPlanChanges,
+      monthlyRevenueData,
+      userGrowthData,
+      planDistribution,
+      recentPayments,
+    ] = await Promise.all([
+      User.countDocuments(),
+      User.countDocuments({ status: "active" }),
+      User.countDocuments({ status: "pending" }),
+      User.countDocuments({ status: "suspended" }),
+      Payment.aggregate([
+        { $match: { status: "completed" } },
+        { $group: { _id: null, total: { $sum: "$amount" } } },
+      ]),
+      Payment.aggregate([
+        {
+          $match: {
+            status: "completed",
+            createdAt: {
+              $gte: new Date(
+                new Date().getFullYear(),
+                new Date().getMonth(),
+                1,
+              ),
+            },
           },
         },
-      },
-      { $group: { _id: null, total: { $sum: "$amount" } } },
-    ]);
-
-    const planDistribution = await User.aggregate([
-      { $match: { planId: { $ne: null } } },
-      { $group: { _id: "$planId", count: { $sum: 1 } } },
-      {
-        $lookup: {
-          from: "plans",
-          localField: "_id",
-          foreignField: "_id",
-          as: "plan",
+        { $group: { _id: null, total: { $sum: "$amount" } } },
+      ]),
+      Billing.countDocuments({
+        status: "overdue",
+        dueDate: { $lt: new Date() },
+      }),
+      Billing.countDocuments({
+        status: "sent",
+        dueDate: {
+          $gte: new Date(),
+          $lte: new Date(new Date().setDate(new Date().getDate() + 7)),
         },
-      },
+      }),
+      BillingCycle.countDocuments({ status: "active" }),
+      BillingCycle.countDocuments({ "pendingPlanChange.status": "pending" }),
+      // Monthly revenue for chart - LAST 6 MONTHS only (not 12)
+      Payment.aggregate([
+        {
+          $match: {
+            status: "completed",
+            createdAt: {
+              $gte: new Date(new Date().setMonth(new Date().getMonth() - 5)),
+            },
+          },
+        },
+        {
+          $group: {
+            _id: {
+              year: { $year: "$createdAt" },
+              month: { $month: "$createdAt" },
+            },
+            total: { $sum: "$amount" },
+          },
+        },
+        { $sort: { "_id.year": 1, "_id.month": 1 } },
+      ]),
+      // User growth for chart - LAST 6 MONTHS only
+      User.aggregate([
+        {
+          $match: {
+            createdAt: {
+              $gte: new Date(new Date().setMonth(new Date().getMonth() - 5)),
+            },
+          },
+        },
+        {
+          $group: {
+            _id: {
+              year: { $year: "$createdAt" },
+              month: { $month: "$createdAt" },
+            },
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { "_id.year": 1, "_id.month": 1 } },
+      ]),
+      User.aggregate([
+        { $match: { planId: { $ne: null } } },
+        { $group: { _id: "$planId", count: { $sum: 1 } } },
+        {
+          $lookup: {
+            from: "plans",
+            localField: "_id",
+            foreignField: "_id",
+            as: "plan",
+          },
+        },
+        { $unwind: "$plan" },
+        { $project: { planName: "$plan.name", count: 1 } },
+      ]),
+      Payment.find({ status: "completed" })
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .populate("userId", "firstName lastName email")
+        .lean(),
     ]);
 
-    const recentPayments = await Payment.find({ status: "completed" })
-      .sort({ createdAt: -1 })
-      .limit(10)
-      .populate("userId", "firstName lastName email");
+    const months = [
+      "Jan",
+      "Feb",
+      "Mar",
+      "Apr",
+      "May",
+      "Jun",
+      "Jul",
+      "Aug",
+      "Sep",
+      "Oct",
+      "Nov",
+      "Dec",
+    ];
+    const currentMonth = new Date().getMonth();
 
-    const overdueBills = await Billing.countDocuments({
-      status: "overdue",
-      dueDate: { $lt: new Date() },
-    });
+    const monthlyRevenueArray = new Array(12).fill(0);
+    const monthlyUserArray = new Array(12).fill(0);
 
-    const upcomingBills = await Billing.countDocuments({
-      status: "sent",
-      dueDate: {
-        $gte: new Date(),
-        $lte: new Date(new Date().setDate(new Date().getDate() + 7)),
+    for (const item of monthlyRevenueData) {
+      const index = item._id.month - 1;
+      monthlyRevenueArray[index] = item.total;
+    }
+
+    for (const item of userGrowthData) {
+      const index = item._id.month - 1;
+      monthlyUserArray[index] = item.total;
+    }
+
+    const previousMonthRevenue = monthlyRevenueArray[currentMonth - 1] || 0;
+    const currentMonthRevenue = monthlyRevenueArray[currentMonth] || 0;
+    const revenueGrowth =
+      previousMonthRevenue > 0
+        ? Math.round(
+            ((currentMonthRevenue - previousMonthRevenue) /
+              previousMonthRevenue) *
+              100,
+          )
+        : currentMonthRevenue > 0
+          ? 100
+          : 0;
+
+    const previousMonthUsers = monthlyUserArray[currentMonth - 1] || 0;
+    const currentMonthUsers = monthlyUserArray[currentMonth] || 0;
+    const userGrowth =
+      previousMonthUsers > 0
+        ? Math.round(
+            ((currentMonthUsers - previousMonthUsers) / previousMonthUsers) *
+              100,
+          )
+        : currentMonthUsers > 0
+          ? 100
+          : 0;
+
+    const totalActiveUsers = activeUsers;
+    const totalActivePercentage =
+      totalUsers > 0 ? Math.round((totalActiveUsers / totalUsers) * 100) : 0;
+
+    const result = {
+      users: {
+        total: totalUsers,
+        active: totalActiveUsers,
+        pending: pendingUsers,
+        suspended: suspendedUsers,
+        newThisMonth: currentMonthUsers,
+        growth: userGrowth,
+        monthlyGrowth: userGrowth,
+        activeGrowth: totalActivePercentage,
+        growthLabels: months,
+        growthData: monthlyUserArray,
       },
-    });
+      revenue: {
+        total: totalRevenue[0]?.total || 0,
+        monthly: monthlyRevenue[0]?.total || 0,
+        monthlyTotal: currentMonthRevenue,
+        growth: revenueGrowth,
+        monthlyGrowth: revenueGrowth,
+        monthlyLabels: months,
+        monthlyData: monthlyRevenueArray,
+      },
+      plans: planDistribution,
+      recentPayments: recentPayments,
+      billing: {
+        overdue: overdueBills,
+        upcoming: upcomingBills,
+        activeCycles: activeBillingCycles,
+        pendingChanges: pendingPlanChanges,
+      },
+    };
 
-    const activeBillingCycles = await BillingCycle.countDocuments({
-      status: "active",
-    });
-    const pendingPlanChanges = await BillingCycle.countDocuments({
-      "pendingPlanChange.status": "pending",
-    });
+    // Cache the result
+    dashboardCache = result;
+    dashboardCacheTime = now;
 
     res.status(200).json({
       success: true,
-      data: {
-        users: {
-          total: totalUsers,
-          active: activeUsers,
-          pending: pendingUsers,
-          suspended: suspendedUsers,
-        },
-        revenue: {
-          total: totalRevenue[0]?.total || 0,
-          monthly: monthlyRevenue[0]?.total || 0,
-        },
-        plans: planDistribution,
-        recentPayments,
-        billing: {
-          overdue: overdueBills,
-          upcoming: upcomingBills,
-          activeCycles: activeBillingCycles,
-          pendingChanges: pendingPlanChanges,
-        },
-      },
+      data: result,
     });
   } catch (error) {
     next(error);
@@ -113,13 +257,11 @@ export const getAllUsers = async (
 ) => {
   try {
     const { page = 1, limit = 10, search, status } = req.query;
+    const skip = (parseInt(page as string) - 1) * parseInt(limit as string);
+    const limitNum = parseInt(limit as string);
 
     let query: any = {};
-
-    if (status) {
-      query.status = status;
-    }
-
+    if (status) query.status = status;
     if (search) {
       query.$or = [
         { username: { $regex: search, $options: "i" } },
@@ -129,19 +271,22 @@ export const getAllUsers = async (
       ];
     }
 
-    const users = await User.find(query)
-      .select("-password")
-      .populate("planId")
-      .limit(parseInt(limit as string) * 1)
-      .skip((parseInt(page as string) - 1) * parseInt(limit as string))
-      .sort({ createdAt: -1 });
-
-    const total = await User.countDocuments(query);
+    // Run count and find in PARALLEL
+    const [users, total] = await Promise.all([
+      User.find(query)
+        .select("-password")
+        .populate("planId")
+        .limit(limitNum)
+        .skip(skip)
+        .sort({ createdAt: -1 })
+        .lean(),
+      User.countDocuments(query),
+    ]);
 
     res.status(200).json({
       success: true,
       data: users,
-      totalPages: Math.ceil(total / parseInt(limit as string)),
+      totalPages: Math.ceil(total / limitNum),
       currentPage: parseInt(page as string),
       total,
     });
@@ -156,35 +301,25 @@ export const getUser = async (
   next: NextFunction,
 ) => {
   try {
-    const user = await User.findById(req.params.id)
-      .select("-password")
-      .populate("planId");
+    const userId = req.params.id;
+
+    // Run ALL queries in PARALLEL
+    const [user, payments, bills, billingCycle] = await Promise.all([
+      User.findById(userId).select("-password").populate("planId").lean(),
+      Payment.find({ userId }).sort({ createdAt: -1 }).limit(10).lean(),
+      Billing.find({ userId }).sort({ createdAt: -1 }).limit(10).lean(),
+      BillingCycle.findOne({ userId, status: "active" })
+        .populate("planId")
+        .lean(),
+    ]);
 
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
 
-    const payments = await Payment.find({ userId: user._id })
-      .sort({ createdAt: -1 })
-      .limit(10);
-
-    const bills = await Billing.find({ userId: user._id })
-      .sort({ createdAt: -1 })
-      .limit(10);
-
-    const billingCycle = await BillingCycle.findOne({
-      userId: user._id,
-      status: "active",
-    }).populate("planId");
-
     res.status(200).json({
       success: true,
-      data: {
-        user,
-        payments,
-        bills,
-        billingCycle,
-      },
+      data: { user, payments, bills, billingCycle },
     });
   } catch (error) {
     next(error);
@@ -223,9 +358,13 @@ export const updateUser = async (
 
     await user.save();
 
+    // Clear dashboard cache when user data changes
+    dashboardCache = null;
+
     const updatedUser = await User.findById(user._id)
       .select("-password")
-      .populate("planId");
+      .populate("planId")
+      .lean();
 
     res.status(200).json({
       success: true,
@@ -259,6 +398,9 @@ export const deleteUser = async (
       billingCycle.status = "cancelled";
       await billingCycle.save();
     }
+
+    // Clear dashboard cache
+    dashboardCache = null;
 
     res.status(200).json({
       success: true,
@@ -299,6 +441,9 @@ export const approveUser = async (
       await user.save();
     }
 
+    // Clear dashboard cache
+    dashboardCache = null;
+
     res.status(200).json({
       success: true,
       message: "User approved successfully",
@@ -334,6 +479,9 @@ export const suspendUser = async (
       await billingCycle.save();
     }
 
+    // Clear dashboard cache
+    dashboardCache = null;
+
     res.status(200).json({
       success: true,
       message: "User suspended successfully",
@@ -350,47 +498,52 @@ export const getAllPayments = async (
 ) => {
   try {
     const { page = 1, limit = 10, status } = req.query;
+    const skip = (parseInt(page as string) - 1) * parseInt(limit as string);
+    const limitNum = parseInt(limit as string);
 
     let query: any = {};
-    if (status) {
-      query.status = status;
-    }
+    if (status) query.status = status;
 
-    const payments = await Payment.find(query)
-      .populate("userId", "firstName lastName email username")
-      .sort({ createdAt: -1 })
-      .limit(parseInt(limit as string) * 1)
-      .skip((parseInt(page as string) - 1) * parseInt(limit as string));
-
-    const total = await Payment.countDocuments(query);
-
-    const stats = await Payment.aggregate([
-      { $match: { status: "completed" } },
-      {
-        $group: {
-          _id: null,
-          totalAmount: { $sum: "$amount" },
-          count: { $sum: 1 },
-        },
-      },
-    ]);
-
-    const monthlyStats = await Payment.aggregate([
-      {
-        $match: {
-          status: "completed",
-          createdAt: {
-            $gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
+    // Run queries in PARALLEL
+    const [payments, total, stats, monthlyStats] = await Promise.all([
+      Payment.find(query)
+        .populate("userId", "firstName lastName email username")
+        .sort({ createdAt: -1 })
+        .limit(limitNum)
+        .skip(skip)
+        .lean(),
+      Payment.countDocuments(query),
+      Payment.aggregate([
+        { $match: { status: "completed" } },
+        {
+          $group: {
+            _id: null,
+            totalAmount: { $sum: "$amount" },
+            count: { $sum: 1 },
           },
         },
-      },
-      {
-        $group: {
-          _id: null,
-          totalAmount: { $sum: "$amount" },
-          count: { $sum: 1 },
+      ]),
+      Payment.aggregate([
+        {
+          $match: {
+            status: "completed",
+            createdAt: {
+              $gte: new Date(
+                new Date().getFullYear(),
+                new Date().getMonth(),
+                1,
+              ),
+            },
+          },
         },
-      },
+        {
+          $group: {
+            _id: null,
+            totalAmount: { $sum: "$amount" },
+            count: { $sum: 1 },
+          },
+        },
+      ]),
     ]);
 
     res.status(200).json({
@@ -402,7 +555,7 @@ export const getAllPayments = async (
         monthly: monthlyStats[0]?.totalAmount || 0,
         monthlyCount: monthlyStats[0]?.count || 0,
       },
-      totalPages: Math.ceil(total / parseInt(limit as string)),
+      totalPages: Math.ceil(total / limitNum),
       currentPage: parseInt(page as string),
       total,
     });
@@ -418,39 +571,39 @@ export const getAllBills = async (
 ) => {
   try {
     const { page = 1, limit = 10, status, userId } = req.query;
+    const skip = (parseInt(page as string) - 1) * parseInt(limit as string);
+    const limitNum = parseInt(limit as string);
 
     let query: any = {};
-    if (status) {
-      query.status = status;
-    }
-    if (userId) {
-      query.userId = userId;
-    }
+    if (status) query.status = status;
+    if (userId) query.userId = userId;
 
-    const bills = await Billing.find(query)
-      .populate("userId", "firstName lastName email username")
-      .populate("paymentId")
-      .sort({ createdAt: -1 })
-      .limit(parseInt(limit as string) * 1)
-      .skip((parseInt(page as string) - 1) * parseInt(limit as string));
-
-    const total = await Billing.countDocuments(query);
-
-    const stats = await Billing.aggregate([
-      {
-        $group: {
-          _id: "$status",
-          count: { $sum: 1 },
-          totalAmount: { $sum: "$total" },
+    // Run queries in PARALLEL
+    const [bills, total, stats] = await Promise.all([
+      Billing.find(query)
+        .populate("userId", "firstName lastName email username")
+        .populate("paymentId")
+        .sort({ createdAt: -1 })
+        .limit(limitNum)
+        .skip(skip)
+        .lean(),
+      Billing.countDocuments(query),
+      Billing.aggregate([
+        {
+          $group: {
+            _id: "$status",
+            count: { $sum: 1 },
+            totalAmount: { $sum: "$total" },
+          },
         },
-      },
+      ]),
     ]);
 
     res.status(200).json({
       success: true,
       data: bills,
       stats,
-      totalPages: Math.ceil(total / parseInt(limit as string)),
+      totalPages: Math.ceil(total / limitNum),
       currentPage: parseInt(page as string),
       total,
     });
@@ -475,10 +628,7 @@ export const generateReport = async (
           {
             $match: {
               status: "completed",
-              createdAt: {
-                $gte: new Date(startDate),
-                $lte: new Date(endDate),
-              },
+              createdAt: { $gte: new Date(startDate), $lte: new Date(endDate) },
             },
           },
           {
@@ -500,10 +650,7 @@ export const generateReport = async (
         data = await User.aggregate([
           {
             $match: {
-              createdAt: {
-                $gte: new Date(startDate),
-                $lte: new Date(endDate),
-              },
+              createdAt: { $gte: new Date(startDate), $lte: new Date(endDate) },
             },
           },
           {
@@ -523,12 +670,7 @@ export const generateReport = async (
       case "plans":
         data = await User.aggregate([
           { $match: { planId: { $ne: null } } },
-          {
-            $group: {
-              _id: "$planId",
-              count: { $sum: 1 },
-            },
-          },
+          { $group: { _id: "$planId", count: { $sum: 1 } } },
           {
             $lookup: {
               from: "plans",
@@ -552,10 +694,7 @@ export const generateReport = async (
         data = await Billing.aggregate([
           {
             $match: {
-              createdAt: {
-                $gte: new Date(startDate),
-                $lte: new Date(endDate),
-              },
+              createdAt: { $gte: new Date(startDate), $lte: new Date(endDate) },
             },
           },
           {
@@ -569,10 +708,9 @@ export const generateReport = async (
         break;
 
       default:
-        return res.status(400).json({
-          success: false,
-          message: "Invalid report type",
-        });
+        return res
+          .status(400)
+          .json({ success: false, message: "Invalid report type" });
     }
 
     if (format === "csv") {
@@ -587,12 +725,7 @@ export const generateReport = async (
     res.status(200).json({
       success: true,
       data,
-      metadata: {
-        type,
-        startDate,
-        endDate,
-        generatedAt: new Date(),
-      },
+      metadata: { type, startDate, endDate, generatedAt: new Date() },
     });
   } catch (error) {
     next(error);
@@ -605,20 +738,24 @@ export const getRecentActivities = async (
   next: NextFunction,
 ) => {
   try {
-    const recentPayments = await Payment.find()
-      .sort({ createdAt: -1 })
-      .limit(5)
-      .populate("userId", "firstName lastName email");
-
-    const recentUsers = await User.find()
-      .sort({ createdAt: -1 })
-      .limit(5)
-      .select("firstName lastName email createdAt status");
-
-    const recentBills = await Billing.find()
-      .sort({ createdAt: -1 })
-      .limit(5)
-      .populate("userId", "firstName lastName email");
+    // Run queries in PARALLEL with limits
+    const [recentPayments, recentUsers, recentBills] = await Promise.all([
+      Payment.find()
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .populate("userId", "firstName lastName email")
+        .lean(),
+      User.find()
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .select("firstName lastName email createdAt status")
+        .lean(),
+      Billing.find()
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .populate("userId", "firstName lastName email")
+        .lean(),
+    ]);
 
     const activities = [];
 

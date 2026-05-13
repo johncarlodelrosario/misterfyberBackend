@@ -1,3 +1,4 @@
+// app.ts - UPDATED with index creation
 import express, { Application, Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import cors from "cors";
@@ -27,6 +28,7 @@ import {
   autoSendReminders,
   autoSuspendOverdue,
 } from "./controllers/billingController";
+import { ensureIndexes, BillingSettings } from "./models/Index"; // Import BillingSettings directly
 
 // Load environment variables
 dotenv.config({ path: path.join(__dirname, "../.env") });
@@ -64,6 +66,8 @@ class App {
         ],
         credentials: true,
       },
+      pingTimeout: 60000,
+      pingInterval: 25000,
     });
 
     this.initializeMiddlewares();
@@ -93,6 +97,8 @@ class App {
   }
 
   private initializeMiddlewares(): void {
+    this.app.use(compression());
+
     this.app.use(
       helmet({
         crossOriginResourcePolicy: { policy: "cross-origin" },
@@ -130,17 +136,23 @@ class App {
           "Cookie",
         ],
         exposedHeaders: ["Content-Range", "X-Content-Range"],
+        maxAge: 86400,
       }),
     );
 
     this.app.use(cookieParser());
-    this.app.use(compression());
     this.app.use(morgan("dev"));
-    this.app.use(express.json({ limit: "50mb" }));
-    this.app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+    this.app.use(express.json({ limit: "10mb" }));
+    this.app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
     const uploadsPath = path.join(__dirname, "../uploads");
-    this.app.use("/uploads", express.static(uploadsPath));
+    this.app.use(
+      "/uploads",
+      express.static(uploadsPath, {
+        maxAge: "1d",
+        etag: true,
+      }),
+    );
     console.log(`📁 Serving static files from: ${uploadsPath}`);
 
     this.app.options("*", cors());
@@ -187,10 +199,20 @@ class App {
         throw new Error("MONGODB_URI is not defined in environment variables");
       }
 
-      await mongoose.connect(process.env.MONGODB_URI);
+      await mongoose.connect(process.env.MONGODB_URI, {
+        maxPoolSize: 10,
+        minPoolSize: 2,
+        socketTimeoutMS: 45000,
+        connectTimeoutMS: 10000,
+        serverSelectionTimeoutMS: 5000,
+      });
+
       console.log("✅ MongoDB connected successfully");
 
-      const BillingSettings = require("./models/BillingSettings").default;
+      // Ensure all indexes are created for performance
+      await ensureIndexes();
+
+      // Check and create default billing settings
       const settings = await BillingSettings.findOne();
       if (!settings) {
         await BillingSettings.create({
