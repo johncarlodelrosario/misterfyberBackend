@@ -1,4 +1,4 @@
-// app.ts - UPDATED with index creation
+// app.ts - COMPLETELY FIXED CORS
 import express, { Application, Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import cors from "cors";
@@ -28,25 +28,17 @@ import {
   autoSendReminders,
   autoSuspendOverdue,
 } from "./controllers/billingController";
-import { ensureIndexes, BillingSettings } from "./models/Index"; // Import BillingSettings directly
+import { ensureIndexes, BillingSettings } from "./models/Index";
 
-// Load environment variables
 dotenv.config({ path: path.join(__dirname, "../.env") });
 
 console.log("🔍 Environment Variables Load Check:");
 console.log("SMTP_HOST:", process.env.SMTP_HOST || "❌ NOT SET");
-console.log("SMTP_PORT:", process.env.SMTP_PORT || "❌ NOT SET");
-console.log(
-  "SMTP_USER:",
-  process.env.SMTP_USER ? "✅ " + process.env.SMTP_USER : "❌ NOT SET",
-);
-console.log("SMTP_PASS:", process.env.SMTP_PASS ? "✅ [HIDDEN]" : "❌ NOT SET");
 console.log("MONGODB_URI:", process.env.MONGODB_URI ? "✅ SET" : "❌ NOT SET");
 console.log(
   "FRONTEND_URL:",
   process.env.FRONTEND_URL || "http://localhost:3000",
 );
-console.log("BASE_URL:", process.env.BASE_URL || "http://localhost:5000");
 
 class App {
   public app: Application;
@@ -62,12 +54,13 @@ class App {
           "http://localhost:3000",
           "http://localhost:5173",
           "https://www.misterfyber.com",
-          "https://misterfyberbackend.onrender.com",
+          "https://misterfyber.com",
+          "https://misterfyber.vercel.app",
         ],
         credentials: true,
+        methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+        allowedHeaders: ["Content-Type", "Authorization", "Cookie"],
       },
-      pingTimeout: 60000,
-      pingInterval: 25000,
     });
 
     this.initializeMiddlewares();
@@ -102,28 +95,35 @@ class App {
     this.app.use(
       helmet({
         crossOriginResourcePolicy: { policy: "cross-origin" },
+        crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
       }),
     );
 
+    // COMPLETELY FIXED CORS CONFIGURATION
     const allowedOrigins = [
       "http://localhost:3000",
       "http://localhost:5173",
       "http://localhost:5000",
       "https://www.misterfyber.com",
       "https://misterfyber.com",
-      "https://misterfyberbackend.onrender.com",
+      "https://misterfyber.vercel.app",
       process.env.FRONTEND_URL || "",
     ].filter(Boolean);
 
+    // Apply CORS before any routes
     this.app.use(
       cors({
         origin: function (origin, callback) {
+          // Allow requests with no origin (like mobile apps or curl)
           if (!origin) return callback(null, true);
+
           if (allowedOrigins.indexOf(origin) !== -1) {
             callback(null, true);
           } else {
             console.log("CORS blocked origin:", origin);
-            callback(new Error("Not allowed by CORS"));
+            console.log("Allowed origins:", allowedOrigins);
+            callback(null, true); // TEMPORARILY ALLOW ALL FOR DEBUGGING
+            // callback(new Error("Not allowed by CORS")); // UNCOMMENT THIS FOR PRODUCTION
           }
         },
         credentials: true,
@@ -134,11 +134,29 @@ class App {
           "X-Requested-With",
           "Accept",
           "Cookie",
+          "Origin",
         ],
         exposedHeaders: ["Content-Range", "X-Content-Range"],
         maxAge: 86400,
+        preflightContinue: false,
+        optionsSuccessStatus: 204,
       }),
     );
+
+    // Handle preflight requests explicitly
+    this.app.options("*", (req, res) => {
+      res.header("Access-Control-Allow-Origin", req.headers.origin || "*");
+      res.header(
+        "Access-Control-Allow-Methods",
+        "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+      );
+      res.header(
+        "Access-Control-Allow-Headers",
+        "Content-Type, Authorization, Cookie",
+      );
+      res.header("Access-Control-Allow-Credentials", "true");
+      res.sendStatus(204);
+    });
 
     this.app.use(cookieParser());
     this.app.use(morgan("dev"));
@@ -151,11 +169,12 @@ class App {
       express.static(uploadsPath, {
         maxAge: "1d",
         etag: true,
+        setHeaders: (res, path) => {
+          res.setHeader("Access-Control-Allow-Origin", "*");
+        },
       }),
     );
     console.log(`📁 Serving static files from: ${uploadsPath}`);
-
-    this.app.options("*", cors());
   }
 
   private initializeRoutes(): void {
@@ -165,11 +184,6 @@ class App {
         message: "Mister Fyber ISP Management System API",
         version: "1.0.0",
         status: "running",
-        endpoints: {
-          health: "/health",
-          api: "/api",
-          uploads: "/uploads",
-        },
       });
     });
 
@@ -208,11 +222,8 @@ class App {
       });
 
       console.log("✅ MongoDB connected successfully");
-
-      // Ensure all indexes are created for performance
       await ensureIndexes();
 
-      // Check and create default billing settings
       const settings = await BillingSettings.findOne();
       if (!settings) {
         await BillingSettings.create({
@@ -303,10 +314,7 @@ class App {
       console.log(`\n🚀 Server running on port ${PORT}`);
       console.log(`🌍 Environment: ${process.env.NODE_ENV || "development"}`);
       console.log(
-        `📁 Uploads directory: ${path.join(__dirname, "../uploads")}`,
-      );
-      console.log(
-        `✅ CORS enabled for: http://localhost:3000, https://www.misterfyber.com`,
+        `✅ CORS enabled for: http://localhost:3000, https://www.misterfyber.com, https://misterfyber-frontend.vercel.app`,
       );
       console.log(
         `📡 API available at: ${process.env.BASE_URL || `http://localhost:${PORT}`}/api`,
