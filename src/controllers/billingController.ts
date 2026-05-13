@@ -1,3 +1,4 @@
+// controllers/billingController.ts - COMPLETE FULLY OPTIMIZED
 import { Request, Response, NextFunction } from "express";
 import Billing from "../models/Billing";
 import BillingCycle from "../models/BillingCycle";
@@ -11,10 +12,17 @@ import mongoose from "mongoose";
 
 type AuthRequest = Request & { user?: any };
 
-// CACHE for billing settings (1 hour)
+// ==================== CACHE SYSTEM ====================
 let billingSettingsCache: any = null;
 let billingSettingsCacheTime = 0;
 const SETTINGS_CACHE_TTL = 60 * 60 * 1000; // 1 hour
+
+let billingCyclesCache: Map<string, { data: any; timestamp: number }> =
+  new Map();
+let billsCache: Map<string, { data: any; timestamp: number }> = new Map();
+let summaryCache: { data: any; timestamp: number } | null = null;
+const SUMMARY_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
+const LIST_CACHE_TTL = 30 * 1000; // 30 seconds
 
 function generateInvoiceNumber(): string {
   const date = new Date();
@@ -25,6 +33,18 @@ function generateInvoiceNumber(): string {
     .toString()
     .padStart(3, "0");
   return `INV-${year}${month}-${timestamp}${random}`;
+}
+
+function getCacheKey(params: any): string {
+  return JSON.stringify(params);
+}
+
+function clearAllCache(): void {
+  billingSettingsCache = null;
+  billingCyclesCache.clear();
+  billsCache.clear();
+  summaryCache = null;
+  console.log("🗑️ Billing cache cleared");
 }
 
 // ==================== GET BILLING SETTINGS (WITH CACHE) ====================
@@ -79,8 +99,8 @@ export const updateBillingSettings = async (
       upsert: true,
     }).lean();
 
-    // Clear cache on update
     billingSettingsCache = null;
+    clearAllCache();
 
     res.status(200).json({ success: true, data: settings });
   } catch (error) {
@@ -127,10 +147,7 @@ export const autoSendReminders = async (req?: AuthRequest, res?: Response) => {
 
       const bills = await Billing.find({
         status: "sent",
-        dueDate: {
-          $gte: startOfDay,
-          $lte: endOfDay,
-        },
+        dueDate: { $gte: startOfDay, $lte: endOfDay },
         [reminderField]: { $ne: true },
       })
         .populate("userId")
@@ -154,7 +171,6 @@ export const autoSendReminders = async (req?: AuthRequest, res?: Response) => {
             { $set: { [reminderField]: true } },
           );
           remindersSent++;
-
           console.log(
             `📧 Sent ${days}-day reminder for bill ${bill.invoiceNumber} to ${user.email}`,
           );
@@ -281,10 +297,7 @@ export const startBilling = async (
           userId,
           billingCycleId: billingCycle[0]._id,
           invoiceNumber: generateInvoiceNumber(),
-          billingPeriod: {
-            start: installationDate,
-            end: lastDayOfMonth,
-          },
+          billingPeriod: { start: installationDate, end: lastDayOfMonth },
           dueDate: proRatedDueDate,
           items: [
             {
@@ -323,6 +336,8 @@ export const startBilling = async (
     );
 
     await emailService.sendInvoice(user, proRatedBill[0]);
+
+    clearAllCache();
 
     res.status(200).json({
       success: true,
@@ -374,17 +389,18 @@ export const confirmProRatedPayment = async (
     }
 
     if (!billingCycle) {
-      return res.status(404).json({
-        success: false,
-        message: "No pending billing cycle found",
-      });
+      return res
+        .status(404)
+        .json({ success: false, message: "No pending billing cycle found" });
     }
 
     if (billingCycle.proRatedPaid) {
-      return res.status(400).json({
-        success: false,
-        message: "Pro-rated payment already confirmed",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Pro-rated payment already confirmed",
+        });
     }
 
     const proRatedBill = await Billing.findOne({
@@ -395,10 +411,12 @@ export const confirmProRatedPayment = async (
     }).lean();
 
     if (!proRatedBill) {
-      return res.status(404).json({
-        success: false,
-        message: "Pro-rated bill not found or not pending confirmation",
-      });
+      return res
+        .status(404)
+        .json({
+          success: false,
+          message: "Pro-rated bill not found or not pending confirmation",
+        });
     }
 
     await Billing.updateOne(
@@ -457,13 +475,12 @@ export const confirmProRatedPayment = async (
        <p>Thank you for choosing Mister Fyber!</p>`,
     );
 
+    clearAllCache();
+
     res.status(200).json({
       success: true,
       message: "Pro-rated payment confirmed. Billing cycle is now active.",
-      data: {
-        payment: payment[0],
-        billingCycle: billingCycle,
-      },
+      data: { payment: payment[0], billingCycle: billingCycle },
     });
   } catch (error) {
     await session.abortTransaction();
@@ -503,18 +520,22 @@ export const startMonthlyBilling = async (
     }
 
     if (!billingCycle) {
-      return res.status(404).json({
-        success: false,
-        message:
-          "No pending billing cycle found or pro-rated payment not confirmed",
-      });
+      return res
+        .status(404)
+        .json({
+          success: false,
+          message:
+            "No pending billing cycle found or pro-rated payment not confirmed",
+        });
     }
 
     if (billingCycle.manualBillStart) {
-      return res.status(400).json({
-        success: false,
-        message: "Monthly billing has already been started for this user",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Monthly billing has already been started for this user",
+        });
     }
 
     const today = new Date();
@@ -540,10 +561,7 @@ export const startMonthlyBilling = async (
           userId,
           billingCycleId: billingCycle._id,
           invoiceNumber: generateInvoiceNumber(),
-          billingPeriod: {
-            start: billingStart,
-            end: billingEnd,
-          },
+          billingPeriod: { start: billingStart, end: billingEnd },
           dueDate: dueDate,
           items: [
             {
@@ -584,12 +602,7 @@ export const startMonthlyBilling = async (
 
     await User.updateOne(
       { _id: userId },
-      {
-        $set: {
-          status: "active",
-          "billingInfo.currentBill": 0,
-        },
-      },
+      { $set: { status: "active", "billingInfo.currentBill": 0 } },
     );
 
     if (user.mikrotik && user.mikrotik.username && user.planId) {
@@ -613,6 +626,8 @@ export const startMonthlyBilling = async (
     );
 
     await emailService.sendInvoice(user, firstMonthlyBill[0]);
+
+    clearAllCache();
 
     res.status(200).json({
       success: true,
@@ -664,13 +679,14 @@ export const markBillAsPaid = async (
       billingId: bill._id,
       status: "completed",
     }).lean();
-
     if (existingPayment) {
-      return res.status(400).json({
-        success: false,
-        message: "Payment already exists for this bill",
-        data: { payment: existingPayment },
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Payment already exists for this bill",
+          data: { payment: existingPayment },
+        });
     }
 
     const payment = await Payment.create(
@@ -718,7 +734,6 @@ export const markBillAsPaid = async (
           billingCycle.status = "active";
         }
       }
-
       await billingCycle.save({ session });
     }
 
@@ -733,7 +748,6 @@ export const markBillAsPaid = async (
 
     if (user.status === "suspended") {
       await User.updateOne({ _id: user._id }, { $set: { status: "active" } });
-
       if (user.mikrotik?.username && user.planId) {
         try {
           await mikrotikService.applyPlanToUser(user, user.planId);
@@ -745,6 +759,8 @@ export const markBillAsPaid = async (
 
     await session.commitTransaction();
     await emailService.sendPaymentConfirmation(user, payment[0], bill);
+
+    clearAllCache();
 
     res.status(200).json({
       success: true,
@@ -779,36 +795,38 @@ export const submitProRatedPayment = async (
     });
 
     if (!bill) {
-      return res.status(404).json({
-        success: false,
-        message: "Pro-rated bill not found",
-      });
+      return res
+        .status(404)
+        .json({ success: false, message: "Pro-rated bill not found" });
     }
 
     if (bill.status === "paid") {
-      return res.status(400).json({
-        success: false,
-        message: "This bill has already been paid",
-      });
+      return res
+        .status(400)
+        .json({ success: false, message: "This bill has already been paid" });
     }
 
     if (bill.status === "pending_confirmation") {
-      return res.status(400).json({
-        success: false,
-        message: "Payment already submitted and pending admin confirmation",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Payment already submitted and pending admin confirmation",
+        });
     }
 
     const existingPendingPayment = await Payment.findOne({
       billingId: bill._id,
       status: "pending",
     }).lean();
-
     if (existingPendingPayment) {
-      return res.status(400).json({
-        success: false,
-        message: "Payment already pending confirmation. Please wait for admin.",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message:
+            "Payment already pending confirmation. Please wait for admin.",
+        });
     }
 
     await Billing.updateOne(
@@ -851,15 +869,13 @@ export const submitProRatedPayment = async (
       `💰 Pro-rated payment submitted for user ${userId}, bill ${bill.invoiceNumber}. Awaiting admin confirmation.`,
     );
 
+    clearAllCache();
+
     res.status(200).json({
       success: true,
       message:
         "Payment submitted successfully! Please wait for admin confirmation.",
-      data: {
-        bill,
-        payment: payment[0],
-        status: "pending_confirmation",
-      },
+      data: { bill, payment: payment[0], status: "pending_confirmation" },
     });
   } catch (error) {
     await session.abortTransaction();
@@ -889,36 +905,38 @@ export const submitMonthlyPayment = async (
     });
 
     if (!bill) {
-      return res.status(404).json({
-        success: false,
-        message: "Bill not found",
-      });
+      return res
+        .status(404)
+        .json({ success: false, message: "Bill not found" });
     }
 
     if (bill.status === "paid") {
-      return res.status(400).json({
-        success: false,
-        message: "This bill has already been paid",
-      });
+      return res
+        .status(400)
+        .json({ success: false, message: "This bill has already been paid" });
     }
 
     if (bill.status === "pending_confirmation") {
-      return res.status(400).json({
-        success: false,
-        message: "Payment already submitted and pending admin confirmation",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Payment already submitted and pending admin confirmation",
+        });
     }
 
     const existingPendingPayment = await Payment.findOne({
       billingId: bill._id,
       status: "pending",
     }).lean();
-
     if (existingPendingPayment) {
-      return res.status(400).json({
-        success: false,
-        message: "Payment already pending confirmation. Please wait for admin.",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message:
+            "Payment already pending confirmation. Please wait for admin.",
+        });
     }
 
     const today = new Date();
@@ -980,15 +998,13 @@ export const submitMonthlyPayment = async (
       `💰 Monthly payment submitted for user ${userId}, bill ${bill.invoiceNumber}. Awaiting admin confirmation.`,
     );
 
+    clearAllCache();
+
     res.status(200).json({
       success: true,
       message:
         "Payment submitted successfully! Please wait for admin confirmation.",
-      data: {
-        bill,
-        payment: payment[0],
-        status: "pending_confirmation",
-      },
+      data: { bill, payment: payment[0], status: "pending_confirmation" },
     });
   } catch (error) {
     await session.abortTransaction();
@@ -1131,6 +1147,8 @@ export const autoGenerateMonthlyBills = async (
       );
     }
 
+    clearAllCache();
+
     if (res) {
       res
         .status(200)
@@ -1206,6 +1224,8 @@ export const autoSuspendOverdue = async (req?: AuthRequest, res?: Response) => {
       }
     }
 
+    clearAllCache();
+
     if (res) {
       res
         .status(200)
@@ -1236,10 +1256,7 @@ export const getPendingProRatedBills = async (
       .sort({ createdAt: -1 })
       .lean();
 
-    res.status(200).json({
-      success: true,
-      data: pendingBills,
-    });
+    res.status(200).json({ success: true, data: pendingBills });
   } catch (error) {
     next(error);
   }
@@ -1262,10 +1279,7 @@ export const getPendingActivations = async (
       .sort({ proRatedPaidAt: -1 })
       .lean();
 
-    res.status(200).json({
-      success: true,
-      data: pendingCycles,
-    });
+    res.status(200).json({ success: true, data: pendingCycles });
   } catch (error) {
     next(error);
   }
@@ -1286,23 +1300,24 @@ export const getUnpaidProRatedBills = async (
       .sort({ dueDate: 1 })
       .lean();
 
-    res.status(200).json({
-      success: true,
-      data: unpaidBills,
-    });
+    res.status(200).json({ success: true, data: unpaidBills });
   } catch (error) {
     next(error);
   }
 };
 
-// ==================== GET BILLING SUMMARY FOR ADMIN ====================
+// ==================== GET BILLING SUMMARY FOR ADMIN (CACHED) ====================
 export const getBillingSummaryAdmin = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ) => {
   try {
-    // Run all counts in PARALLEL for speed
+    const now = Date.now();
+    if (summaryCache && now - summaryCache.timestamp < SUMMARY_CACHE_TTL) {
+      return res.status(200).json({ success: true, data: summaryCache.data });
+    }
+
     const [
       totalActiveCycles,
       totalPausedCycles,
@@ -1356,20 +1371,20 @@ export const getBillingSummaryAdmin = async (
     ]);
 
     const totalOutstanding = outstandingResult[0]?.total || 0;
+    const data = {
+      activeSubscriptions: totalActiveCycles,
+      pausedSubscriptions: totalPausedCycles,
+      pendingProRated: pendingProRated,
+      pendingActivations: pendingActivations,
+      overdueAccounts: overdueBills,
+      totalOutstanding: totalOutstanding,
+      monthlyRevenue: monthlyRevenue[0]?.total || 0,
+      unpaidProRated: unpaidProRated,
+    };
 
-    res.status(200).json({
-      success: true,
-      data: {
-        activeSubscriptions: totalActiveCycles,
-        pausedSubscriptions: totalPausedCycles,
-        pendingProRated: pendingProRated,
-        pendingActivations: pendingActivations,
-        overdueAccounts: overdueBills,
-        totalOutstanding: totalOutstanding,
-        monthlyRevenue: monthlyRevenue[0]?.total || 0,
-        unpaidProRated: unpaidProRated,
-      },
-    });
+    summaryCache = { data, timestamp: now };
+
+    res.status(200).json({ success: true, data });
   } catch (error) {
     next(error);
   }
@@ -1395,11 +1410,13 @@ export const getUserCurrentBilling = async (
 
     if (!billingCycle) {
       console.log(`No billing cycle found for user ${userId}`);
-      return res.status(200).json({
-        success: true,
-        data: null,
-        message: "No active billing cycle",
-      });
+      return res
+        .status(200)
+        .json({
+          success: true,
+          data: null,
+          message: "No active billing cycle",
+        });
     }
 
     const proRatedBill = await Billing.findOne({
@@ -1412,22 +1429,12 @@ export const getUserCurrentBilling = async (
     const isProRatedPaid =
       billingCycle.proRatedPaid === true || isProRatedBillPaid;
 
-    console.log(`Pro-rated bill found: ${proRatedBill ? "YES" : "NO"}`);
-    if (proRatedBill) {
-      console.log(
-        `Pro-rated bill amount: ₱${proRatedBill.total}, status: ${proRatedBill.status}`,
-      );
-    }
-    console.log(`Is pro-rated paid: ${isProRatedPaid}`);
-
     if (proRatedBill && !isProRatedPaid) {
       const isPendingConfirmation =
         proRatedBill.status === "pending_confirmation";
       const isOverdue =
         proRatedBill.status === "overdue" ||
         new Date(proRatedBill.dueDate) < new Date();
-
-      console.log(`RETURNING PRO-RATED BILL: ₱${proRatedBill.total}`);
 
       return res.status(200).json({
         success: true,
@@ -1567,18 +1574,27 @@ export const getUserBillingHistory = async (
   }
 };
 
-// ==================== GET ALL BILLING CYCLES ====================
+// ==================== GET ALL BILLING CYCLES (CACHED) ====================
 export const getAllBillingCycles = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ) => {
   try {
+    const cacheKey = getCacheKey(req.query);
+    const cached = billingCyclesCache.get(cacheKey);
+
+    if (cached && Date.now() - cached.timestamp < LIST_CACHE_TTL) {
+      return res.status(200).json({ success: true, data: cached.data });
+    }
+
     const cycles = await BillingCycle.find()
       .populate("userId", "firstName lastName email username status")
       .populate("planId", "name price")
       .sort({ createdAt: -1 })
       .lean();
+
+    billingCyclesCache.set(cacheKey, { data: cycles, timestamp: Date.now() });
 
     res.status(200).json({ success: true, data: cycles });
   } catch (error) {
@@ -1586,13 +1602,20 @@ export const getAllBillingCycles = async (
   }
 };
 
-// ==================== GET ALL BILLS ====================
+// ==================== GET ALL BILLS (CACHED) ====================
 export const getAllBills = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ) => {
   try {
+    const cacheKey = getCacheKey(req.query);
+    const cached = billsCache.get(cacheKey);
+
+    if (cached && Date.now() - cached.timestamp < LIST_CACHE_TTL) {
+      return res.status(200).json({ success: true, data: cached.data });
+    }
+
     const { status, type } = req.query;
     let query: any = {};
 
@@ -1605,6 +1628,8 @@ export const getAllBills = async (
       .populate("billingCycleId")
       .sort({ dueDate: -1 })
       .lean();
+
+    billsCache.set(cacheKey, { data: bills, timestamp: Date.now() });
 
     res.status(200).json({ success: true, data: bills });
   } catch (error) {
@@ -1637,10 +1662,12 @@ export const stopBilling = async (
     }).lean();
 
     if (!billingCycle) {
-      return res.status(404).json({
-        success: false,
-        message: "No active billing cycle found to stop",
-      });
+      return res
+        .status(404)
+        .json({
+          success: false,
+          message: "No active billing cycle found to stop",
+        });
     }
 
     const unpaidBills = await Billing.findOne({
@@ -1649,11 +1676,13 @@ export const stopBilling = async (
     }).lean();
 
     if (unpaidBills) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "User has unpaid bills. Please settle before stopping billing.",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message:
+            "User has unpaid bills. Please settle before stopping billing.",
+        });
     }
 
     await BillingCycle.updateOne(
@@ -1683,6 +1712,8 @@ export const stopBilling = async (
        <p>Thank you,<br>Mister Fyber Team</p>`,
     );
 
+    clearAllCache();
+
     res.status(200).json({
       success: true,
       message: `Billing stopped for ${user.firstName} ${user.lastName}`,
@@ -1708,10 +1739,9 @@ export const pauseBilling = async (
     console.log(`⏸️ Pausing billing for user: ${userId}`);
 
     if (!userId) {
-      return res.status(400).json({
-        success: false,
-        message: "User ID is required",
-      });
+      return res
+        .status(400)
+        .json({ success: false, message: "User ID is required" });
     }
 
     const user = await User.findById(userId).lean();
@@ -1727,10 +1757,12 @@ export const pauseBilling = async (
     }).lean();
 
     if (!billingCycle) {
-      return res.status(404).json({
-        success: false,
-        message: "No active billing cycle found to pause",
-      });
+      return res
+        .status(404)
+        .json({
+          success: false,
+          message: "No active billing cycle found to pause",
+        });
     }
 
     const unpaidBills = await Billing.findOne({
@@ -1739,10 +1771,12 @@ export const pauseBilling = async (
     }).lean();
 
     if (unpaidBills) {
-      return res.status(400).json({
-        success: false,
-        message: "User has unpaid bills. Please settle before pausing.",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "User has unpaid bills. Please settle before pausing.",
+        });
     }
 
     const pauseDate = new Date();
@@ -1781,6 +1815,8 @@ export const pauseBilling = async (
        <p>Thank you,<br>Mister Fyber Team</p>`,
     );
 
+    clearAllCache();
+
     res.status(200).json({
       success: true,
       message: `Service paused for ${user.firstName} ${user.lastName}. No bills will be generated during pause.`,
@@ -1804,10 +1840,9 @@ export const resumeBilling = async (
     console.log(`🔄 Resuming billing for user: ${userId}`);
 
     if (!userId) {
-      return res.status(400).json({
-        success: false,
-        message: "User ID is required",
-      });
+      return res
+        .status(400)
+        .json({ success: false, message: "User ID is required" });
     }
 
     const user = await User.findById(userId).populate("planId").lean();
@@ -1823,10 +1858,12 @@ export const resumeBilling = async (
     }).lean();
 
     if (!billingCycle) {
-      return res.status(404).json({
-        success: false,
-        message: "No paused billing cycle found for this user",
-      });
+      return res
+        .status(404)
+        .json({
+          success: false,
+          message: "No paused billing cycle found for this user",
+        });
     }
 
     const resumeDate = new Date();
@@ -1869,6 +1906,8 @@ export const resumeBilling = async (
        <p>Thank you for choosing Mister Fyber!</p>`,
     );
 
+    clearAllCache();
+
     res.status(200).json({
       success: true,
       message: `Service resumed for ${user.firstName} ${user.lastName}`,
@@ -1910,10 +1949,12 @@ export const reconnectClient = async (
     }).lean();
 
     if (unpaidBills) {
-      return res.status(400).json({
-        success: false,
-        message: "User has unpaid bills. Please settle before reconnecting.",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "User has unpaid bills. Please settle before reconnecting.",
+        });
     }
 
     const billingCycle = await BillingCycle.findOne({
@@ -1962,6 +2003,8 @@ export const reconnectClient = async (
        <p>Thank you for choosing Mister Fyber!</p>`,
     );
 
+    clearAllCache();
+
     res.status(200).json({
       success: true,
       message: `Service reconnected for ${user.firstName} ${user.lastName}`,
@@ -2000,10 +2043,12 @@ export const disconnectClient = async (
     }).lean();
 
     if (unpaidBills) {
-      return res.status(400).json({
-        success: false,
-        message: "User has unpaid bills. Please settle before disconnecting.",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "User has unpaid bills. Please settle before disconnecting.",
+        });
     }
 
     const billingCycle = await BillingCycle.findOne({
@@ -2045,6 +2090,8 @@ export const disconnectClient = async (
        <p>To have your service reconnected, please contact our support team and settle any outstanding balance.</p>
        <p>Thank you,<br>Mister Fyber Team</p>`,
     );
+
+    clearAllCache();
 
     res.status(200).json({
       success: true,

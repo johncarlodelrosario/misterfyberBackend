@@ -1,7 +1,5 @@
-// models/index.ts
+// models/Index.ts - COMPLETE WITH ALL OPTIMIZED INDEXES
 import mongoose from "mongoose";
-
-// Import all models
 import User from "./User";
 import Admin from "./Admin";
 import Plan from "./Plan";
@@ -10,15 +8,15 @@ import Billing from "./Billing";
 import BillingCycle from "./BillingCycle";
 import BillingSettings from "./BillingSettings";
 import Application from "./Application";
+import Building from "./Building";
+import Notification from "./Notification";
 
-// Function to ensure all indexes are created
 export async function ensureIndexes() {
-  console.log("🔍 Creating database indexes for performance...");
-
+  console.log("🔍 Creating/Ensuring database indexes for performance...");
   const startTime = Date.now();
 
   try {
-    // User indexes
+    // ==================== USER INDEXES ====================
     await User.collection.createIndex({ email: 1 }, { unique: true });
     await User.collection.createIndex({ username: 1 }, { unique: true });
     await User.collection.createIndex({ status: 1 });
@@ -27,8 +25,14 @@ export async function ensureIndexes() {
     await User.collection.createIndex({ "mikrotik.username": 1 });
     await User.collection.createIndex({ "billingInfo.billingCycleId": 1 });
     await User.collection.createIndex({ status: 1, createdAt: -1 });
+    await User.collection.createIndex({ firstName: 1, lastName: 1 });
+    await User.collection.createIndex({ email: 1, status: 1 });
 
-    // Payment indexes
+    // Compound indexes for common queries
+    await User.collection.createIndex({ status: 1, planId: 1, createdAt: -1 });
+    console.log("✅ User indexes created");
+
+    // ==================== PAYMENT INDEXES ====================
     await Payment.collection.createIndex({ userId: 1, createdAt: -1 });
     await Payment.collection.createIndex({ status: 1, createdAt: -1 });
     await Payment.collection.createIndex(
@@ -39,8 +43,17 @@ export async function ensureIndexes() {
     await Payment.collection.createIndex({ status: 1, paidAt: -1 });
     await Payment.collection.createIndex({ createdAt: -1 });
     await Payment.collection.createIndex({ userId: 1, status: 1, paidAt: -1 });
+    await Payment.collection.createIndex({ status: 1, createdAt: 1 });
 
-    // Billing indexes
+    // Compound for revenue reports
+    await Payment.collection.createIndex({
+      status: 1,
+      createdAt: 1,
+      amount: 1,
+    });
+    console.log("✅ Payment indexes created");
+
+    // ==================== BILLING INDEXES ====================
     await Billing.collection.createIndex({ userId: 1, status: 1, dueDate: 1 });
     await Billing.collection.createIndex({ userId: 1, createdAt: -1 });
     await Billing.collection.createIndex({ status: 1, dueDate: 1 });
@@ -56,8 +69,19 @@ export async function ensureIndexes() {
       isProRated: 1,
       status: 1,
     });
+    await Billing.collection.createIndex({
+      status: 1,
+      dueDate: 1,
+      reminder7DaySent: 1,
+    });
+    await Billing.collection.createIndex({
+      billingCycleId: 1,
+      status: 1,
+      dueDate: 1,
+    });
+    console.log("✅ Billing indexes created");
 
-    // BillingCycle indexes
+    // ==================== BILLING CYCLE INDEXES ====================
     await BillingCycle.collection.createIndex({ userId: 1, status: 1 });
     await BillingCycle.collection.createIndex({ userId: 1 });
     await BillingCycle.collection.createIndex({
@@ -72,22 +96,80 @@ export async function ensureIndexes() {
       proRatedPaid: 1,
       manualBillStart: 1,
     });
+    await BillingCycle.collection.createIndex({
+      nextBillingDate: 1,
+      status: 1,
+    });
+    await BillingCycle.collection.createIndex({
+      userId: 1,
+      status: 1,
+      proRatedPaid: 1,
+    });
+    console.log("✅ BillingCycle indexes created");
 
-    // Application indexes
+    // ==================== APPLICATION INDEXES ====================
     await Application.collection.createIndex({ applicationId: 1 });
     await Application.collection.createIndex({ email: 1 });
     await Application.collection.createIndex({ status: 1 });
     await Application.collection.createIndex({ createdAt: -1 });
     await Application.collection.createIndex({ status: 1, createdAt: -1 });
+    await Application.collection.createIndex({ email: 1, status: 1 });
+    await Application.collection.createIndex({ buildingId: 1, status: 1 });
+    await Application.collection.createIndex({ registeredUserId: 1 });
+    console.log("✅ Application indexes created");
 
-    // Admin indexes
+    // ==================== ADMIN INDEXES ====================
     await Admin.collection.createIndex({ email: 1 }, { unique: true });
     await Admin.collection.createIndex({ username: 1 }, { unique: true });
+    await Admin.collection.createIndex({ role: 1 });
+    await Admin.collection.createIndex({ status: 1 });
+    console.log("✅ Admin indexes created");
 
-    // Plan indexes
-    if (Plan.collection) {
-      await Plan.collection.createIndex({ isActive: 1 });
-      await Plan.collection.createIndex({ price: 1 });
+    // ==================== PLAN INDEXES ====================
+    await Plan.collection.createIndex({ isActive: 1 });
+    await Plan.collection.createIndex({ price: 1 });
+    await Plan.collection.createIndex({ name: 1 }, { unique: true });
+    await Plan.collection.createIndex({ isActive: 1, price: 1 });
+    console.log("✅ Plan indexes created");
+
+    // ==================== BUILDING INDEXES ====================
+    await Building.collection.createIndex(
+      { buildingName: 1 },
+      { unique: true },
+    );
+    await Building.collection.createIndex({ isActive: 1 });
+    await Building.collection.createIndex({ city: 1, isActive: 1 });
+    console.log("✅ Building indexes created");
+
+    // ==================== NOTIFICATION INDEXES ====================
+    await Notification.collection.createIndex({ userId: 1, createdAt: -1 });
+    await Notification.collection.createIndex({ isRead: 1 });
+    await Notification.collection.createIndex({
+      userId: 1,
+      isRead: 1,
+      createdAt: -1,
+    });
+    await Notification.collection.createIndex(
+      { createdAt: 1 },
+      { expireAfterSeconds: 2592000 },
+    ); // Auto-delete after 30 days
+    console.log("✅ Notification indexes created");
+
+    // ==================== BILLING SETTINGS ====================
+    // Single document, no indexes needed but ensure it exists
+    const settingsExists = await BillingSettings.findOne();
+    if (!settingsExists) {
+      await BillingSettings.create({
+        reminderDays: [7, 3, 1],
+        dueDateDaysAfterPeriod: 5,
+        gracePeriodDays: 5,
+        autoGenerateBills: true,
+        autoSendReminders: true,
+        autoSuspendOnNonPayment: true,
+        billingCycleDay: 1,
+        freeDays: 1,
+      });
+      console.log("✅ Default billing settings created");
     }
 
     const duration = Date.now() - startTime;
@@ -98,7 +180,6 @@ export async function ensureIndexes() {
   }
 }
 
-// Re-export all models
 export {
   User,
   Admin,
@@ -108,6 +189,8 @@ export {
   BillingCycle,
   BillingSettings,
   Application,
+  Building,
+  Notification,
 };
 
 export default {
@@ -119,5 +202,7 @@ export default {
   BillingCycle,
   BillingSettings,
   Application,
+  Building,
+  Notification,
   ensureIndexes,
 };
