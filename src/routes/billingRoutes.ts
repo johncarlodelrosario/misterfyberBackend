@@ -1,4 +1,4 @@
-// routes/billingRoutes.ts - COMPLETE FIXED VERSION
+// routes/billingRoutes.ts - COMPLETE WITH ALL ROUTES
 import express from "express";
 import { body } from "express-validator";
 import {
@@ -8,12 +8,14 @@ import {
   markBillAsPaid,
   getPendingProRatedBills,
   getPendingActivations,
-  getBillingSummaryAdmin, // FIXED: Changed from getBillingSummary
+  getBillingSummaryAdmin,
   getUserCurrentBilling,
   getUserBillingHistory,
   getAllBillingCycles,
   getAllBills,
   stopBilling,
+  pauseBilling,
+  resumeBilling,
   reconnectClient,
   disconnectClient,
   autoGenerateMonthlyBills,
@@ -23,8 +25,6 @@ import {
   updateBillingSettings,
   submitProRatedPayment,
   submitMonthlyPayment,
-  pauseBilling,
-  resumeBilling,
 } from "../controllers/billingController";
 import { protect, authorize } from "../middleware/auth";
 
@@ -69,12 +69,12 @@ router.get(
   getAllBills,
 );
 
-// Billing summary - FIXED: Using correct function name
+// Billing summary
 router.get(
   "/summary",
   protect,
   authorize("super_admin", "admin", "staff"),
-  getBillingSummaryAdmin, // FIXED: Changed from getBillingSummary
+  getBillingSummaryAdmin,
 );
 
 // Pending pro-rated bills
@@ -111,10 +111,7 @@ router.post(
   "/confirm-pro-rated",
   protect,
   authorize("super_admin", "admin", "staff"),
-  [
-    body("userId").isMongoId().withMessage("User ID is required"),
-    body("paymentDetails").optional().isObject(),
-  ],
+  [body("userId").isMongoId().withMessage("User ID is required")],
   confirmProRatedPayment,
 );
 
