@@ -25,39 +25,27 @@ export interface IApplication extends Document {
 }
 
 function getBuildingAbbreviation(buildingName: string): string {
-  // Special case: SILK -> SLK
   if (buildingName && buildingName.toUpperCase() === "SILK") {
     return "SLK";
   }
-
-  // For other buildings, take first 3 letters
   if (buildingName && buildingName.trim().length >= 3) {
     return buildingName.trim().toUpperCase().substring(0, 3);
   }
-
-  // If less than 3 characters, pad with X
   if (buildingName && buildingName.trim().length > 0) {
     return buildingName.trim().toUpperCase().padEnd(3, "X");
   }
-
   return "UNK";
 }
 
 function generateApplicationIdSync(buildingName?: string): string {
-  // Get current year (last 2 digits) and month (2 digits)
   const now = new Date();
   const year = now.getFullYear().toString().slice(-2);
   const month = (now.getMonth() + 1).toString().padStart(2, "0");
-
-  // Generate random 7-digit number (1000000 to 9999999)
   const randomNum = Math.floor(1000000 + Math.random() * 9000000).toString();
-
   let buildingCode = "UNK";
-
   if (buildingName) {
     buildingCode = getBuildingAbbreviation(buildingName);
   }
-
   return `${buildingCode}${year}${month}${randomNum}`;
 }
 
@@ -106,9 +94,15 @@ const ApplicationSchema: Schema = new Schema(
   },
 );
 
+// OPTIMIZED: Comprehensive indexes for fast queries
 ApplicationSchema.index({ applicationId: 1 });
 ApplicationSchema.index({ email: 1 });
 ApplicationSchema.index({ status: 1 });
 ApplicationSchema.index({ buildingId: 1 });
+ApplicationSchema.index({ createdAt: -1 });
+// Compound indexes for common query patterns
+ApplicationSchema.index({ status: 1, createdAt: -1 });
+ApplicationSchema.index({ email: 1, status: 1 });
+ApplicationSchema.index({ buildingId: 1, status: 1 });
 
 export default mongoose.model<IApplication>("Application", ApplicationSchema);

@@ -1,4 +1,3 @@
-// routes/applicationRoutes.ts - COMPLETE (ADD super_admin)
 import express from "express";
 import { body } from "express-validator";
 import {
@@ -48,7 +47,6 @@ router.get("/status/:applicationId", checkApplicationStatus);
 
 // Admin only routes - require authentication and admin role
 router.use(protect);
-// FIXED: Include super_admin in allowed roles
 router.use(authorize("super_admin", "admin", "staff"));
 
 router.get("/", getAllApplications);

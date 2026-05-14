@@ -27,8 +27,6 @@ export async function ensureIndexes() {
     await User.collection.createIndex({ status: 1, createdAt: -1 });
     await User.collection.createIndex({ firstName: 1, lastName: 1 });
     await User.collection.createIndex({ email: 1, status: 1 });
-
-    // Compound indexes for common queries
     await User.collection.createIndex({ status: 1, planId: 1, createdAt: -1 });
     console.log("✅ User indexes created");
 
@@ -44,8 +42,6 @@ export async function ensureIndexes() {
     await Payment.collection.createIndex({ createdAt: -1 });
     await Payment.collection.createIndex({ userId: 1, status: 1, paidAt: -1 });
     await Payment.collection.createIndex({ status: 1, createdAt: 1 });
-
-    // Compound for revenue reports
     await Payment.collection.createIndex({
       status: 1,
       createdAt: 1,
@@ -107,15 +103,28 @@ export async function ensureIndexes() {
     });
     console.log("✅ BillingCycle indexes created");
 
-    // ==================== APPLICATION INDEXES ====================
+    // ==================== APPLICATION INDEXES (OPTIMIZED) ====================
+    // Basic indexes
     await Application.collection.createIndex({ applicationId: 1 });
     await Application.collection.createIndex({ email: 1 });
     await Application.collection.createIndex({ status: 1 });
     await Application.collection.createIndex({ createdAt: -1 });
+    await Application.collection.createIndex({ buildingId: 1 });
+
+    // Compound indexes for common query patterns
     await Application.collection.createIndex({ status: 1, createdAt: -1 });
     await Application.collection.createIndex({ email: 1, status: 1 });
     await Application.collection.createIndex({ buildingId: 1, status: 1 });
     await Application.collection.createIndex({ registeredUserId: 1 });
+
+    // Performance optimization indexes
+    await Application.collection.createIndex({
+      status: 1,
+      createdAt: -1,
+      buildingId: 1,
+    });
+    await Application.collection.createIndex({ planId: 1, status: 1 });
+    await Application.collection.createIndex({ reviewedBy: 1, reviewedAt: -1 });
     console.log("✅ Application indexes created");
 
     // ==================== ADMIN INDEXES ====================
@@ -152,11 +161,10 @@ export async function ensureIndexes() {
     await Notification.collection.createIndex(
       { createdAt: 1 },
       { expireAfterSeconds: 2592000 },
-    ); // Auto-delete after 30 days
+    );
     console.log("✅ Notification indexes created");
 
     // ==================== BILLING SETTINGS ====================
-    // Single document, no indexes needed but ensure it exists
     const settingsExists = await BillingSettings.findOne();
     if (!settingsExists) {
       await BillingSettings.create({
