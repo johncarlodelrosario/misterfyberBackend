@@ -1,4 +1,3 @@
-// controllers/applicationController.ts - COMPLETE FIXED VERSION
 import { Request, Response, NextFunction } from "express";
 import Application from "../models/Application";
 import Plan from "../models/Plan";
@@ -72,14 +71,9 @@ export const getProvincesByRegion = async (
   try {
     await initializeData();
     const { regionCode } = req.params;
-
     const provinces = allProvinces
       .filter((p: any) => p.regionCode === regionCode)
-      .map((province: any) => ({
-        code: province.code,
-        name: province.name,
-      }));
-
+      .map((province: any) => ({ code: province.code, name: province.name }));
     res.status(200).json({ success: true, data: provinces });
   } catch (error) {
     console.error("Error fetching provinces:", error);
@@ -95,14 +89,9 @@ export const getCitiesByProvince = async (
   try {
     await initializeData();
     const { provinceCode } = req.params;
-
     const cities = allCities
       .filter((c: any) => c.provinceCode === provinceCode)
-      .map((city: any) => ({
-        code: city.code,
-        name: city.name,
-      }));
-
+      .map((city: any) => ({ code: city.code, name: city.name }));
     res.status(200).json({ success: true, data: cities });
   } catch (error) {
     console.error("Error fetching cities:", error);
@@ -117,7 +106,6 @@ export const getBarangaysByCity = async (
 ) => {
   try {
     const { cityCode } = req.params;
-
     const response = await axios.get(
       `https://psgc.gitlab.io/api/cities-municipalities/${cityCode}/barangays/`,
       { timeout: 10000 },
@@ -125,7 +113,6 @@ export const getBarangaysByCity = async (
     const barangays = response.data.map((barangay: any) => ({
       name: barangay.name,
     }));
-
     res.status(200).json({ success: true, data: barangays });
   } catch (error) {
     console.error("Error fetching barangays:", error);
@@ -141,9 +128,7 @@ const getImageUrl = (imagePath: string): string => {
   ) {
     return imagePath;
   }
-  if (imagePath.startsWith("data:")) {
-    return imagePath;
-  }
+  if (imagePath.startsWith("data:")) return imagePath;
   const PRODUCTION_URL = "https://misterfyberbackend.onrender.com";
   let filename = "";
   const parts = imagePath.split(/[\\\/]/);
@@ -162,11 +147,13 @@ export const submitApplication = async (
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        success: false,
-        message: "Validation failed",
-        errors: errors.array(),
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Validation failed",
+          errors: errors.array(),
+        });
     }
 
     let {
@@ -199,39 +186,34 @@ export const submitApplication = async (
     });
 
     if (!buildingId) {
-      return res.status(400).json({
-        success: false,
-        message: "Building selection is required",
-      });
+      return res
+        .status(400)
+        .json({ success: false, message: "Building selection is required" });
     }
-
     if (!floor) {
-      return res.status(400).json({
-        success: false,
-        message: "Floor is required",
-      });
+      return res
+        .status(400)
+        .json({ success: false, message: "Floor is required" });
     }
-
     if (!unitNumber) {
-      return res.status(400).json({
-        success: false,
-        message: "Unit number is required",
-      });
+      return res
+        .status(400)
+        .json({ success: false, message: "Unit number is required" });
     }
 
     const building = await Building.findById(buildingId);
     if (!building) {
-      return res.status(404).json({
-        success: false,
-        message: "Building not found",
-      });
+      return res
+        .status(404)
+        .json({ success: false, message: "Building not found" });
     }
-
     if (!building.isActive) {
-      return res.status(400).json({
-        success: false,
-        message: "This building is not currently accepting applications",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "This building is not currently accepting applications",
+        });
     }
 
     const existingApplication = await Application.findOne({
@@ -239,7 +221,6 @@ export const submitApplication = async (
       status: "approved",
       registeredUserId: { $exists: false },
     });
-
     if (existingApplication) {
       return res.status(400).json({
         success: false,
@@ -253,7 +234,6 @@ export const submitApplication = async (
       email,
       status: "pending",
     });
-
     if (pendingApplication) {
       return res.status(400).json({
         success: false,
@@ -264,10 +244,9 @@ export const submitApplication = async (
 
     const plan = await Plan.findById(planId);
     if (!plan) {
-      return res.status(404).json({
-        success: false,
-        message: "Plan not found",
-      });
+      return res
+        .status(404)
+        .json({ success: false, message: "Plan not found" });
     }
 
     let idImagePath = "uploads/id-cards/placeholder.jpg";
@@ -299,7 +278,6 @@ export const submitApplication = async (
 
     const application = new Application(applicationData);
     await application.save();
-
     await application.populate("planId");
     await application.populate("buildingId");
 
@@ -334,22 +312,23 @@ export const submitApplication = async (
     });
   } catch (error: any) {
     console.error("Application submission error:", error);
-
     if (error.name === "ValidationError") {
-      return res.status(400).json({
-        success: false,
-        message: error.message,
-        errors: Object.values(error.errors).map((err: any) => err.message),
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: error.message,
+          errors: Object.values(error.errors).map((err: any) => err.message),
+        });
     }
-
     if (error.code === 11000) {
-      return res.status(400).json({
-        success: false,
-        message: "Duplicate application detected. Please try again.",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Duplicate application detected. Please try again.",
+        });
     }
-
     next(error);
   }
 };
@@ -361,7 +340,6 @@ export const checkApplicationStatus = async (
 ) => {
   try {
     const { applicationId } = req.params;
-
     const application = await Application.findOne({ applicationId })
       .populate("planId", "name price speed")
       .populate(
@@ -370,14 +348,12 @@ export const checkApplicationStatus = async (
       );
 
     if (!application) {
-      return res.status(404).json({
-        success: false,
-        message: "Application not found",
-      });
+      return res
+        .status(404)
+        .json({ success: false, message: "Application not found" });
     }
 
     const idImageUrl = getImageUrl(application.idImage);
-
     res.status(200).json({
       success: true,
       data: {
@@ -398,40 +374,38 @@ export const checkApplicationStatus = async (
   }
 };
 
-// FIXED: Optimized getAllApplications with proper pagination and indexing
+// OPTIMIZED: Added caching headers and lean queries
 export const getAllApplications = async (
   req: Request,
   res: Response,
   next: NextFunction,
 ) => {
   try {
-    const { page = 1, limit = 10, status } = req.query;
-
+    const { page = 1, limit = 20, status } = req.query;
     const pageNum = parseInt(page as string);
     const limitNum = parseInt(limit as string);
     const skip = (pageNum - 1) * limitNum;
 
     let query: any = {};
-    if (status && status !== "all") {
-      query.status = status;
-    }
+    if (status && status !== "all") query.status = status;
 
-    // Get total count first (lightweight query)
-    const total = await Application.countDocuments(query);
+    // Set cache control headers for better performance
+    res.setHeader("Cache-Control", "private, max-age=60");
+    res.setHeader("Vary", "Accept-Encoding");
 
-    // Get paginated applications with efficient population
-    const applications = await Application.find(query)
-      .select("-__v") // Exclude version field
-      .populate("planId", "name price") // Only select needed fields
-      .populate("buildingId", "buildingName streetAddress city") // Only select needed fields
-      .populate("reviewedBy", "firstName lastName email") // Only select needed fields
-      .populate("registeredUserId", "username email") // Only select needed fields
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limitNum)
-      .lean(); // Use lean() for better performance
+    const [total, applications] = await Promise.all([
+      Application.countDocuments(query),
+      Application.find(query)
+        .select("-__v")
+        .populate("planId", "name price")
+        .populate("buildingId", "buildingName streetAddress city")
+        .populate("reviewedBy", "firstName lastName email")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum)
+        .lean(),
+    ]);
 
-    // Add image URLs (this is synchronous, no performance issue)
     const applicationsWithUrls = applications.map((app) => ({
       ...app,
       idImageUrl: getImageUrl(app.idImage),
@@ -451,7 +425,6 @@ export const getAllApplications = async (
   }
 };
 
-// FIXED: Optimized getApplication for single record
 export const getApplication = async (
   req: Request,
   res: Response,
@@ -468,21 +441,15 @@ export const getApplication = async (
       .lean();
 
     if (!application) {
-      return res.status(404).json({
-        success: false,
-        message: "Application not found",
-      });
+      return res
+        .status(404)
+        .json({ success: false, message: "Application not found" });
     }
 
     const idImageUrl = getImageUrl(application.idImage);
-
-    res.status(200).json({
-      success: true,
-      data: {
-        ...application,
-        idImageUrl: idImageUrl,
-      },
-    });
+    res
+      .status(200)
+      .json({ success: true, data: { ...application, idImageUrl } });
   } catch (error) {
     console.error("Error in getApplication:", error);
     next(error);
@@ -501,17 +468,17 @@ export const approveApplication = async (
     );
 
     if (!application) {
-      return res.status(404).json({
-        success: false,
-        message: "Application not found",
-      });
+      return res
+        .status(404)
+        .json({ success: false, message: "Application not found" });
     }
-
     if (application.status !== "pending") {
-      return res.status(400).json({
-        success: false,
-        message: `Application already ${application.status}`,
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: `Application already ${application.status}`,
+        });
     }
 
     application.status = "approved";
@@ -552,17 +519,17 @@ export const rejectApplication = async (
     );
 
     if (!application) {
-      return res.status(404).json({
-        success: false,
-        message: "Application not found",
-      });
+      return res
+        .status(404)
+        .json({ success: false, message: "Application not found" });
     }
-
     if (application.status !== "pending") {
-      return res.status(400).json({
-        success: false,
-        message: `Application already ${application.status}`,
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: `Application already ${application.status}`,
+        });
     }
 
     application.status = "rejected";
