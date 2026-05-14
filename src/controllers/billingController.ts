@@ -1,4 +1,4 @@
-// controllers/billingController.ts - COMPLETE FULLY OPTIMIZED
+// controllers/billingController.ts - COMPLETE WITH PAUSE/RESUME
 import { Request, Response, NextFunction } from "express";
 import Billing from "../models/Billing";
 import BillingCycle from "../models/BillingCycle";
@@ -15,14 +15,14 @@ type AuthRequest = Request & { user?: any };
 // ==================== CACHE SYSTEM ====================
 let billingSettingsCache: any = null;
 let billingSettingsCacheTime = 0;
-const SETTINGS_CACHE_TTL = 60 * 60 * 1000; // 1 hour
+const SETTINGS_CACHE_TTL = 60 * 60 * 1000;
 
 let billingCyclesCache: Map<string, { data: any; timestamp: number }> =
   new Map();
 let billsCache: Map<string, { data: any; timestamp: number }> = new Map();
 let summaryCache: { data: any; timestamp: number } | null = null;
-const SUMMARY_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
-const LIST_CACHE_TTL = 30 * 1000; // 30 seconds
+const SUMMARY_CACHE_TTL = 2 * 60 * 1000;
+const LIST_CACHE_TTL = 30 * 1000;
 
 function generateInvoiceNumber(): string {
   const date = new Date();
@@ -47,153 +47,847 @@ function clearAllCache(): void {
   console.log("🗑️ Billing cache cleared");
 }
 
-// ==================== GET BILLING SETTINGS (WITH CACHE) ====================
-export const getBillingSettings = async (
+// ==================== PAUSE BILLING ====================
+export const pauseBilling = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { userId, reason, pauseUntilDate } = req.body;
+
+    console.log(`⏸️ Pausing billing for user: ${userId}`);
+
+    if (!userId) {
+      return res
+        .status(400)
+        .json({ success: false, message: "User ID is required" });
+    }
+
+    const user = await User.findById(userId).lean();
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+    }
+
+    const billingCycle = await BillingCycle.findOne({
+      userId,
+      status: "active",
+    }).lean();
+
+    if (!billingCycle) {
+      return res
+        .status(404)
+        .json({
+          success: false,
+          message: "No active billing cycle found to pause",
+        });
+    }
+
+    const unpaidBills = await Billing.findOne({
+      userId,
+      status: { $in: ["sent", "overdue", "pending_confirmation"] },
+    }).lean();
+
+    if (unpaidBills) {
+      return res.status(400).json({
+        success: false,
+        message: "User has unpaid bills. Please settle before pausing.",
+      });
+    }
+
+    const pauseDate = new Date();
+    await BillingCycle.updateOne(
+      { _id: billingCycle._id },
+      {
+        $set: {
+          status: "paused",
+          pausedAt: pauseDate,
+          pauseReason: reason || "User requested pause (vacation)",
+          pauseUntil: pauseUntilDate ? new Date(pauseUntilDate) : undefined,
+        },
+      },
+      { session },
+    );
+
+    await User.updateOne(
+      { _id: userId },
+      { $set: { status: "paused" } },
+      { session },
+    );
+
+    if (user.mikrotik?.username) {
+      try {
+        await mikrotikService.disablePPPoEUser(user);
+        console.log(`🔌 MikroTik user ${user.mikrotik.username} disabled`);
+      } catch (error) {
+        console.error("Error disabling user in MikroTik:", error);
+      }
+    }
+
+    await session.commitTransaction();
+
+    // Send email notification
+    await emailService.sendEmail(
+      user.email,
+      "Your Service Has Been Paused - Mister Fyber",
+      `<p>Dear ${user.firstName || user.username} ${user.lastName || ""},</p>
+       <p>Your internet service has been paused as requested.</p>
+       <p>Reason: ${reason || "Vacation/Requested pause"}</p>
+       ${pauseUntilDate ? `<p>Your service will automatically resume on: ${new Date(pauseUntilDate).toLocaleDateString()}</p>` : ""}
+       <p>No bills will be generated during the pause period.</p>
+       <p>To resume your service, please contact our support team or use the resume button in your dashboard.</p>
+       <p>Thank you,<br>Mister Fyber Team</p>`,
+    );
+
+    clearAllCache();
+
+    res.status(200).json({
+      success: true,
+      message: `Service paused for ${user.firstName} ${user.lastName}. No bills will be generated during pause.`,
+      data: { billingCycle, pauseDate, pauseUntil: pauseUntilDate },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
+// ==================== RESUME BILLING ====================
+export const resumeBilling = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { userId } = req.body;
+
+    console.log(`🔄 Resuming billing for user: ${userId}`);
+
+    if (!userId) {
+      return res
+        .status(400)
+        .json({ success: false, message: "User ID is required" });
+    }
+
+    const user = await User.findById(userId).populate("planId").lean();
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+    }
+
+    const billingCycle = await BillingCycle.findOne({
+      userId,
+      status: "paused",
+    }).lean();
+
+    if (!billingCycle) {
+      return res
+        .status(404)
+        .json({
+          success: false,
+          message: "No paused billing cycle found for this user",
+        });
+    }
+
+    const resumeDate = new Date();
+    const nextBillingDate = new Date(resumeDate);
+    nextBillingDate.setMonth(nextBillingDate.getMonth() + 1);
+    nextBillingDate.setDate(1);
+    nextBillingDate.setHours(0, 0, 0, 0);
+
+    await BillingCycle.updateOne(
+      { _id: billingCycle._id },
+      {
+        $set: {
+          status: "active",
+          resumedAt: resumeDate,
+          nextBillingDate: nextBillingDate,
+          pausedAt: undefined,
+          pauseReason: undefined,
+          pauseUntil: undefined,
+        },
+      },
+      { session },
+    );
+
+    await User.updateOne(
+      { _id: userId },
+      { $set: { status: "active" } },
+      { session },
+    );
+
+    if (user.mikrotik && user.mikrotik.username && user.planId) {
+      try {
+        await mikrotikService.applyPlanToUser(user, user.planId);
+        console.log(`✅ MikroTik user ${user.mikrotik.username} re-enabled`);
+      } catch (error) {
+        console.error("Error enabling user in MikroTik:", error);
+      }
+    }
+
+    await session.commitTransaction();
+
+    // Send email notification
+    await emailService.sendEmail(
+      user.email,
+      "Your Service Has Been Resumed - Mister Fyber",
+      `<p>Dear ${user.firstName || user.username} ${user.lastName || ""},</p>
+       <p>Your internet service has been resumed.</p>
+       <p>Your next billing date is: ${nextBillingDate.toLocaleDateString()}</p>
+       <p>Thank you for choosing Mister Fyber!</p>`,
+    );
+
+    clearAllCache();
+
+    res.status(200).json({
+      success: true,
+      message: `Service resumed for ${user.firstName} ${user.lastName}`,
+      data: {
+        billingCycle,
+        resumeDate,
+        nextBillingDate,
+        userStatus: user.status,
+      },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
+// ==================== MARK BILL AS PAID (MANUAL ADMIN) ====================
+export const markBillAsPaid = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { billId } = req.params;
+    const { referenceNumber, notes } = req.body;
+    const adminId = req.user?._id;
+
+    const bill = await Billing.findById(billId).populate("userId").lean();
+    if (!bill) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Bill not found" });
+    }
+
+    if (bill.status === "paid") {
+      return res
+        .status(400)
+        .json({ success: false, message: "Bill is already paid" });
+    }
+
+    const user = bill.userId as any;
+
+    const existingPayment = await Payment.findOne({
+      billingId: bill._id,
+      status: "completed",
+    }).lean();
+
+    if (existingPayment) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment already exists for this bill",
+        data: { payment: existingPayment },
+      });
+    }
+
+    const payment = await Payment.create(
+      [
+        {
+          userId: user._id,
+          amount: bill.total,
+          paymentMethod: "manual",
+          paymentType: "subscription",
+          status: "completed",
+          referenceNumber: referenceNumber || `ADMIN-${Date.now()}`,
+          billingId: bill._id,
+          paymentDetails: {
+            gateway: "manual",
+            gatewayResponse: {
+              confirmedBy: adminId,
+              confirmedAt: new Date(),
+              notes: notes || "Manually marked as paid by admin",
+            },
+          },
+          paidAt: new Date(),
+        },
+      ],
+      { session },
+    );
+
+    await Billing.updateOne(
+      { _id: bill._id },
+      { $set: { status: "paid", paymentId: payment[0]._id } },
+      { session },
+    );
+
+    const billingCycle = await BillingCycle.findById(bill.billingCycleId);
+    if (billingCycle) {
+      billingCycle.paymentHistory = billingCycle.paymentHistory || [];
+      billingCycle.paymentHistory.push({
+        billingId: bill._id,
+        amount: bill.total,
+        paidAt: new Date(),
+      });
+
+      if (bill.isProRated && !billingCycle.proRatedPaid) {
+        billingCycle.proRatedPaid = true;
+        billingCycle.proRatedPaidAt = new Date();
+        if (billingCycle.status === "pending_activation") {
+          billingCycle.status = "active";
+        }
+      }
+      await billingCycle.save({ session });
+    }
+
+    if (user.status === "pending_activation") {
+      await User.updateOne(
+        { _id: user._id },
+        { $set: { status: "active" } },
+        { session },
+      );
+    }
+
+    await User.updateOne(
+      { _id: user._id },
+      { $set: { "billingInfo.currentBill": 0 } },
+      { session },
+    );
+
+    if (user.status === "suspended") {
+      await User.updateOne(
+        { _id: user._id },
+        { $set: { status: "active" } },
+        { session },
+      );
+      if (user.mikrotik?.username && user.planId) {
+        try {
+          await mikrotikService.applyPlanToUser(user, user.planId);
+        } catch (error) {
+          console.error("Error reconnecting MikroTik:", error);
+        }
+      }
+    }
+
+    await session.commitTransaction();
+
+    // Send payment confirmation email
+    await emailService.sendPaymentConfirmation(user, payment[0], bill);
+
+    clearAllCache();
+
+    res.status(200).json({
+      success: true,
+      message: `Bill ${bill.invoiceNumber} marked as paid successfully`,
+      data: { payment: payment[0], bill },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
+// ==================== GET PENDING PRO-RATED BILLS ====================
+export const getPendingProRatedBills = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const pendingBills = await Billing.find({
+      isProRated: true,
+      status: "pending_confirmation",
+    })
+      .populate("userId", "firstName lastName email username phoneNumber")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    res.status(200).json({ success: true, data: pendingBills });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ==================== GET PENDING ACTIVATIONS ====================
+export const getPendingActivations = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const pendingCycles = await BillingCycle.find({
+      status: "pending_activation",
+      proRatedPaid: true,
+      manualBillStart: false,
+    })
+      .populate("userId", "firstName lastName email username phoneNumber")
+      .populate("planId", "name price")
+      .sort({ proRatedPaidAt: -1 })
+      .lean();
+
+    res.status(200).json({ success: true, data: pendingCycles });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ==================== CONFIRM PRO-RATED PAYMENT ====================
+export const confirmProRatedPayment = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { userId, paymentDetails } = req.body;
+
+    const [user, billingCycle] = await Promise.all([
+      User.findById(userId).populate("planId").lean(),
+      BillingCycle.findOne({ userId, status: "pending_activation" })
+        .populate("planId")
+        .lean(),
+    ]);
+
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+    }
+
+    if (!billingCycle) {
+      return res
+        .status(404)
+        .json({ success: false, message: "No pending billing cycle found" });
+    }
+
+    if (billingCycle.proRatedPaid) {
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Pro-rated payment already confirmed",
+        });
+    }
+
+    const proRatedBill = await Billing.findOne({
+      userId,
+      billingCycleId: billingCycle._id,
+      isProRated: true,
+      status: "pending_confirmation",
+    }).lean();
+
+    if (!proRatedBill) {
+      return res
+        .status(404)
+        .json({
+          success: false,
+          message: "Pro-rated bill not found or not pending confirmation",
+        });
+    }
+
+    await Billing.updateOne(
+      { _id: proRatedBill._id },
+      { $set: { status: "paid" } },
+      { session },
+    );
+
+    const payment = await Payment.create(
+      [
+        {
+          userId,
+          amount: proRatedBill.total,
+          paymentMethod: paymentDetails?.paymentMethod || "manual",
+          paymentType: "subscription",
+          status: "completed",
+          referenceNumber:
+            paymentDetails?.referenceNumber || `PRO-${Date.now()}`,
+          billingId: proRatedBill._id,
+          paymentDetails: {
+            gateway: "manual",
+            gatewayResponse: paymentDetails,
+            notes: "Pro-rated payment confirmed",
+          },
+          paidAt: new Date(),
+        },
+      ],
+      { session },
+    );
+
+    await Billing.updateOne(
+      { _id: proRatedBill._id },
+      { $set: { paymentId: payment[0]._id } },
+      { session },
+    );
+
+    await BillingCycle.updateOne(
+      { _id: billingCycle._id },
+      {
+        $set: {
+          proRatedPaid: true,
+          proRatedPaidAt: new Date(),
+          status: "active",
+        },
+      },
+      { session },
+    );
+
+    await User.updateOne(
+      { _id: userId },
+      { $set: { status: "active" } },
+      { session },
+    );
+
+    await session.commitTransaction();
+
+    await emailService.sendEmail(
+      user.email,
+      "Pro-rated Payment Confirmed - Mister Fyber",
+      `<p>Dear ${user.firstName || user.username} ${user.lastName || ""},</p>
+       <p>Your pro-rated payment of ₱${proRatedBill.total.toFixed(2)} has been confirmed.</p>
+       <p>Your billing cycle is now active. Your monthly bills will be generated automatically.</p>
+       <p>Thank you for choosing Mister Fyber!</p>`,
+    );
+
+    clearAllCache();
+
+    res.status(200).json({
+      success: true,
+      message: "Pro-rated payment confirmed. Billing cycle is now active.",
+      data: { payment: payment[0], billingCycle: billingCycle },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
+// ==================== START MONTHLY BILLING ====================
+export const startMonthlyBilling = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { userId } = req.body;
+
+    const [user, billingCycle] = await Promise.all([
+      User.findById(userId).populate("planId").lean(),
+      BillingCycle.findOne({
+        userId,
+        status: "pending_activation",
+        proRatedPaid: true,
+      })
+        .populate("planId")
+        .lean(),
+    ]);
+
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+    }
+
+    if (!billingCycle) {
+      return res.status(404).json({
+        success: false,
+        message:
+          "No pending billing cycle found or pro-rated payment not confirmed",
+      });
+    }
+
+    if (billingCycle.manualBillStart) {
+      return res.status(400).json({
+        success: false,
+        message: "Monthly billing has already been started for this user",
+      });
+    }
+
+    const today = new Date();
+    let billingStart = new Date(today);
+    billingStart.setDate(1);
+    billingStart.setHours(0, 0, 0, 0);
+
+    const billingEnd = new Date(billingStart);
+    billingEnd.setMonth(billingEnd.getMonth() + 1);
+    billingEnd.setDate(0);
+    billingEnd.setHours(23, 59, 59, 999);
+
+    const dueDate = new Date(billingStart);
+    dueDate.setDate(5);
+    dueDate.setHours(23, 59, 59, 999);
+
+    const plan = billingCycle.planId as any;
+    const monthlyRate = plan.price;
+
+    const firstMonthlyBill = await Billing.create(
+      [
+        {
+          userId,
+          billingCycleId: billingCycle._id,
+          invoiceNumber: generateInvoiceNumber(),
+          billingPeriod: { start: billingStart, end: billingEnd },
+          dueDate: dueDate,
+          items: [
+            {
+              description: `Monthly Subscription - ${billingStart.toLocaleDateString()} to ${billingEnd.toLocaleDateString()}`,
+              quantity: 1,
+              rate: monthlyRate,
+              amount: monthlyRate,
+            },
+          ],
+          subtotal: monthlyRate,
+          tax: 0,
+          discount: 0,
+          total: monthlyRate,
+          status: "sent",
+          isProRated: false,
+          proRatedDays: 0,
+          notes: "First monthly bill - Service activated",
+        },
+      ],
+      { session },
+    );
+
+    const nextDate = new Date(billingStart);
+    nextDate.setMonth(nextDate.getMonth() + 1);
+    nextDate.setDate(1);
+
+    await BillingCycle.updateOne(
+      { _id: billingCycle._id },
+      {
+        $set: {
+          status: "active",
+          manualBillStart: true,
+          manuallyStartedAt: new Date(),
+          nextBillingDate: nextDate,
+        },
+      },
+      { session },
+    );
+
+    await User.updateOne(
+      { _id: userId },
+      { $set: { status: "active", "billingInfo.currentBill": 0 } },
+      { session },
+    );
+
+    if (user.mikrotik && user.mikrotik.username && user.planId) {
+      try {
+        await mikrotikService.applyPlanToUser(user, user.planId);
+      } catch (error) {
+        console.error("Error applying plan to MikroTik:", error);
+      }
+    }
+
+    await session.commitTransaction();
+
+    await emailService.sendEmail(
+      user.email,
+      "Your Internet Service is Now Active - Mister Fyber",
+      `<p>Dear ${user.firstName || user.username} ${user.lastName || ""},</p>
+       <p>Your internet service has been activated!</p>
+       <p>Your first monthly bill of ₱${monthlyRate.toFixed(2)} for period ${billingStart.toLocaleDateString()} to ${billingEnd.toLocaleDateString()} is due on ${dueDate.toLocaleDateString()}.</p>
+       <p>You can view and pay your bill in your customer portal.</p>
+       <p>Thank you for choosing Mister Fyber!</p>`,
+    );
+
+    await emailService.sendInvoice(user, firstMonthlyBill[0]);
+
+    clearAllCache();
+
+    res.status(200).json({
+      success: true,
+      message: "Monthly billing started successfully. Service activated.",
+      data: {
+        firstMonthlyBill: firstMonthlyBill[0],
+        nextBillDueDate: dueDate,
+        nextBillAmount: monthlyRate,
+      },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
+// ==================== GET BILLING SUMMARY ADMIN ====================
+export const getBillingSummaryAdmin = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ) => {
   try {
     const now = Date.now();
-    if (
-      billingSettingsCache &&
-      now - billingSettingsCacheTime < SETTINGS_CACHE_TTL
-    ) {
-      return res
-        .status(200)
-        .json({ success: true, data: billingSettingsCache });
+    if (summaryCache && now - summaryCache.timestamp < SUMMARY_CACHE_TTL) {
+      return res.status(200).json({ success: true, data: summaryCache.data });
     }
 
-    let settings = await BillingSettings.findOne().lean();
-    if (!settings) {
-      settings = await BillingSettings.create({
-        reminderDays: [7, 3, 1],
-        dueDateDaysAfterPeriod: 5,
-        gracePeriodDays: 5,
-        autoGenerateBills: true,
-        autoSendReminders: true,
-        autoSuspendOnNonPayment: true,
-        billingCycleDay: 1,
-        freeDays: 1,
-      });
-    }
+    const [
+      totalActiveCycles,
+      totalPausedCycles,
+      pendingProRated,
+      pendingActivations,
+      overdueBills,
+      unpaidProRated,
+      outstandingResult,
+      monthlyRevenue,
+    ] = await Promise.all([
+      BillingCycle.countDocuments({
+        status: "active",
+        proRatedPaid: true,
+        manualBillStart: true,
+      }),
+      BillingCycle.countDocuments({ status: "paused" }),
+      Billing.countDocuments({
+        isProRated: true,
+        status: "pending_confirmation",
+      }),
+      BillingCycle.countDocuments({
+        status: "pending_activation",
+        proRatedPaid: true,
+        manualBillStart: false,
+      }),
+      Billing.countDocuments({ status: "overdue" }),
+      Billing.countDocuments({ isProRated: true, status: "sent" }),
+      Billing.aggregate([
+        {
+          $match: {
+            status: { $in: ["sent", "overdue", "pending_confirmation"] },
+          },
+        },
+        { $group: { _id: null, total: { $sum: "$total" } } },
+      ]),
+      Payment.aggregate([
+        {
+          $match: {
+            status: "completed",
+            paidAt: {
+              $gte: new Date(
+                new Date().getFullYear(),
+                new Date().getMonth(),
+                1,
+              ),
+            },
+          },
+        },
+        { $group: { _id: null, total: { $sum: "$amount" } } },
+      ]),
+    ]);
 
-    billingSettingsCache = settings;
-    billingSettingsCacheTime = now;
+    const totalOutstanding = outstandingResult[0]?.total || 0;
+    const data = {
+      activeSubscriptions: totalActiveCycles,
+      pausedSubscriptions: totalPausedCycles,
+      pendingProRated: pendingProRated,
+      pendingActivations: pendingActivations,
+      overdueAccounts: overdueBills,
+      totalOutstanding: totalOutstanding,
+      monthlyRevenue: monthlyRevenue[0]?.total || 0,
+      unpaidProRated: unpaidProRated,
+    };
 
-    res.status(200).json({ success: true, data: settings });
+    summaryCache = { data, timestamp: now };
+
+    res.status(200).json({ success: true, data });
   } catch (error) {
     next(error);
   }
 };
 
-// ==================== UPDATE BILLING SETTINGS ====================
-export const updateBillingSettings = async (
+// ==================== GET ALL BILLING CYCLES ====================
+export const getAllBillingCycles = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ) => {
   try {
-    const settings = await BillingSettings.findOneAndUpdate({}, req.body, {
-      new: true,
-      upsert: true,
-    }).lean();
+    const cacheKey = getCacheKey(req.query);
+    const cached = billingCyclesCache.get(cacheKey);
 
-    billingSettingsCache = null;
-    clearAllCache();
+    if (cached && Date.now() - cached.timestamp < LIST_CACHE_TTL) {
+      return res.status(200).json({ success: true, data: cached.data });
+    }
 
-    res.status(200).json({ success: true, data: settings });
+    const cycles = await BillingCycle.find()
+      .populate("userId", "firstName lastName email username status")
+      .populate("planId", "name price")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    billingCyclesCache.set(cacheKey, { data: cycles, timestamp: Date.now() });
+
+    res.status(200).json({ success: true, data: cycles });
   } catch (error) {
     next(error);
   }
 };
 
-// ==================== AUTO SEND REMINDERS (OPTIMIZED) ====================
-export const autoSendReminders = async (req?: AuthRequest, res?: Response) => {
+// ==================== GET ALL BILLS ====================
+export const getAllBills = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
   try {
-    const settings = await BillingSettings.findOne().lean();
-    if (!settings || !settings.autoSendReminders) {
-      console.log("Auto-send reminders is disabled");
-      if (res) {
-        return res
-          .status(200)
-          .json({ success: true, message: "Auto-send reminders is disabled" });
-      }
-      return;
+    const cacheKey = getCacheKey(req.query);
+    const cached = billsCache.get(cacheKey);
+
+    if (cached && Date.now() - cached.timestamp < LIST_CACHE_TTL) {
+      return res.status(200).json({ success: true, data: cached.data });
     }
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const { status, type } = req.query;
+    let query: any = {};
 
-    const reminderDays = settings.reminderDays || [7, 3, 1];
-    let remindersSent = 0;
+    if (status) query.status = status;
+    if (type === "pro-rated") query.isProRated = true;
+    if (type === "monthly") query.isProRated = false;
 
-    for (const days of reminderDays) {
-      const targetDate = new Date(today);
-      targetDate.setDate(targetDate.getDate() + days);
-      targetDate.setHours(23, 59, 59, 999);
+    const bills = await Billing.find(query)
+      .populate("userId", "firstName lastName email username")
+      .populate("billingCycleId")
+      .sort({ dueDate: -1 })
+      .lean();
 
-      let reminderField: string;
-      if (days === 7) reminderField = "reminder7DaySent";
-      else if (days === 3) reminderField = "reminder3DaySent";
-      else if (days === 1) reminderField = "reminder1DaySent";
-      else continue;
+    billsCache.set(cacheKey, { data: bills, timestamp: Date.now() });
 
-      const startOfDay = new Date(targetDate);
-      startOfDay.setHours(0, 0, 0, 0);
-
-      const endOfDay = new Date(targetDate);
-      endOfDay.setHours(23, 59, 59, 999);
-
-      const bills = await Billing.find({
-        status: "sent",
-        dueDate: { $gte: startOfDay, $lte: endOfDay },
-        [reminderField]: { $ne: true },
-      })
-        .populate("userId")
-        .lean();
-
-      for (const bill of bills) {
-        const user = bill.userId as any;
-        if (user && user.email) {
-          await emailService.sendEmail(
-            user.email,
-            `Payment Reminder - Bill ${bill.invoiceNumber}`,
-            `<p>Dear ${user.firstName || user.username} ${user.lastName || ""},</p>
-             <p>Your bill of ₱${bill.total.toFixed(2)} is due in ${days} day(s).</p>
-             <p>Due Date: ${bill.dueDate.toLocaleDateString()}</p>
-             <p>Please make your payment on time to avoid service interruption.</p>
-             <p>Thank you,<br>Mister Fyber Team</p>`,
-          );
-
-          await Billing.updateOne(
-            { _id: bill._id },
-            { $set: { [reminderField]: true } },
-          );
-          remindersSent++;
-          console.log(
-            `📧 Sent ${days}-day reminder for bill ${bill.invoiceNumber} to ${user.email}`,
-          );
-        }
-      }
-    }
-
-    if (res) {
-      res
-        .status(200)
-        .json({ success: true, message: `Sent ${remindersSent} reminders` });
-    }
+    res.status(200).json({ success: true, data: bills });
   } catch (error) {
-    console.error("Auto-send reminders error:", error);
-    if (res) {
-      res
-        .status(500)
-        .json({ success: false, message: "Failed to send reminders" });
-    }
+    next(error);
   }
 };
 
-// ==================== START BILLING (PRO-RATED with FREE DAY) ====================
+// ==================== START BILLING ====================
 export const startBilling = async (
   req: AuthRequest,
   res: Response,
@@ -363,8 +1057,8 @@ export const startBilling = async (
   }
 };
 
-// ==================== CONFIRM PRO-RATED PAYMENT ====================
-export const confirmProRatedPayment = async (
+// ==================== STOP BILLING ====================
+export const stopBilling = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
@@ -373,114 +1067,80 @@ export const confirmProRatedPayment = async (
   session.startTransaction();
 
   try {
-    const { userId, paymentDetails } = req.body;
+    const { userId, reason } = req.body;
 
-    const [user, billingCycle] = await Promise.all([
-      User.findById(userId).populate("planId").lean(),
-      BillingCycle.findOne({ userId, status: "pending_activation" })
-        .populate("planId")
-        .lean(),
-    ]);
-
+    const user = await User.findById(userId).lean();
     if (!user) {
       return res
         .status(404)
         .json({ success: false, message: "User not found" });
     }
 
+    const billingCycle = await BillingCycle.findOne({
+      userId,
+      status: { $in: ["active", "paused"] },
+    }).lean();
+
     if (!billingCycle) {
       return res
         .status(404)
-        .json({ success: false, message: "No pending billing cycle found" });
-    }
-
-    if (billingCycle.proRatedPaid) {
-      return res
-        .status(400)
         .json({
           success: false,
-          message: "Pro-rated payment already confirmed",
+          message: "No active billing cycle found to stop",
         });
     }
 
-    const proRatedBill = await Billing.findOne({
+    const unpaidBills = await Billing.findOne({
       userId,
-      billingCycleId: billingCycle._id,
-      isProRated: true,
-      status: "pending_confirmation",
+      status: { $in: ["sent", "overdue", "pending_confirmation"] },
     }).lean();
 
-    if (!proRatedBill) {
-      return res
-        .status(404)
-        .json({
-          success: false,
-          message: "Pro-rated bill not found or not pending confirmation",
-        });
+    if (unpaidBills) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "User has unpaid bills. Please settle before stopping billing.",
+      });
     }
-
-    await Billing.updateOne(
-      { _id: proRatedBill._id },
-      { $set: { status: "paid" } },
-    );
-
-    const payment = await Payment.create(
-      [
-        {
-          userId,
-          amount: proRatedBill.total,
-          paymentMethod: paymentDetails?.paymentMethod || "manual",
-          paymentType: "subscription",
-          status: "completed",
-          referenceNumber:
-            paymentDetails?.referenceNumber || `PRO-${Date.now()}`,
-          billingId: proRatedBill._id,
-          paymentDetails: {
-            gateway: "manual",
-            gatewayResponse: paymentDetails,
-            notes: "Pro-rated payment confirmed",
-          },
-          paidAt: new Date(),
-        },
-      ],
-      { session },
-    );
-
-    await Billing.updateOne(
-      { _id: proRatedBill._id },
-      { $set: { paymentId: payment[0]._id } },
-    );
 
     await BillingCycle.updateOne(
       { _id: billingCycle._id },
-      {
-        $set: {
-          proRatedPaid: true,
-          proRatedPaidAt: new Date(),
-          status: "active",
-        },
-      },
+      { $set: { status: "cancelled", billingEndDate: new Date() } },
+      { session },
     );
 
-    await User.updateOne({ _id: userId }, { $set: { status: "active" } });
+    await User.updateOne(
+      { _id: userId },
+      { $set: { status: "inactive" } },
+      { session },
+    );
+
+    if (user.mikrotik?.username) {
+      try {
+        await mikrotikService.disablePPPoEUser(user);
+      } catch (error) {
+        console.error("Error disabling user in MikroTik:", error);
+      }
+    }
 
     await session.commitTransaction();
 
     await emailService.sendEmail(
       user.email,
-      "Pro-rated Payment Confirmed - Mister Fyber",
+      "Your Billing Has Been Stopped - Mister Fyber",
       `<p>Dear ${user.firstName || user.username} ${user.lastName || ""},</p>
-       <p>Your pro-rated payment of ₱${proRatedBill.total.toFixed(2)} has been confirmed.</p>
-       <p>Your billing cycle is now active. Your monthly bills will be generated automatically.</p>
-       <p>Thank you for choosing Mister Fyber!</p>`,
+       <p>Your billing cycle has been stopped.</p>
+       <p>Reason: ${reason || "Admin action"}</p>
+       <p>If you have any questions, please contact our support team.</p>
+       <p>Thank you,<br>Mister Fyber Team</p>`,
     );
 
     clearAllCache();
 
     res.status(200).json({
       success: true,
-      message: "Pro-rated payment confirmed. Billing cycle is now active.",
-      data: { payment: payment[0], billingCycle: billingCycle },
+      message: `Billing stopped for ${user.firstName} ${user.lastName}`,
+      data: { billingCycle },
     });
   } catch (error) {
     await session.abortTransaction();
@@ -490,8 +1150,86 @@ export const confirmProRatedPayment = async (
   }
 };
 
-// ==================== START MONTHLY BILLING ====================
-export const startMonthlyBilling = async (
+// ==================== DISCONNECT CLIENT ====================
+export const disconnectClient = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { userId, reason } = req.body;
+
+    const user = await User.findById(userId).lean();
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+    }
+
+    const billingCycle = await BillingCycle.findOne({
+      userId,
+      status: "active",
+    }).lean();
+
+    if (billingCycle) {
+      await BillingCycle.updateOne(
+        { _id: billingCycle._id },
+        {
+          $set: {
+            serviceSuspendedAt: new Date(),
+            disconnectReason: reason || "Admin initiated disconnect",
+          },
+        },
+        { session },
+      );
+    }
+
+    await User.updateOne(
+      { _id: userId },
+      { $set: { status: "suspended" } },
+      { session },
+    );
+
+    if (user.mikrotik?.username) {
+      try {
+        await mikrotikService.disablePPPoEUser(user);
+      } catch (error) {
+        console.error("Error disabling user in MikroTik:", error);
+      }
+    }
+
+    await session.commitTransaction();
+
+    await emailService.sendEmail(
+      user.email,
+      "Your Service Has Been Disconnected - Mister Fyber",
+      `<p>Dear ${user.firstName || user.username} ${user.lastName || ""},</p>
+       <p>Your internet service has been disconnected.</p>
+       <p>Reason: ${reason || "Admin action"}</p>
+       <p>To have your service reconnected, please contact our support team and settle any outstanding balance.</p>
+       <p>Thank you,<br>Mister Fyber Team</p>`,
+    );
+
+    clearAllCache();
+
+    res.status(200).json({
+      success: true,
+      message: `Service disconnected for ${user.firstName} ${user.lastName}`,
+      data: { userId: user._id, status: "suspended", disconnectReason: reason },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
+// ==================== RECONNECT CLIENT ====================
+export const reconnectClient = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
@@ -502,114 +1240,36 @@ export const startMonthlyBilling = async (
   try {
     const { userId } = req.body;
 
-    const [user, billingCycle] = await Promise.all([
-      User.findById(userId).populate("planId").lean(),
-      BillingCycle.findOne({
-        userId,
-        status: "pending_activation",
-        proRatedPaid: true,
-      })
-        .populate("planId")
-        .lean(),
-    ]);
-
+    const user = await User.findById(userId).populate("planId").lean();
     if (!user) {
       return res
         .status(404)
         .json({ success: false, message: "User not found" });
     }
 
-    if (!billingCycle) {
-      return res
-        .status(404)
-        .json({
-          success: false,
-          message:
-            "No pending billing cycle found or pro-rated payment not confirmed",
-        });
+    const unpaidBills = await Billing.findOne({
+      userId,
+      status: { $in: ["sent", "overdue"] },
+    }).lean();
+
+    if (unpaidBills) {
+      return res.status(400).json({
+        success: false,
+        message: "User has unpaid bills. Please settle before reconnecting.",
+      });
     }
-
-    if (billingCycle.manualBillStart) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Monthly billing has already been started for this user",
-        });
-    }
-
-    const today = new Date();
-    let billingStart = new Date(today);
-    billingStart.setDate(1);
-    billingStart.setHours(0, 0, 0, 0);
-
-    const billingEnd = new Date(billingStart);
-    billingEnd.setMonth(billingEnd.getMonth() + 1);
-    billingEnd.setDate(0);
-    billingEnd.setHours(23, 59, 59, 999);
-
-    const dueDate = new Date(billingStart);
-    dueDate.setDate(5);
-    dueDate.setHours(23, 59, 59, 999);
-
-    const plan = billingCycle.planId as any;
-    const monthlyRate = plan.price;
-
-    const firstMonthlyBill = await Billing.create(
-      [
-        {
-          userId,
-          billingCycleId: billingCycle._id,
-          invoiceNumber: generateInvoiceNumber(),
-          billingPeriod: { start: billingStart, end: billingEnd },
-          dueDate: dueDate,
-          items: [
-            {
-              description: `Monthly Subscription - ${billingStart.toLocaleDateString()} to ${billingEnd.toLocaleDateString()}`,
-              quantity: 1,
-              rate: monthlyRate,
-              amount: monthlyRate,
-            },
-          ],
-          subtotal: monthlyRate,
-          tax: 0,
-          discount: 0,
-          total: monthlyRate,
-          status: "sent",
-          isProRated: false,
-          proRatedDays: 0,
-          notes: "First monthly bill - Service activated",
-        },
-      ],
-      { session },
-    );
-
-    const nextDate = new Date(billingStart);
-    nextDate.setMonth(nextDate.getMonth() + 1);
-    nextDate.setDate(1);
-
-    await BillingCycle.updateOne(
-      { _id: billingCycle._id },
-      {
-        $set: {
-          status: "active",
-          manualBillStart: true,
-          manuallyStartedAt: new Date(),
-          nextBillingDate: nextDate,
-        },
-      },
-    );
 
     await User.updateOne(
       { _id: userId },
-      { $set: { status: "active", "billingInfo.currentBill": 0 } },
+      { $set: { status: "active" } },
+      { session },
     );
 
-    if (user.mikrotik && user.mikrotik.username && user.planId) {
+    if (user.mikrotik?.username && user.planId) {
       try {
         await mikrotikService.applyPlanToUser(user, user.planId);
       } catch (error) {
-        console.error("Error applying plan to MikroTik:", error);
+        console.error("Error reconnecting MikroTik:", error);
       }
     }
 
@@ -617,26 +1277,18 @@ export const startMonthlyBilling = async (
 
     await emailService.sendEmail(
       user.email,
-      "Your Internet Service is Now Active - Mister Fyber",
+      "Your Service Has Been Reconnected - Mister Fyber",
       `<p>Dear ${user.firstName || user.username} ${user.lastName || ""},</p>
-       <p>Your internet service has been activated!</p>
-       <p>Your first monthly bill of ₱${monthlyRate.toFixed(2)} for period ${billingStart.toLocaleDateString()} to ${billingEnd.toLocaleDateString()} is due on ${dueDate.toLocaleDateString()}.</p>
-       <p>You can view and pay your bill in your customer portal.</p>
+       <p>Your internet service has been reconnected.</p>
        <p>Thank you for choosing Mister Fyber!</p>`,
     );
 
-    await emailService.sendInvoice(user, firstMonthlyBill[0]);
-
     clearAllCache();
 
     res.status(200).json({
       success: true,
-      message: "Monthly billing started successfully. Service activated.",
-      data: {
-        firstMonthlyBill: firstMonthlyBill[0],
-        nextBillDueDate: dueDate,
-        nextBillAmount: monthlyRate,
-      },
+      message: `Service reconnected for ${user.firstName} ${user.lastName}`,
+      data: { userId: user._id, status: "active" },
     });
   } catch (error) {
     await session.abortTransaction();
@@ -646,375 +1298,7 @@ export const startMonthlyBilling = async (
   }
 };
 
-// ==================== MARK BILL AS PAID (OPTIMIZED) ====================
-export const markBillAsPaid = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const { billId } = req.params;
-    const { referenceNumber, notes } = req.body;
-    const adminId = req.user?._id;
-
-    const bill = await Billing.findById(billId).populate("userId").lean();
-    if (!bill) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Bill not found" });
-    }
-
-    if (bill.status === "paid") {
-      return res
-        .status(400)
-        .json({ success: false, message: "Bill is already paid" });
-    }
-
-    const user = bill.userId as any;
-
-    const existingPayment = await Payment.findOne({
-      billingId: bill._id,
-      status: "completed",
-    }).lean();
-    if (existingPayment) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Payment already exists for this bill",
-          data: { payment: existingPayment },
-        });
-    }
-
-    const payment = await Payment.create(
-      [
-        {
-          userId: user._id,
-          amount: bill.total,
-          paymentMethod: "manual",
-          paymentType: "subscription",
-          status: "completed",
-          referenceNumber: referenceNumber || `ADMIN-${Date.now()}`,
-          billingId: bill._id,
-          paymentDetails: {
-            gateway: "manual",
-            gatewayResponse: {
-              confirmedBy: adminId,
-              confirmedAt: new Date(),
-              notes: notes || "Manually marked as paid by admin",
-            },
-          },
-          paidAt: new Date(),
-        },
-      ],
-      { session },
-    );
-
-    await Billing.updateOne(
-      { _id: bill._id },
-      { $set: { status: "paid", paymentId: payment[0]._id } },
-    );
-
-    const billingCycle = await BillingCycle.findById(bill.billingCycleId);
-    if (billingCycle) {
-      billingCycle.paymentHistory = billingCycle.paymentHistory || [];
-      billingCycle.paymentHistory.push({
-        billingId: bill._id,
-        amount: bill.total,
-        paidAt: new Date(),
-      });
-
-      if (bill.isProRated && !billingCycle.proRatedPaid) {
-        billingCycle.proRatedPaid = true;
-        billingCycle.proRatedPaidAt = new Date();
-        if (billingCycle.status === "pending_activation") {
-          billingCycle.status = "active";
-        }
-      }
-      await billingCycle.save({ session });
-    }
-
-    if (user.status === "pending_activation") {
-      await User.updateOne({ _id: user._id }, { $set: { status: "active" } });
-    }
-
-    await User.updateOne(
-      { _id: user._id },
-      { $set: { "billingInfo.currentBill": 0 } },
-    );
-
-    if (user.status === "suspended") {
-      await User.updateOne({ _id: user._id }, { $set: { status: "active" } });
-      if (user.mikrotik?.username && user.planId) {
-        try {
-          await mikrotikService.applyPlanToUser(user, user.planId);
-        } catch (error) {
-          console.error("Error reconnecting MikroTik:", error);
-        }
-      }
-    }
-
-    await session.commitTransaction();
-    await emailService.sendPaymentConfirmation(user, payment[0], bill);
-
-    clearAllCache();
-
-    res.status(200).json({
-      success: true,
-      message: `Bill ${bill.invoiceNumber} marked as paid successfully`,
-      data: { payment: payment[0], bill },
-    });
-  } catch (error) {
-    await session.abortTransaction();
-    next(error);
-  } finally {
-    session.endSession();
-  }
-};
-
-// ==================== SUBMIT PRO-RATED PAYMENT ====================
-export const submitProRatedPayment = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const { billId, referenceNumber, notes } = req.body;
-    const userId = req.user?._id;
-
-    const bill = await Billing.findOne({
-      _id: billId,
-      userId,
-      isProRated: true,
-    });
-
-    if (!bill) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Pro-rated bill not found" });
-    }
-
-    if (bill.status === "paid") {
-      return res
-        .status(400)
-        .json({ success: false, message: "This bill has already been paid" });
-    }
-
-    if (bill.status === "pending_confirmation") {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Payment already submitted and pending admin confirmation",
-        });
-    }
-
-    const existingPendingPayment = await Payment.findOne({
-      billingId: bill._id,
-      status: "pending",
-    }).lean();
-    if (existingPendingPayment) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message:
-            "Payment already pending confirmation. Please wait for admin.",
-        });
-    }
-
-    await Billing.updateOne(
-      { _id: bill._id },
-      { $set: { status: "pending_confirmation" } },
-    );
-
-    const payment = await Payment.create(
-      [
-        {
-          userId,
-          amount: bill.total,
-          paymentMethod: "manual",
-          paymentType: "subscription",
-          status: "pending",
-          referenceNumber: referenceNumber || `PAY-${Date.now()}`,
-          billingId: bill._id,
-          paymentDetails: {
-            gateway: "manual",
-            gatewayResponse: {
-              submittedBy: userId,
-              submittedAt: new Date(),
-              notes: notes || "Payment submitted by user",
-            },
-          },
-          paidAt: new Date(),
-        },
-      ],
-      { session },
-    );
-
-    await Billing.updateOne(
-      { _id: bill._id },
-      { $set: { paymentId: payment[0]._id } },
-    );
-
-    await session.commitTransaction();
-
-    console.log(
-      `💰 Pro-rated payment submitted for user ${userId}, bill ${bill.invoiceNumber}. Awaiting admin confirmation.`,
-    );
-
-    clearAllCache();
-
-    res.status(200).json({
-      success: true,
-      message:
-        "Payment submitted successfully! Please wait for admin confirmation.",
-      data: { bill, payment: payment[0], status: "pending_confirmation" },
-    });
-  } catch (error) {
-    await session.abortTransaction();
-    next(error);
-  } finally {
-    session.endSession();
-  }
-};
-
-// ==================== SUBMIT MONTHLY PAYMENT ====================
-export const submitMonthlyPayment = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const { billId, referenceNumber, notes } = req.body;
-    const userId = req.user?._id;
-
-    const bill = await Billing.findOne({
-      _id: billId,
-      userId,
-      isProRated: false,
-    });
-
-    if (!bill) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Bill not found" });
-    }
-
-    if (bill.status === "paid") {
-      return res
-        .status(400)
-        .json({ success: false, message: "This bill has already been paid" });
-    }
-
-    if (bill.status === "pending_confirmation") {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Payment already submitted and pending admin confirmation",
-        });
-    }
-
-    const existingPendingPayment = await Payment.findOne({
-      billingId: bill._id,
-      status: "pending",
-    }).lean();
-    if (existingPendingPayment) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message:
-            "Payment already pending confirmation. Please wait for admin.",
-        });
-    }
-
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const billStartDate = new Date(bill.billingPeriod.start);
-    const currentMonth = today.getMonth();
-    const currentYear = today.getFullYear();
-    const billMonth = billStartDate.getMonth();
-    const billYear = billStartDate.getFullYear();
-
-    const isCurrentMonth =
-      billYear === currentYear && billMonth === currentMonth;
-
-    if (!isCurrentMonth) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "You can only pay for the current month's bill. Please contact admin for older bills.",
-      });
-    }
-
-    await Billing.updateOne(
-      { _id: bill._id },
-      { $set: { status: "pending_confirmation" } },
-    );
-
-    const payment = await Payment.create(
-      [
-        {
-          userId,
-          amount: bill.total,
-          paymentMethod: "manual",
-          paymentType: "subscription",
-          status: "pending",
-          referenceNumber: referenceNumber || `PAY-${Date.now()}`,
-          billingId: bill._id,
-          paymentDetails: {
-            gateway: "manual",
-            gatewayResponse: {
-              submittedBy: userId,
-              submittedAt: new Date(),
-              notes: notes || "Payment submitted by user",
-            },
-          },
-          paidAt: new Date(),
-        },
-      ],
-      { session },
-    );
-
-    await Billing.updateOne(
-      { _id: bill._id },
-      { $set: { paymentId: payment[0]._id } },
-    );
-
-    await session.commitTransaction();
-
-    console.log(
-      `💰 Monthly payment submitted for user ${userId}, bill ${bill.invoiceNumber}. Awaiting admin confirmation.`,
-    );
-
-    clearAllCache();
-
-    res.status(200).json({
-      success: true,
-      message:
-        "Payment submitted successfully! Please wait for admin confirmation.",
-      data: { bill, payment: payment[0], status: "pending_confirmation" },
-    });
-  } catch (error) {
-    await session.abortTransaction();
-    next(error);
-  } finally {
-    session.endSession();
-  }
-};
-
-// ==================== AUTO-GENERATE MONTHLY BILLS (OPTIMIZED) ====================
+// ==================== AUTO-GENERATE MONTHLY BILLS ====================
 export const autoGenerateMonthlyBills = async (
   req?: AuthRequest,
   res?: Response,
@@ -1076,10 +1360,6 @@ export const autoGenerateMonthlyBills = async (
       }).lean();
 
       if (existingBillForThisPeriod) {
-        console.log(
-          `⏭️ Bill already exists for period ${billingStart.toLocaleDateString()} to ${billingEnd.toLocaleDateString()} for user ${user.email}`,
-        );
-
         if (existingBillForThisPeriod.status === "overdue") {
           const daysOverdue = Math.ceil(
             (today.getTime() -
@@ -1095,9 +1375,7 @@ export const autoGenerateMonthlyBills = async (
               { _id: user._id },
               { $set: { status: "suspended" } },
             );
-            console.log(
-              `🔴 User ${user.email} suspended due to non-payment of bill ${existingBillForThisPeriod.invoiceNumber}`,
-            );
+            console.log(`🔴 User ${user.email} suspended due to non-payment`);
           }
         }
         continue;
@@ -1142,9 +1420,6 @@ export const autoGenerateMonthlyBills = async (
       }
 
       generatedCount++;
-      console.log(
-        `✅ Generated bill for ${user.email}: ₱${plan.price} for period ${billingStart.toLocaleDateString()} to ${billingEnd.toLocaleDateString()}`,
-      );
     }
 
     clearAllCache();
@@ -1160,6 +1435,90 @@ export const autoGenerateMonthlyBills = async (
       res
         .status(500)
         .json({ success: false, message: "Failed to generate bills" });
+    }
+  }
+};
+
+// ==================== AUTO SEND REMINDERS ====================
+export const autoSendReminders = async (req?: AuthRequest, res?: Response) => {
+  try {
+    const settings = await BillingSettings.findOne().lean();
+    if (!settings || !settings.autoSendReminders) {
+      console.log("Auto-send reminders is disabled");
+      if (res) {
+        return res
+          .status(200)
+          .json({ success: true, message: "Auto-send reminders is disabled" });
+      }
+      return;
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const reminderDays = settings.reminderDays || [7, 3, 1];
+    let remindersSent = 0;
+
+    for (const days of reminderDays) {
+      const targetDate = new Date(today);
+      targetDate.setDate(targetDate.getDate() + days);
+      targetDate.setHours(23, 59, 59, 999);
+
+      let reminderField: string;
+      if (days === 7) reminderField = "reminder7DaySent";
+      else if (days === 3) reminderField = "reminder3DaySent";
+      else if (days === 1) reminderField = "reminder1DaySent";
+      else continue;
+
+      const startOfDay = new Date(targetDate);
+      startOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date(targetDate);
+      endOfDay.setHours(23, 59, 59, 999);
+
+      const bills = await Billing.find({
+        status: "sent",
+        dueDate: { $gte: startOfDay, $lte: endOfDay },
+        [reminderField]: { $ne: true },
+      })
+        .populate("userId")
+        .lean();
+
+      for (const bill of bills) {
+        const user = bill.userId as any;
+        if (user && user.email) {
+          await emailService.sendEmail(
+            user.email,
+            `Payment Reminder - Bill ${bill.invoiceNumber}`,
+            `<p>Dear ${user.firstName || user.username} ${user.lastName || ""},</p>
+             <p>Your bill of ₱${bill.total.toFixed(2)} is due in ${days} day(s).</p>
+             <p>Due Date: ${bill.dueDate.toLocaleDateString()}</p>
+             <p>Please make your payment on time to avoid service interruption.</p>
+             <p>Thank you,<br>Mister Fyber Team</p>`,
+          );
+
+          await Billing.updateOne(
+            { _id: bill._id },
+            { $set: { [reminderField]: true } },
+          );
+          remindersSent++;
+          console.log(
+            `📧 Sent ${days}-day reminder for bill ${bill.invoiceNumber} to ${user.email}`,
+          );
+        }
+      }
+    }
+
+    if (res) {
+      res
+        .status(200)
+        .json({ success: true, message: `Sent ${remindersSent} reminders` });
+    }
+  } catch (error) {
+    console.error("Auto-send reminders error:", error);
+    if (res) {
+      res
+        .status(500)
+        .json({ success: false, message: "Failed to send reminders" });
     }
   }
 };
@@ -1241,156 +1600,68 @@ export const autoSuspendOverdue = async (req?: AuthRequest, res?: Response) => {
   }
 };
 
-// ==================== GET PENDING PRO-RATED PAYMENTS ====================
-export const getPendingProRatedBills = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  try {
-    const pendingBills = await Billing.find({
-      isProRated: true,
-      status: "pending_confirmation",
-    })
-      .populate("userId", "firstName lastName email username phoneNumber")
-      .sort({ createdAt: -1 })
-      .lean();
-
-    res.status(200).json({ success: true, data: pendingBills });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// ==================== GET PENDING ACTIVATIONS ====================
-export const getPendingActivations = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  try {
-    const pendingCycles = await BillingCycle.find({
-      status: "pending_activation",
-      proRatedPaid: true,
-      manualBillStart: false,
-    })
-      .populate("userId", "firstName lastName email username phoneNumber")
-      .populate("planId", "name price")
-      .sort({ proRatedPaidAt: -1 })
-      .lean();
-
-    res.status(200).json({ success: true, data: pendingCycles });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// ==================== GET ALL UNPAID PRO-RATED BILLS ====================
-export const getUnpaidProRatedBills = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  try {
-    const unpaidBills = await Billing.find({
-      isProRated: true,
-      status: "sent",
-    })
-      .populate("userId", "firstName lastName email username phoneNumber")
-      .sort({ dueDate: 1 })
-      .lean();
-
-    res.status(200).json({ success: true, data: unpaidBills });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// ==================== GET BILLING SUMMARY FOR ADMIN (CACHED) ====================
-export const getBillingSummaryAdmin = async (
+// ==================== GET BILLING SETTINGS ====================
+export const getBillingSettings = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ) => {
   try {
     const now = Date.now();
-    if (summaryCache && now - summaryCache.timestamp < SUMMARY_CACHE_TTL) {
-      return res.status(200).json({ success: true, data: summaryCache.data });
+    if (
+      billingSettingsCache &&
+      now - billingSettingsCacheTime < SETTINGS_CACHE_TTL
+    ) {
+      return res
+        .status(200)
+        .json({ success: true, data: billingSettingsCache });
     }
 
-    const [
-      totalActiveCycles,
-      totalPausedCycles,
-      pendingProRated,
-      pendingActivations,
-      overdueBills,
-      unpaidProRated,
-      outstandingResult,
-      monthlyRevenue,
-    ] = await Promise.all([
-      BillingCycle.countDocuments({
-        status: "active",
-        proRatedPaid: true,
-        manualBillStart: true,
-      }),
-      BillingCycle.countDocuments({ status: "paused" }),
-      Billing.countDocuments({
-        isProRated: true,
-        status: "pending_confirmation",
-      }),
-      BillingCycle.countDocuments({
-        status: "pending_activation",
-        proRatedPaid: true,
-        manualBillStart: false,
-      }),
-      Billing.countDocuments({ status: "overdue" }),
-      Billing.countDocuments({ isProRated: true, status: "sent" }),
-      Billing.aggregate([
-        {
-          $match: {
-            status: { $in: ["sent", "overdue", "pending_confirmation"] },
-          },
-        },
-        { $group: { _id: null, total: { $sum: "$total" } } },
-      ]),
-      Payment.aggregate([
-        {
-          $match: {
-            status: "completed",
-            paidAt: {
-              $gte: new Date(
-                new Date().getFullYear(),
-                new Date().getMonth(),
-                1,
-              ),
-            },
-          },
-        },
-        { $group: { _id: null, total: { $sum: "$amount" } } },
-      ]),
-    ]);
+    let settings = await BillingSettings.findOne().lean();
+    if (!settings) {
+      settings = await BillingSettings.create({
+        reminderDays: [7, 3, 1],
+        dueDateDaysAfterPeriod: 5,
+        gracePeriodDays: 5,
+        autoGenerateBills: true,
+        autoSendReminders: true,
+        autoSuspendOnNonPayment: true,
+        billingCycleDay: 1,
+        freeDays: 1,
+      });
+    }
 
-    const totalOutstanding = outstandingResult[0]?.total || 0;
-    const data = {
-      activeSubscriptions: totalActiveCycles,
-      pausedSubscriptions: totalPausedCycles,
-      pendingProRated: pendingProRated,
-      pendingActivations: pendingActivations,
-      overdueAccounts: overdueBills,
-      totalOutstanding: totalOutstanding,
-      monthlyRevenue: monthlyRevenue[0]?.total || 0,
-      unpaidProRated: unpaidProRated,
-    };
+    billingSettingsCache = settings;
+    billingSettingsCacheTime = now;
 
-    summaryCache = { data, timestamp: now };
-
-    res.status(200).json({ success: true, data });
+    res.status(200).json({ success: true, data: settings });
   } catch (error) {
     next(error);
   }
 };
 
-// ==================== GET USER'S CURRENT BILLING STATUS ====================
+// ==================== UPDATE BILLING SETTINGS ====================
+export const updateBillingSettings = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const settings = await BillingSettings.findOneAndUpdate({}, req.body, {
+      new: true,
+      upsert: true,
+    }).lean();
+
+    billingSettingsCache = null;
+    clearAllCache();
+
+    res.status(200).json({ success: true, data: settings });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ==================== GET USER CURRENT BILLING ====================
 export const getUserCurrentBilling = async (
   req: AuthRequest,
   res: Response,
@@ -1398,8 +1669,6 @@ export const getUserCurrentBilling = async (
 ) => {
   try {
     const userId = req.user?._id;
-
-    console.log(`🔍 Getting current billing for user: ${userId}`);
 
     const billingCycle = await BillingCycle.findOne({
       userId,
@@ -1409,14 +1678,11 @@ export const getUserCurrentBilling = async (
       .lean();
 
     if (!billingCycle) {
-      console.log(`No billing cycle found for user ${userId}`);
-      return res
-        .status(200)
-        .json({
-          success: true,
-          data: null,
-          message: "No active billing cycle",
-        });
+      return res.status(200).json({
+        success: true,
+        data: null,
+        message: "No active billing cycle",
+      });
     }
 
     const proRatedBill = await Billing.findOne({
@@ -1458,8 +1724,6 @@ export const getUserCurrentBilling = async (
     }
 
     if (isProRatedPaid) {
-      console.log(`Pro-rated is paid, showing monthly bills`);
-
       const [currentBill, upcomingBills] = await Promise.all([
         Billing.findOne({
           userId,
@@ -1563,7 +1827,7 @@ export const getUserBillingHistory = async (
     res.status(200).json({
       success: true,
       data: {
-        history,
+        billingHistory: history,
         total,
         page: Number(page),
         pages: Math.ceil(total / Number(limit)),
@@ -1574,71 +1838,8 @@ export const getUserBillingHistory = async (
   }
 };
 
-// ==================== GET ALL BILLING CYCLES (CACHED) ====================
-export const getAllBillingCycles = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  try {
-    const cacheKey = getCacheKey(req.query);
-    const cached = billingCyclesCache.get(cacheKey);
-
-    if (cached && Date.now() - cached.timestamp < LIST_CACHE_TTL) {
-      return res.status(200).json({ success: true, data: cached.data });
-    }
-
-    const cycles = await BillingCycle.find()
-      .populate("userId", "firstName lastName email username status")
-      .populate("planId", "name price")
-      .sort({ createdAt: -1 })
-      .lean();
-
-    billingCyclesCache.set(cacheKey, { data: cycles, timestamp: Date.now() });
-
-    res.status(200).json({ success: true, data: cycles });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// ==================== GET ALL BILLS (CACHED) ====================
-export const getAllBills = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  try {
-    const cacheKey = getCacheKey(req.query);
-    const cached = billsCache.get(cacheKey);
-
-    if (cached && Date.now() - cached.timestamp < LIST_CACHE_TTL) {
-      return res.status(200).json({ success: true, data: cached.data });
-    }
-
-    const { status, type } = req.query;
-    let query: any = {};
-
-    if (status) query.status = status;
-    if (type === "pro-rated") query.isProRated = true;
-    if (type === "monthly") query.isProRated = false;
-
-    const bills = await Billing.find(query)
-      .populate("userId", "firstName lastName email username")
-      .populate("billingCycleId")
-      .sort({ dueDate: -1 })
-      .lean();
-
-    billsCache.set(cacheKey, { data: bills, timestamp: Date.now() });
-
-    res.status(200).json({ success: true, data: bills });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// ==================== STOP BILLING ====================
-export const stopBilling = async (
+// ==================== SUBMIT PRO-RATED PAYMENT ====================
+export const submitProRatedPayment = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
@@ -1647,77 +1848,96 @@ export const stopBilling = async (
   session.startTransaction();
 
   try {
-    const { userId, reason } = req.body;
+    const { billId, referenceNumber, notes } = req.body;
+    const userId = req.user?._id;
 
-    const user = await User.findById(userId).lean();
-    if (!user) {
+    const bill = await Billing.findOne({
+      _id: billId,
+      userId,
+      isProRated: true,
+    });
+
+    if (!bill) {
       return res
         .status(404)
-        .json({ success: false, message: "User not found" });
+        .json({ success: false, message: "Pro-rated bill not found" });
     }
 
-    const billingCycle = await BillingCycle.findOne({
-      userId,
-      status: "active",
-    }).lean();
-
-    if (!billingCycle) {
+    if (bill.status === "paid") {
       return res
-        .status(404)
-        .json({
-          success: false,
-          message: "No active billing cycle found to stop",
-        });
+        .status(400)
+        .json({ success: false, message: "This bill has already been paid" });
     }
 
-    const unpaidBills = await Billing.findOne({
-      userId,
-      status: { $in: ["sent", "overdue", "pending_confirmation"] },
-    }).lean();
-
-    if (unpaidBills) {
+    if (bill.status === "pending_confirmation") {
       return res
         .status(400)
         .json({
           success: false,
-          message:
-            "User has unpaid bills. Please settle before stopping billing.",
+          message: "Payment already submitted and pending admin confirmation",
         });
     }
 
-    await BillingCycle.updateOne(
-      { _id: billingCycle._id },
-      { $set: { status: "cancelled", billingEndDate: new Date() } },
+    const existingPendingPayment = await Payment.findOne({
+      billingId: bill._id,
+      status: "pending",
+    }).lean();
+    if (existingPendingPayment) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment already pending confirmation. Please wait for admin.",
+      });
+    }
+
+    await Billing.updateOne(
+      { _id: bill._id },
+      { $set: { status: "pending_confirmation" } },
+      { session },
     );
 
-    await User.updateOne({ _id: userId }, { $set: { status: "inactive" } });
+    const payment = await Payment.create(
+      [
+        {
+          userId,
+          amount: bill.total,
+          paymentMethod: "manual",
+          paymentType: "subscription",
+          status: "pending",
+          referenceNumber: referenceNumber || `PAY-${Date.now()}`,
+          billingId: bill._id,
+          paymentDetails: {
+            gateway: "manual",
+            gatewayResponse: {
+              submittedBy: userId,
+              submittedAt: new Date(),
+              notes: notes || "Payment submitted by user",
+            },
+          },
+          paidAt: new Date(),
+        },
+      ],
+      { session },
+    );
 
-    if (user.mikrotik?.username) {
-      try {
-        await mikrotikService.disablePPPoEUser(user);
-      } catch (error) {
-        console.error("Error disabling user in MikroTik:", error);
-      }
-    }
+    await Billing.updateOne(
+      { _id: bill._id },
+      { $set: { paymentId: payment[0]._id } },
+      { session },
+    );
 
     await session.commitTransaction();
 
-    await emailService.sendEmail(
-      user.email,
-      "Your Billing Has Been Stopped - Mister Fyber",
-      `<p>Dear ${user.firstName || user.username} ${user.lastName || ""},</p>
-       <p>Your billing cycle has been stopped.</p>
-       <p>Reason: ${reason || "Admin action"}</p>
-       <p>If you have any questions, please contact our support team.</p>
-       <p>Thank you,<br>Mister Fyber Team</p>`,
+    console.log(
+      `💰 Pro-rated payment submitted for user ${userId}, bill ${bill.invoiceNumber}. Awaiting admin confirmation.`,
     );
 
     clearAllCache();
 
     res.status(200).json({
       success: true,
-      message: `Billing stopped for ${user.firstName} ${user.lastName}`,
-      data: { billingCycle },
+      message:
+        "Payment submitted successfully! Please wait for admin confirmation.",
+      data: { bill, payment: payment[0], status: "pending_confirmation" },
     });
   } catch (error) {
     await session.abortTransaction();
@@ -1727,205 +1947,8 @@ export const stopBilling = async (
   }
 };
 
-// ==================== PAUSE BILLING ====================
-export const pauseBilling = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  try {
-    const { userId, reason, pauseUntilDate } = req.body;
-
-    console.log(`⏸️ Pausing billing for user: ${userId}`);
-
-    if (!userId) {
-      return res
-        .status(400)
-        .json({ success: false, message: "User ID is required" });
-    }
-
-    const user = await User.findById(userId).lean();
-    if (!user) {
-      return res
-        .status(404)
-        .json({ success: false, message: "User not found" });
-    }
-
-    const billingCycle = await BillingCycle.findOne({
-      userId,
-      status: "active",
-    }).lean();
-
-    if (!billingCycle) {
-      return res
-        .status(404)
-        .json({
-          success: false,
-          message: "No active billing cycle found to pause",
-        });
-    }
-
-    const unpaidBills = await Billing.findOne({
-      userId,
-      status: { $in: ["sent", "overdue", "pending_confirmation"] },
-    }).lean();
-
-    if (unpaidBills) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "User has unpaid bills. Please settle before pausing.",
-        });
-    }
-
-    const pauseDate = new Date();
-    await BillingCycle.updateOne(
-      { _id: billingCycle._id },
-      {
-        $set: {
-          status: "paused",
-          pausedAt: pauseDate,
-          pauseReason: reason || "User requested pause (vacation)",
-          pauseUntil: pauseUntilDate ? new Date(pauseUntilDate) : undefined,
-        },
-      },
-    );
-
-    await User.updateOne({ _id: userId }, { $set: { status: "paused" } });
-
-    if (user.mikrotik?.username) {
-      try {
-        await mikrotikService.disablePPPoEUser(user);
-        console.log(`🔌 MikroTik user ${user.mikrotik.username} disabled`);
-      } catch (error) {
-        console.error("Error disabling user in MikroTik:", error);
-      }
-    }
-
-    await emailService.sendEmail(
-      user.email,
-      "Your Service Has Been Paused - Mister Fyber",
-      `<p>Dear ${user.firstName || user.username} ${user.lastName || ""},</p>
-       <p>Your internet service has been paused as requested.</p>
-       <p>Reason: ${reason || "Vacation/Requested pause"}</p>
-       ${pauseUntilDate ? `<p>Your service will automatically resume on: ${new Date(pauseUntilDate).toLocaleDateString()}</p>` : ""}
-       <p>No bills will be generated during the pause period.</p>
-       <p>To resume your service, please contact our support team or use the resume button in your dashboard.</p>
-       <p>Thank you,<br>Mister Fyber Team</p>`,
-    );
-
-    clearAllCache();
-
-    res.status(200).json({
-      success: true,
-      message: `Service paused for ${user.firstName} ${user.lastName}. No bills will be generated during pause.`,
-      data: { billingCycle, pauseDate, pauseUntil: pauseUntilDate },
-    });
-  } catch (error) {
-    console.error("Error in pauseBilling:", error);
-    next(error);
-  }
-};
-
-// ==================== RESUME BILLING ====================
-export const resumeBilling = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  try {
-    const { userId } = req.body;
-
-    console.log(`🔄 Resuming billing for user: ${userId}`);
-
-    if (!userId) {
-      return res
-        .status(400)
-        .json({ success: false, message: "User ID is required" });
-    }
-
-    const user = await User.findById(userId).populate("planId").lean();
-    if (!user) {
-      return res
-        .status(404)
-        .json({ success: false, message: "User not found" });
-    }
-
-    const billingCycle = await BillingCycle.findOne({
-      userId,
-      status: "paused",
-    }).lean();
-
-    if (!billingCycle) {
-      return res
-        .status(404)
-        .json({
-          success: false,
-          message: "No paused billing cycle found for this user",
-        });
-    }
-
-    const resumeDate = new Date();
-    const nextBillingDate = new Date(resumeDate);
-    nextBillingDate.setMonth(nextBillingDate.getMonth() + 1);
-    nextBillingDate.setDate(1);
-    nextBillingDate.setHours(0, 0, 0, 0);
-
-    await BillingCycle.updateOne(
-      { _id: billingCycle._id },
-      {
-        $set: {
-          status: "active",
-          resumedAt: resumeDate,
-          nextBillingDate: nextBillingDate,
-          pausedAt: undefined,
-          pauseReason: undefined,
-          pauseUntil: undefined,
-        },
-      },
-    );
-
-    await User.updateOne({ _id: userId }, { $set: { status: "active" } });
-
-    if (user.mikrotik && user.mikrotik.username && user.planId) {
-      try {
-        await mikrotikService.applyPlanToUser(user, user.planId);
-        console.log(`✅ MikroTik user ${user.mikrotik.username} re-enabled`);
-      } catch (error) {
-        console.error("Error enabling user in MikroTik:", error);
-      }
-    }
-
-    await emailService.sendEmail(
-      user.email,
-      "Your Service Has Been Resumed - Mister Fyber",
-      `<p>Dear ${user.firstName || user.username} ${user.lastName || ""},</p>
-       <p>Your internet service has been resumed.</p>
-       <p>Your next billing date is: ${nextBillingDate.toLocaleDateString()}</p>
-       <p>Thank you for choosing Mister Fyber!</p>`,
-    );
-
-    clearAllCache();
-
-    res.status(200).json({
-      success: true,
-      message: `Service resumed for ${user.firstName} ${user.lastName}`,
-      data: {
-        billingCycle,
-        resumeDate,
-        nextBillingDate,
-        userStatus: user.status,
-      },
-    });
-  } catch (error) {
-    console.error("Error in resumeBilling:", error);
-    next(error);
-  }
-};
-
-// ==================== RECONNECT SERVICE ====================
-export const reconnectClient = async (
+// ==================== SUBMIT MONTHLY PAYMENT ====================
+export const submitMonthlyPayment = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
@@ -1934,169 +1957,115 @@ export const reconnectClient = async (
   session.startTransaction();
 
   try {
-    const { userId } = req.body;
+    const { billId, referenceNumber, notes } = req.body;
+    const userId = req.user?._id;
 
-    const user = await User.findById(userId).populate("planId").lean();
-    if (!user) {
-      return res
-        .status(404)
-        .json({ success: false, message: "User not found" });
-    }
-
-    const unpaidBills = await Billing.findOne({
+    const bill = await Billing.findOne({
+      _id: billId,
       userId,
-      status: { $in: ["sent", "overdue"] },
-    }).lean();
-
-    if (unpaidBills) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "User has unpaid bills. Please settle before reconnecting.",
-        });
-    }
-
-    const billingCycle = await BillingCycle.findOne({
-      userId,
-      status: { $in: ["paused", "cancelled"] },
-    }).lean();
-
-    if (billingCycle && billingCycle.status === "paused") {
-      const resumeDate = new Date();
-      const nextBillingDate = new Date(resumeDate);
-      nextBillingDate.setMonth(nextBillingDate.getMonth() + 1);
-      nextBillingDate.setDate(1);
-
-      await BillingCycle.updateOne(
-        { _id: billingCycle._id },
-        {
-          $set: {
-            status: "active",
-            resumedAt: resumeDate,
-            nextBillingDate: nextBillingDate,
-            pausedAt: undefined,
-            pauseReason: undefined,
-            pauseUntil: undefined,
-          },
-        },
-      );
-    }
-
-    await User.updateOne({ _id: userId }, { $set: { status: "active" } });
-
-    if (user.mikrotik?.username && user.planId) {
-      try {
-        await mikrotikService.applyPlanToUser(user, user.planId);
-      } catch (error) {
-        console.error("Error reconnecting MikroTik:", error);
-      }
-    }
-
-    await session.commitTransaction();
-
-    await emailService.sendEmail(
-      user.email,
-      "Your Service Has Been Reconnected - Mister Fyber",
-      `<p>Dear ${user.firstName || user.username} ${user.lastName || ""},</p>
-       <p>Your internet service has been reconnected.</p>
-       <p>Thank you for choosing Mister Fyber!</p>`,
-    );
-
-    clearAllCache();
-
-    res.status(200).json({
-      success: true,
-      message: `Service reconnected for ${user.firstName} ${user.lastName}`,
-      data: { userId: user._id, status: "active" },
+      isProRated: false,
     });
-  } catch (error) {
-    await session.abortTransaction();
-    next(error);
-  } finally {
-    session.endSession();
-  }
-};
 
-// ==================== DISCONNECT SERVICE ====================
-export const disconnectClient = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const { userId, reason } = req.body;
-
-    const user = await User.findById(userId).lean();
-    if (!user) {
+    if (!bill) {
       return res
         .status(404)
-        .json({ success: false, message: "User not found" });
+        .json({ success: false, message: "Bill not found" });
     }
 
-    const unpaidBills = await Billing.findOne({
-      userId,
-      status: { $in: ["sent", "overdue"] },
-    }).lean();
+    if (bill.status === "paid") {
+      return res
+        .status(400)
+        .json({ success: false, message: "This bill has already been paid" });
+    }
 
-    if (unpaidBills) {
+    if (bill.status === "pending_confirmation") {
       return res
         .status(400)
         .json({
           success: false,
-          message: "User has unpaid bills. Please settle before disconnecting.",
+          message: "Payment already submitted and pending admin confirmation",
         });
     }
 
-    const billingCycle = await BillingCycle.findOne({
-      userId,
-      status: "active",
+    const existingPendingPayment = await Payment.findOne({
+      billingId: bill._id,
+      status: "pending",
     }).lean();
+    if (existingPendingPayment) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment already pending confirmation. Please wait for admin.",
+      });
+    }
 
-    if (billingCycle) {
-      await BillingCycle.updateOne(
-        { _id: billingCycle._id },
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const billStartDate = new Date(bill.billingPeriod.start);
+    const currentMonth = today.getMonth();
+    const currentYear = today.getFullYear();
+    const billMonth = billStartDate.getMonth();
+    const billYear = billStartDate.getFullYear();
+
+    const isCurrentMonth =
+      billYear === currentYear && billMonth === currentMonth;
+
+    if (!isCurrentMonth) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "You can only pay for the current month's bill. Please contact admin for older bills.",
+      });
+    }
+
+    await Billing.updateOne(
+      { _id: bill._id },
+      { $set: { status: "pending_confirmation" } },
+      { session },
+    );
+
+    const payment = await Payment.create(
+      [
         {
-          $set: {
-            status: "paused",
-            serviceSuspendedAt: new Date(),
-            disconnectReason: reason || "Admin initiated disconnect",
+          userId,
+          amount: bill.total,
+          paymentMethod: "manual",
+          paymentType: "subscription",
+          status: "pending",
+          referenceNumber: referenceNumber || `PAY-${Date.now()}`,
+          billingId: bill._id,
+          paymentDetails: {
+            gateway: "manual",
+            gatewayResponse: {
+              submittedBy: userId,
+              submittedAt: new Date(),
+              notes: notes || "Payment submitted by user",
+            },
           },
+          paidAt: new Date(),
         },
-      );
-    }
+      ],
+      { session },
+    );
 
-    await User.updateOne({ _id: userId }, { $set: { status: "suspended" } });
-
-    if (user.mikrotik?.username) {
-      try {
-        await mikrotikService.disablePPPoEUser(user);
-      } catch (error) {
-        console.error("Error disabling user in MikroTik:", error);
-      }
-    }
+    await Billing.updateOne(
+      { _id: bill._id },
+      { $set: { paymentId: payment[0]._id } },
+      { session },
+    );
 
     await session.commitTransaction();
 
-    await emailService.sendEmail(
-      user.email,
-      "Your Service Has Been Disconnected - Mister Fyber",
-      `<p>Dear ${user.firstName || user.username} ${user.lastName || ""},</p>
-       <p>Your internet service has been disconnected.</p>
-       <p>Reason: ${reason || "Admin action"}</p>
-       <p>To have your service reconnected, please contact our support team and settle any outstanding balance.</p>
-       <p>Thank you,<br>Mister Fyber Team</p>`,
+    console.log(
+      `💰 Monthly payment submitted for user ${userId}, bill ${bill.invoiceNumber}. Awaiting admin confirmation.`,
     );
 
     clearAllCache();
 
     res.status(200).json({
       success: true,
-      message: `Service disconnected for ${user.firstName} ${user.lastName}`,
-      data: { userId: user._id, status: "suspended", disconnectReason: reason },
+      message:
+        "Payment submitted successfully! Please wait for admin confirmation.",
+      data: { bill, payment: payment[0], status: "pending_confirmation" },
     });
   } catch (error) {
     await session.abortTransaction();

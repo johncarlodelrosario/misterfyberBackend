@@ -124,7 +124,7 @@ router.post(
   startMonthlyBilling,
 );
 
-// Mark bill as paid
+// Mark bill as paid (Manual admin)
 router.put(
   "/mark-paid/:billId",
   protect,
@@ -145,7 +145,7 @@ router.post(
   stopBilling,
 );
 
-// Pause billing (for vacation/temporary)
+// PAUSE BILLING (for vacation/temporary) - FIXED
 router.post(
   "/pause",
   protect,
@@ -158,7 +158,7 @@ router.post(
   pauseBilling,
 );
 
-// Resume billing (after pause)
+// RESUME BILLING (after pause) - FIXED
 router.post(
   "/resume",
   protect,
