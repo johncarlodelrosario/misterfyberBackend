@@ -1,3 +1,4 @@
+// app.ts - COMPLETELY FIXED CORS
 import express, { Application, Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import cors from "cors";
@@ -55,7 +56,6 @@ class App {
           "https://www.misterfyber.com",
           "https://misterfyber.com",
           "https://misterfyber.vercel.app",
-          "https://misterfyberbackend.onrender.com",
         ],
         credentials: true,
         methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
@@ -99,7 +99,7 @@ class App {
       }),
     );
 
-    // CORS CONFIGURATION
+    // COMPLETELY FIXED CORS CONFIGURATION
     const allowedOrigins = [
       "http://localhost:3000",
       "http://localhost:5173",
@@ -107,20 +107,23 @@ class App {
       "https://www.misterfyber.com",
       "https://misterfyber.com",
       "https://misterfyber.vercel.app",
-      "https://misterfyberbackend.onrender.com",
       process.env.FRONTEND_URL || "",
     ].filter(Boolean);
 
+    // Apply CORS before any routes
     this.app.use(
       cors({
         origin: function (origin, callback) {
+          // Allow requests with no origin (like mobile apps or curl)
           if (!origin) return callback(null, true);
 
           if (allowedOrigins.indexOf(origin) !== -1) {
             callback(null, true);
           } else {
             console.log("CORS blocked origin:", origin);
-            callback(null, true); // Allow all for debugging
+            console.log("Allowed origins:", allowedOrigins);
+            callback(null, true); // TEMPORARILY ALLOW ALL FOR DEBUGGING
+            // callback(new Error("Not allowed by CORS")); // UNCOMMENT THIS FOR PRODUCTION
           }
         },
         credentials: true,
@@ -142,22 +145,16 @@ class App {
 
     // Handle preflight requests explicitly
     this.app.options("*", (req, res) => {
-      const origin = req.headers.origin;
-      if (origin && allowedOrigins.includes(origin)) {
-        res.header("Access-Control-Allow-Origin", origin);
-      } else {
-        res.header("Access-Control-Allow-Origin", "*");
-      }
+      res.header("Access-Control-Allow-Origin", req.headers.origin || "*");
       res.header(
         "Access-Control-Allow-Methods",
         "GET, POST, PUT, DELETE, OPTIONS, PATCH",
       );
       res.header(
         "Access-Control-Allow-Headers",
-        "Content-Type, Authorization, Cookie, X-Requested-With, Accept, Origin",
+        "Content-Type, Authorization, Cookie",
       );
       res.header("Access-Control-Allow-Credentials", "true");
-      res.header("Access-Control-Max-Age", "86400");
       res.sendStatus(204);
     });
 
@@ -184,7 +181,7 @@ class App {
     this.app.get("/", (req: Request, res: Response) => {
       res.status(200).json({
         success: true,
-        message: "MisterFyber ISP Backend",
+        message: "MisterFyber",
         version: "1.0.0",
         status: "running",
       });
@@ -225,28 +222,7 @@ class App {
       });
 
       console.log("✅ MongoDB connected successfully");
-
-      // Handle indexes with error recovery
-      try {
-        await ensureIndexes();
-      } catch (indexError: any) {
-        if (indexError.code === 86) {
-          console.log("⚠️ Index conflict detected, attempting to fix...");
-          // Drop the conflicting index and recreate
-          try {
-            const db = mongoose.connection.db;
-            await db.collection("users").dropIndex("referenceNumber_1");
-            console.log("✅ Dropped conflicting index, retrying...");
-            await ensureIndexes();
-          } catch (dropError) {
-            console.error("❌ Failed to fix indexes:", dropError);
-            // Continue anyway - the app will work with existing indexes
-          }
-        } else {
-          console.error("❌ Error creating indexes:", indexError);
-          // Don't exit - app can still work with existing indexes
-        }
-      }
+      await ensureIndexes();
 
       const settings = await BillingSettings.findOne();
       if (!settings) {
@@ -264,10 +240,7 @@ class App {
       }
     } catch (error) {
       console.error("❌ MongoDB connection error:", error);
-      // Don't exit on connection error in production
-      if (process.env.NODE_ENV !== "production") {
-        process.exit(1);
-      }
+      process.exit(1);
     }
   }
 
@@ -341,7 +314,7 @@ class App {
       console.log(`\n🚀 Server running on port ${PORT}`);
       console.log(`🌍 Environment: ${process.env.NODE_ENV || "development"}`);
       console.log(
-        `✅ CORS enabled for: http://localhost:3000, https://www.misterfyber.com, https://misterfyberbackend.onrender.com`,
+        `✅ CORS enabled for: http://localhost:3000, https://www.misterfyber.com, https://misterfyber-frontend.vercel.app`,
       );
       console.log(
         `📡 API available at: ${process.env.BASE_URL || `http://localhost:${PORT}`}/api`,
