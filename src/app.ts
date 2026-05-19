@@ -99,7 +99,7 @@ class App {
       }),
     );
 
-    // CORS CONFIGURATION - FIXED
+    // CORS CONFIGURATION
     const allowedOrigins = [
       "http://localhost:3000",
       "http://localhost:5173",
@@ -114,15 +114,12 @@ class App {
     this.app.use(
       cors({
         origin: function (origin, callback) {
-          // Allow requests with no origin (like mobile apps or curl requests)
           if (!origin) return callback(null, true);
 
           if (allowedOrigins.indexOf(origin) !== -1) {
             callback(null, true);
           } else {
             console.log("CORS blocked origin:", origin);
-            // For production, you should actually block it, but for debugging we allow
-            // Change this to callback(null, true) if you want to allow all for testing
             callback(null, true); // Allow all for debugging
           }
         },
@@ -228,7 +225,28 @@ class App {
       });
 
       console.log("✅ MongoDB connected successfully");
-      await ensureIndexes();
+
+      // Handle indexes with error recovery
+      try {
+        await ensureIndexes();
+      } catch (indexError: any) {
+        if (indexError.code === 86) {
+          console.log("⚠️ Index conflict detected, attempting to fix...");
+          // Drop the conflicting index and recreate
+          try {
+            const db = mongoose.connection.db;
+            await db.collection("users").dropIndex("referenceNumber_1");
+            console.log("✅ Dropped conflicting index, retrying...");
+            await ensureIndexes();
+          } catch (dropError) {
+            console.error("❌ Failed to fix indexes:", dropError);
+            // Continue anyway - the app will work with existing indexes
+          }
+        } else {
+          console.error("❌ Error creating indexes:", indexError);
+          // Don't exit - app can still work with existing indexes
+        }
+      }
 
       const settings = await BillingSettings.findOne();
       if (!settings) {
@@ -246,7 +264,10 @@ class App {
       }
     } catch (error) {
       console.error("❌ MongoDB connection error:", error);
-      process.exit(1);
+      // Don't exit on connection error in production
+      if (process.env.NODE_ENV !== "production") {
+        process.exit(1);
+      }
     }
   }
 

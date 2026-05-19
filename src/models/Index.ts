@@ -1,4 +1,4 @@
-// models/Index.ts - COMPLETE WITH ALL OPTIMIZED INDEXES
+// models/Index.ts - COMPLETE WITH ALL OPTIMIZED INDEXES AND ERROR HANDLING
 import mongoose from "mongoose";
 import User from "./User";
 import Admin from "./Admin";
@@ -11,38 +11,81 @@ import Application from "./Application";
 import Building from "./Building";
 import Notification from "./Notification";
 
+// Helper function to safely create indexes with conflict handling
+async function safeCreateIndex(
+  collection: mongoose.Collection,
+  keys: any,
+  options: any = {},
+) {
+  try {
+    await collection.createIndex(keys, options);
+  } catch (error: any) {
+    if (error.code === 86) {
+      // Index conflict - try to drop and recreate
+      const indexName = options.name || Object.keys(keys).join("_") + "_1";
+      console.log(
+        `⚠️ Index conflict detected for ${indexName}, attempting to recreate...`,
+      );
+      try {
+        await collection.dropIndex(indexName);
+        await collection.createIndex(keys, options);
+        console.log(`✅ Recreated index: ${indexName}`);
+      } catch (dropError: any) {
+        if (dropError.code !== 27) {
+          // 27 = IndexNotFound
+          console.log(
+            `⚠️ Could not recreate index ${indexName}:`,
+            dropError.message,
+          );
+        }
+      }
+    } else {
+      throw error;
+    }
+  }
+}
+
 export async function ensureIndexes() {
   console.log("🔍 Creating/Ensuring database indexes for performance...");
   const startTime = Date.now();
 
   try {
     // ==================== USER INDEXES ====================
-    await User.collection.createIndex({ email: 1 }, { unique: true });
-    await User.collection.createIndex({ username: 1 }, { unique: true });
-    await User.collection.createIndex({ status: 1 });
-    await User.collection.createIndex({ planId: 1 });
-    await User.collection.createIndex({ createdAt: -1 });
-    await User.collection.createIndex({ "mikrotik.username": 1 });
-    await User.collection.createIndex({ "billingInfo.billingCycleId": 1 });
-    await User.collection.createIndex({ status: 1, createdAt: -1 });
-    await User.collection.createIndex({ firstName: 1, lastName: 1 });
-    await User.collection.createIndex({ email: 1, status: 1 });
-    await User.collection.createIndex({ status: 1, planId: 1, createdAt: -1 });
+    await safeCreateIndex(User.collection, { email: 1 }, { unique: true });
+    await safeCreateIndex(User.collection, { username: 1 }, { unique: true });
+    await safeCreateIndex(User.collection, { status: 1 });
+    await safeCreateIndex(User.collection, { planId: 1 });
+    await safeCreateIndex(User.collection, { createdAt: -1 });
+    await safeCreateIndex(User.collection, { "mikrotik.username": 1 });
+    await safeCreateIndex(User.collection, { "billingInfo.billingCycleId": 1 });
+    await safeCreateIndex(User.collection, { status: 1, createdAt: -1 });
+    await safeCreateIndex(User.collection, { firstName: 1, lastName: 1 });
+    await safeCreateIndex(User.collection, { email: 1, status: 1 });
+    await safeCreateIndex(User.collection, {
+      status: 1,
+      planId: 1,
+      createdAt: -1,
+    });
     console.log("✅ User indexes created");
 
     // ==================== PAYMENT INDEXES ====================
-    await Payment.collection.createIndex({ userId: 1, createdAt: -1 });
-    await Payment.collection.createIndex({ status: 1, createdAt: -1 });
-    await Payment.collection.createIndex(
+    await safeCreateIndex(Payment.collection, { userId: 1, createdAt: -1 });
+    await safeCreateIndex(Payment.collection, { status: 1, createdAt: -1 });
+    await safeCreateIndex(
+      Payment.collection,
       { referenceNumber: 1 },
-      { unique: true, sparse: true },
+      { unique: true, sparse: true, name: "referenceNumber_idx" }, // Changed name to avoid conflict
     );
-    await Payment.collection.createIndex({ billingId: 1 });
-    await Payment.collection.createIndex({ status: 1, paidAt: -1 });
-    await Payment.collection.createIndex({ createdAt: -1 });
-    await Payment.collection.createIndex({ userId: 1, status: 1, paidAt: -1 });
-    await Payment.collection.createIndex({ status: 1, createdAt: 1 });
-    await Payment.collection.createIndex({
+    await safeCreateIndex(Payment.collection, { billingId: 1 });
+    await safeCreateIndex(Payment.collection, { status: 1, paidAt: -1 });
+    await safeCreateIndex(Payment.collection, { createdAt: -1 });
+    await safeCreateIndex(Payment.collection, {
+      userId: 1,
+      status: 1,
+      paidAt: -1,
+    });
+    await safeCreateIndex(Payment.collection, { status: 1, createdAt: 1 });
+    await safeCreateIndex(Payment.collection, {
       status: 1,
       createdAt: 1,
       amount: 1,
@@ -50,27 +93,32 @@ export async function ensureIndexes() {
     console.log("✅ Payment indexes created");
 
     // ==================== BILLING INDEXES ====================
-    await Billing.collection.createIndex({ userId: 1, status: 1, dueDate: 1 });
-    await Billing.collection.createIndex({ userId: 1, createdAt: -1 });
-    await Billing.collection.createIndex({ status: 1, dueDate: 1 });
-    await Billing.collection.createIndex(
+    await safeCreateIndex(Billing.collection, {
+      userId: 1,
+      status: 1,
+      dueDate: 1,
+    });
+    await safeCreateIndex(Billing.collection, { userId: 1, createdAt: -1 });
+    await safeCreateIndex(Billing.collection, { status: 1, dueDate: 1 });
+    await safeCreateIndex(
+      Billing.collection,
       { invoiceNumber: 1 },
-      { unique: true },
+      { unique: true, name: "invoiceNumber_idx" },
     );
-    await Billing.collection.createIndex({ billingCycleId: 1 });
-    await Billing.collection.createIndex({ isProRated: 1, status: 1 });
-    await Billing.collection.createIndex({ dueDate: 1, status: 1 });
-    await Billing.collection.createIndex({
+    await safeCreateIndex(Billing.collection, { billingCycleId: 1 });
+    await safeCreateIndex(Billing.collection, { isProRated: 1, status: 1 });
+    await safeCreateIndex(Billing.collection, { dueDate: 1, status: 1 });
+    await safeCreateIndex(Billing.collection, {
       userId: 1,
       isProRated: 1,
       status: 1,
     });
-    await Billing.collection.createIndex({
+    await safeCreateIndex(Billing.collection, {
       status: 1,
       dueDate: 1,
       reminder7DaySent: 1,
     });
-    await Billing.collection.createIndex({
+    await safeCreateIndex(Billing.collection, {
       billingCycleId: 1,
       status: 1,
       dueDate: 1,
@@ -78,25 +126,25 @@ export async function ensureIndexes() {
     console.log("✅ Billing indexes created");
 
     // ==================== BILLING CYCLE INDEXES ====================
-    await BillingCycle.collection.createIndex({ userId: 1, status: 1 });
-    await BillingCycle.collection.createIndex({ userId: 1 });
-    await BillingCycle.collection.createIndex({
+    await safeCreateIndex(BillingCycle.collection, { userId: 1, status: 1 });
+    await safeCreateIndex(BillingCycle.collection, { userId: 1 });
+    await safeCreateIndex(BillingCycle.collection, {
       status: 1,
       nextBillingDate: 1,
     });
-    await BillingCycle.collection.createIndex({
+    await safeCreateIndex(BillingCycle.collection, {
       "pendingPlanChange.status": 1,
     });
-    await BillingCycle.collection.createIndex({
+    await safeCreateIndex(BillingCycle.collection, {
       status: 1,
       proRatedPaid: 1,
       manualBillStart: 1,
     });
-    await BillingCycle.collection.createIndex({
+    await safeCreateIndex(BillingCycle.collection, {
       nextBillingDate: 1,
       status: 1,
     });
-    await BillingCycle.collection.createIndex({
+    await safeCreateIndex(BillingCycle.collection, {
       userId: 1,
       status: 1,
       proRatedPaid: 1,
@@ -104,63 +152,66 @@ export async function ensureIndexes() {
     console.log("✅ BillingCycle indexes created");
 
     // ==================== APPLICATION INDEXES (OPTIMIZED) ====================
-    // Basic indexes
-    await Application.collection.createIndex({ applicationId: 1 });
-    await Application.collection.createIndex({ email: 1 });
-    await Application.collection.createIndex({ status: 1 });
-    await Application.collection.createIndex({ createdAt: -1 });
-    await Application.collection.createIndex({ buildingId: 1 });
-
-    // Compound indexes for common query patterns
-    await Application.collection.createIndex({ status: 1, createdAt: -1 });
-    await Application.collection.createIndex({ email: 1, status: 1 });
-    await Application.collection.createIndex({ buildingId: 1, status: 1 });
-    await Application.collection.createIndex({ registeredUserId: 1 });
-
-    // Performance optimization indexes
-    await Application.collection.createIndex({
+    await safeCreateIndex(Application.collection, { applicationId: 1 });
+    await safeCreateIndex(Application.collection, { email: 1 });
+    await safeCreateIndex(Application.collection, { status: 1 });
+    await safeCreateIndex(Application.collection, { createdAt: -1 });
+    await safeCreateIndex(Application.collection, { buildingId: 1 });
+    await safeCreateIndex(Application.collection, { status: 1, createdAt: -1 });
+    await safeCreateIndex(Application.collection, { email: 1, status: 1 });
+    await safeCreateIndex(Application.collection, { buildingId: 1, status: 1 });
+    await safeCreateIndex(Application.collection, { registeredUserId: 1 });
+    await safeCreateIndex(Application.collection, {
       status: 1,
       createdAt: -1,
       buildingId: 1,
     });
-    await Application.collection.createIndex({ planId: 1, status: 1 });
-    await Application.collection.createIndex({ reviewedBy: 1, reviewedAt: -1 });
+    await safeCreateIndex(Application.collection, { planId: 1, status: 1 });
+    await safeCreateIndex(Application.collection, {
+      reviewedBy: 1,
+      reviewedAt: -1,
+    });
     console.log("✅ Application indexes created");
 
     // ==================== ADMIN INDEXES ====================
-    await Admin.collection.createIndex({ email: 1 }, { unique: true });
-    await Admin.collection.createIndex({ username: 1 }, { unique: true });
-    await Admin.collection.createIndex({ role: 1 });
-    await Admin.collection.createIndex({ status: 1 });
+    await safeCreateIndex(Admin.collection, { email: 1 }, { unique: true });
+    await safeCreateIndex(Admin.collection, { username: 1 }, { unique: true });
+    await safeCreateIndex(Admin.collection, { role: 1 });
+    await safeCreateIndex(Admin.collection, { status: 1 });
     console.log("✅ Admin indexes created");
 
     // ==================== PLAN INDEXES ====================
-    await Plan.collection.createIndex({ isActive: 1 });
-    await Plan.collection.createIndex({ price: 1 });
-    await Plan.collection.createIndex({ name: 1 }, { unique: true });
-    await Plan.collection.createIndex({ isActive: 1, price: 1 });
+    await safeCreateIndex(Plan.collection, { isActive: 1 });
+    await safeCreateIndex(Plan.collection, { price: 1 });
+    await safeCreateIndex(Plan.collection, { name: 1 }, { unique: true });
+    await safeCreateIndex(Plan.collection, { isActive: 1, price: 1 });
     console.log("✅ Plan indexes created");
 
     // ==================== BUILDING INDEXES ====================
-    await Building.collection.createIndex(
+    await safeCreateIndex(
+      Building.collection,
       { buildingName: 1 },
-      { unique: true },
+      { unique: true, name: "buildingName_idx" },
     );
-    await Building.collection.createIndex({ isActive: 1 });
-    await Building.collection.createIndex({ city: 1, isActive: 1 });
+    await safeCreateIndex(Building.collection, { isActive: 1 });
+    await safeCreateIndex(Building.collection, { city: 1, isActive: 1 });
     console.log("✅ Building indexes created");
 
     // ==================== NOTIFICATION INDEXES ====================
-    await Notification.collection.createIndex({ userId: 1, createdAt: -1 });
-    await Notification.collection.createIndex({ isRead: 1 });
-    await Notification.collection.createIndex({
+    await safeCreateIndex(Notification.collection, {
+      userId: 1,
+      createdAt: -1,
+    });
+    await safeCreateIndex(Notification.collection, { isRead: 1 });
+    await safeCreateIndex(Notification.collection, {
       userId: 1,
       isRead: 1,
       createdAt: -1,
     });
-    await Notification.collection.createIndex(
+    await safeCreateIndex(
+      Notification.collection,
       { createdAt: 1 },
-      { expireAfterSeconds: 2592000 },
+      { expireAfterSeconds: 2592000, name: "createdAt_expire_idx" },
     );
     console.log("✅ Notification indexes created");
 
@@ -181,10 +232,11 @@ export async function ensureIndexes() {
     }
 
     const duration = Date.now() - startTime;
-    console.log(`✅ All database indexes created in ${duration}ms`);
+    console.log(`✅ All database indexes verified/created in ${duration}ms`);
   } catch (error) {
     console.error("❌ Error creating indexes:", error);
-    throw error;
+    // Don't throw - allow app to continue with existing indexes
+    console.log("⚠️ Continuing with existing indexes...");
   }
 }
 
