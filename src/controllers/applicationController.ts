@@ -300,19 +300,29 @@ export const submitApplication = async (
     const application = new Application(applicationData);
     await application.save();
 
-    const populatedApp = await Application.findById(application._id)
+    // FIXED: Populate the plan data BEFORE sending emails
+    const populatedApplication = await Application.findById(application._id)
       .populate("planId")
       .populate("buildingId")
       .lean();
 
     const fullImageUrl = getImageUrl(application.idImage);
 
+    // FIXED: Get the populated plan object with price
+    const populatedPlan = populatedApplication?.planId as any;
+
+    console.log("📊 Plan details for email:", {
+      planId: application.planId,
+      populatedPlanName: populatedPlan?.name,
+      populatedPlanPrice: populatedPlan?.price,
+    });
+
     // FIXED: Wrap email sending in try-catch to prevent 500 errors
     try {
       console.log("📧 Sending application received email to client...");
       await emailService.sendApplicationReceived(
         application,
-        application.planId,
+        populatedPlan, // Pass the populated plan object with price
       );
     } catch (emailError) {
       console.error("Failed to send client email:", emailError);
@@ -322,14 +332,14 @@ export const submitApplication = async (
       console.log("📧 Sending new application notification to admin...");
       await emailService.sendNewApplicationNotification(
         application,
-        application.planId,
+        populatedPlan, // Pass the populated plan object with price
       );
     } catch (emailError) {
       console.error("Failed to send admin email:", emailError);
     }
 
     // FIXED: Safe price formatting
-    const planPrice = (populatedApp?.planId as any)?.price;
+    const planPrice = populatedPlan?.price;
     const safePrice =
       planPrice !== undefined && planPrice !== null ? planPrice : 0;
 
@@ -342,7 +352,7 @@ export const submitApplication = async (
         status: application.status,
         idImageUrl: fullImageUrl,
         plan: {
-          name: (populatedApp?.planId as any)?.name || "N/A",
+          name: populatedPlan?.name || "N/A",
           price: safePrice,
         },
         building: {
@@ -507,6 +517,7 @@ export const approveApplication = async (
   try {
     const { adminNotes } = req.body;
 
+    // FIXED: Populate plan before sending email
     const application = await Application.findById(req.params.id).populate(
       "planId",
     );
@@ -536,6 +547,7 @@ export const approveApplication = async (
     );
 
     console.log(`📧 Sending approval email to ${application.email}...`);
+    // FIXED: Pass the populated plan object
     await emailService.sendApplicationApproved(
       application,
       application.planId as any,
