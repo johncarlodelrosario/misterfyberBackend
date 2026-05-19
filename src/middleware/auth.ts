@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import User from "../models/User";
 import Admin from "../models/Admin";
 
+// Extend the Request interface properly
 export interface AuthRequest extends Request {
   user?: any;
   admin?: any;
