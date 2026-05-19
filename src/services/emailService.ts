@@ -33,6 +33,14 @@ console.log(
 );
 console.log("   FRONTEND_URL:", process.env.FRONTEND_URL || "❌ MISSING");
 
+// SAFE NUMBER FORMATTING FUNCTION - FIXED
+const safeToFixed = (value: any, decimals: number = 2): string => {
+  if (value === undefined || value === null || isNaN(Number(value))) {
+    return "0.00";
+  }
+  return Number(value).toFixed(decimals);
+};
+
 class EmailService {
   private apiKey: string;
   private initialized: boolean = false;
@@ -385,9 +393,12 @@ class EmailService {
     );
   }
 
-  // ==================== APPLICATION EMAILS ====================
+  // ==================== APPLICATION EMAILS - FIXED with safeToFixed ====================
 
   async sendApplicationReceived(application: any, plan: any): Promise<void> {
+    // SAFE: Get price with fallback
+    const planPrice = plan?.price ?? 0;
+
     const html = `
             <!DOCTYPE html>
             <html>
@@ -404,8 +415,8 @@ class EmailService {
                     <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
                         <h3 style="margin-top: 0;">Application Details:</h3>
                         <p><strong>Application ID:</strong> ${application.applicationId}</p>
-                        <p><strong>Plan:</strong> ${plan.name}</p>
-                        <p><strong>Monthly Price:</strong> ₱${plan.price.toFixed(2)}</p>
+                        <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
+                        <p><strong>Monthly Price:</strong> ₱${safeToFixed(planPrice)}</p>
                         <p><strong>Status:</strong> <span style="color: #f39c12;">Pending Review</span></p>
                     </div>
                     
@@ -432,7 +443,7 @@ class EmailService {
                 <p><strong>Name:</strong> ${application.firstName} ${application.lastName}</p>
                 <p><strong>Email:</strong> ${application.email}</p>
                 <p><strong>Phone:</strong> ${application.phoneNumber}</p>
-                <p><strong>Plan:</strong> ${plan.name}</p>
+                <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
                 <p><strong>Submitted:</strong> ${new Date().toLocaleString()}</p>
             </div>
         `;
@@ -448,6 +459,8 @@ class EmailService {
   ): Promise<void> {
     const frontendUrl =
       process.env.FRONTEND_URL || "https://www.misterfyber.com";
+    const planPrice = plan?.price ?? 0;
+
     const adminHtml = `
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
                 <h2 style="color: #333;">🆕 NEW APPLICATION ALERT!</h2>
@@ -459,7 +472,7 @@ class EmailService {
                     <p><strong>Name:</strong> ${application.firstName} ${application.lastName}</p>
                     <p><strong>Email:</strong> ${application.email}</p>
                     <p><strong>Phone:</strong> ${application.phoneNumber}</p>
-                    <p><strong>Plan:</strong> ${plan.name} (₱${plan.price.toFixed(2)})</p>
+                    <p><strong>Plan:</strong> ${plan?.name || "N/A"} (₱${safeToFixed(planPrice)})</p>
                     <p><strong>ID Type:</strong> ${application.idType}</p>
                     <p><strong>Submitted:</strong> ${new Date().toLocaleString()}</p>
                 </div>
@@ -493,6 +506,7 @@ class EmailService {
 
   async sendApplicationApproved(application: any, plan: any): Promise<void> {
     const registerUrl = "https://www.misterfyber.com/register";
+    const planPrice = plan?.price ?? 0;
 
     const html = `
             <!DOCTYPE html>
@@ -509,8 +523,8 @@ class EmailService {
                     
                     <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
                         <p><strong>Application ID:</strong> ${application.applicationId}</p>
-                        <p><strong>Plan:</strong> ${plan.name}</p>
-                        <p><strong>Monthly Price:</strong> ₱${plan.price.toFixed(2)}</p>
+                        <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
+                        <p><strong>Monthly Price:</strong> ₱${safeToFixed(planPrice)}</p>
                     </div>
                     
                     <div style="text-align: center; margin: 30px 0;">
@@ -551,7 +565,7 @@ class EmailService {
                 <p>You have approved application #${application.applicationId} for Mister Fyber.</p>
                 <p><strong>Applicant:</strong> ${application.firstName} ${application.lastName}</p>
                 <p><strong>Email:</strong> ${application.email}</p>
-                <p><strong>Plan:</strong> ${plan.name}</p>
+                <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
                 <p>An email has been sent to the applicant with instructions to create their account.</p>
             </div>
         `;
@@ -650,7 +664,7 @@ class EmailService {
     await this.sendEmail(user.email, "Password Reset Request", html);
   }
 
-  // ==================== BILLING & PAYMENT ====================
+  // ==================== BILLING & PAYMENT - FIXED with safeToFixed ====================
 
   async sendInvoice(user: IUser, billing: any): Promise<void> {
     const dueDate = billing.dueDate
@@ -676,7 +690,7 @@ class EmailService {
                     <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
                         <h3 style="margin-top: 0;">Invoice Details</h3>
                         <p><strong>Invoice Number:</strong> ${billing.invoiceNumber || billing._id}</p>
-                        <p><strong>Amount Due:</strong> ₱${amount.toFixed(2)}</p>
+                        <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
                         <p><strong>Due Date:</strong> ${dueDate}</p>
                     </div>
                     
@@ -707,7 +721,7 @@ class EmailService {
                 <h2 style="color: #333;">🧾 Invoice Generated</h2>
                 <p>An invoice has been generated for Mister Fyber user ${user.firstName || ""} ${user.lastName || ""}.</p>
                 <p><strong>Invoice:</strong> ${billing.invoiceNumber || billing._id}</p>
-                <p><strong>Amount:</strong> ₱${amount.toFixed(2)}</p>
+                <p><strong>Amount:</strong> ₱${safeToFixed(amount)}</p>
                 <p><strong>Due Date:</strong> ${dueDate}</p>
             </div>
         `;
@@ -740,7 +754,7 @@ class EmailService {
                     <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
                         <h3 style="margin-top: 0;">Payment Details</h3>
                         <p><strong>Payment ID:</strong> ${payment._id}</p>
-                        <p><strong>Amount Paid:</strong> ₱${amount.toFixed(2)}</p>
+                        <p><strong>Amount Paid:</strong> ₱${safeToFixed(amount)}</p>
                         <p><strong>Payment Method:</strong> ${payment.paymentMethod || "N/A"}</p>
                         <p><strong>Reference:</strong> ${payment.referenceNumber || "N/A"}</p>
                         <p><strong>Date:</strong> ${new Date().toLocaleString()}</p>
@@ -755,7 +769,7 @@ class EmailService {
 
     await this.sendEmail(
       user.email,
-      `Payment Confirmation - ₱${amount.toFixed(2)}`,
+      `Payment Confirmation - ₱${safeToFixed(amount)}`,
       html,
     );
 
@@ -763,14 +777,14 @@ class EmailService {
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
                 <h2 style="color: #28a745;">💰 Payment Received</h2>
                 <p>Payment received from ${user.firstName || ""} ${user.lastName || ""} (${user.email}) for Mister Fyber.</p>
-                <p><strong>Amount:</strong> ₱${amount.toFixed(2)}</p>
+                <p><strong>Amount:</strong> ₱${safeToFixed(amount)}</p>
                 <p><strong>Method:</strong> ${payment.paymentMethod || "N/A"}</p>
                 <p><strong>Reference:</strong> ${payment.referenceNumber || "N/A"}</p>
                 <p><strong>Date:</strong> ${new Date().toLocaleString()}</p>
             </div>
         `;
     await this.sendToAdmin(
-      `Payment Received: ₱${amount.toFixed(2)} from ${user.email}`,
+      `Payment Received: ₱${safeToFixed(amount)} from ${user.email}`,
       adminHtml,
     );
   }
@@ -797,7 +811,7 @@ class EmailService {
                     <p>This is a friendly reminder that your Mister Fyber payment is due soon.</p>
                     
                     <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                        <p><strong>Amount Due:</strong> ₱${amount.toFixed(2)}</p>
+                        <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
                         <p><strong>Due Date:</strong> ${dueDate}</p>
                     </div>
                     
@@ -842,7 +856,7 @@ class EmailService {
                     <p>Your Mister Fyber bill is due on ${dueDate}.</p>
                     
                     <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                        <p><strong>Amount Due:</strong> ₱${amount.toFixed(2)}</p>
+                        <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
                         <p><strong>Due Date:</strong> ${dueDate}</p>
                     </div>
                     
@@ -928,6 +942,8 @@ class EmailService {
     oldPlan: any,
     newPlan: any,
   ): Promise<void> {
+    const newPlanPrice = newPlan?.price ?? 0;
+
     const html = `
             <!DOCTYPE html>
             <html>
@@ -942,10 +958,10 @@ class EmailService {
                     <p>Your Mister Fyber plan has been changed successfully.</p>
                     
                     <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                        <p><strong>Old Plan:</strong> ${oldPlan.name}</p>
-                        <p><strong>New Plan:</strong> ${newPlan.name}</p>
-                        <p><strong>New Price:</strong> ₱${newPlan.price.toFixed(2)}</p>
-                        <p><strong>New Speed:</strong> ${newPlan.speed?.download || "N/A"} Mbps / ${newPlan.speed?.upload || "N/A"} Mbps</p>
+                        <p><strong>Old Plan:</strong> ${oldPlan?.name || "N/A"}</p>
+                        <p><strong>New Plan:</strong> ${newPlan?.name || "N/A"}</p>
+                        <p><strong>New Price:</strong> ₱${safeToFixed(newPlanPrice)}</p>
+                        <p><strong>New Speed:</strong> ${newPlan?.speed?.download || "N/A"} Mbps / ${newPlan?.speed?.upload || "N/A"} Mbps</p>
                     </div>
                     
                     <p>The changes will take effect immediately.</p>
@@ -957,19 +973,23 @@ class EmailService {
             </html>
         `;
 
-    await this.sendEmail(user.email, `Plan Changed to ${newPlan.name}`, html);
+    await this.sendEmail(
+      user.email,
+      `Plan Changed to ${newPlan?.name || "N/A"}`,
+      html,
+    );
 
     const adminHtml = `
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
                 <h2 style="color: #333;">📡 User Plan Changed</h2>
                 <p>Mister Fyber user ${user.firstName || ""} ${user.lastName || ""} (${user.email}) changed their plan.</p>
-                <p><strong>From:</strong> ${oldPlan.name}</p>
-                <p><strong>To:</strong> ${newPlan.name}</p>
+                <p><strong>From:</strong> ${oldPlan?.name || "N/A"}</p>
+                <p><strong>To:</strong> ${newPlan?.name || "N/A"}</p>
                 <p><strong>Date:</strong> ${new Date().toLocaleString()}</p>
             </div>
         `;
     await this.sendToAdmin(
-      `Plan Change: ${user.email} → ${newPlan.name}`,
+      `Plan Change: ${user.email} → ${newPlan?.name || "N/A"}`,
       adminHtml,
     );
   }
