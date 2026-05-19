@@ -3,10 +3,12 @@ import jwt from "jsonwebtoken";
 import User from "../models/User";
 import Admin from "../models/Admin";
 
-// Extend the Request interface properly
+// EXTEND Request interface properly with all needed properties
 export interface AuthRequest extends Request {
   user?: any;
   admin?: any;
+  cookies: any; // Add cookies property
+  headers: any; // Add headers property (though it exists, explicitly declare)
 }
 
 export const protect = async (

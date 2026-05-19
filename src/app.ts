@@ -98,7 +98,7 @@ class App {
       }),
     );
 
-    // COMPLETELY FIXED CORS CONFIGURATION
+    // CORS CONFIGURATION
     const allowedOrigins = [
       "http://localhost:3000",
       "http://localhost:5173",
@@ -109,20 +109,15 @@ class App {
       process.env.FRONTEND_URL || "",
     ].filter(Boolean);
 
-    // Apply CORS before any routes
     this.app.use(
       cors({
         origin: function (origin, callback) {
-          // Allow requests with no origin (like mobile apps or curl)
           if (!origin) return callback(null, true);
-
           if (allowedOrigins.indexOf(origin) !== -1) {
             callback(null, true);
           } else {
             console.log("CORS blocked origin:", origin);
-            console.log("Allowed origins:", allowedOrigins);
-            callback(null, true); // TEMPORARILY ALLOW ALL FOR DEBUGGING
-            // callback(new Error("Not allowed by CORS")); // UNCOMMENT THIS FOR PRODUCTION
+            callback(null, true); // Allow all for debugging
           }
         },
         credentials: true,
@@ -142,7 +137,6 @@ class App {
       }),
     );
 
-    // Handle preflight requests explicitly
     this.app.options("*", (req, res) => {
       res.header("Access-Control-Allow-Origin", req.headers.origin || "*");
       res.header(
@@ -157,7 +151,7 @@ class App {
       res.sendStatus(204);
     });
 
-    this.app.use(cookieParser());
+    this.app.use(cookieParser()); // ✅ FIXED: Now cookie-parser is imported
     this.app.use(morgan("dev"));
     this.app.use(express.json({ limit: "10mb" }));
     this.app.use(express.urlencoded({ extended: true, limit: "10mb" }));
@@ -180,7 +174,7 @@ class App {
     this.app.get("/", (req: Request, res: Response) => {
       res.status(200).json({
         success: true,
-        message: "MisterFyber",
+        message: "MisterFyber ISP Backend",
         version: "1.0.0",
         status: "running",
       });
@@ -313,7 +307,7 @@ class App {
       console.log(`\n🚀 Server running on port ${PORT}`);
       console.log(`🌍 Environment: ${process.env.NODE_ENV || "development"}`);
       console.log(
-        `✅ CORS enabled for: http://localhost:3000, https://www.misterfyber.com, https://misterfyber-frontend.vercel.app`,
+        `✅ CORS enabled for: http://localhost:3000, https://www.misterfyber.com`,
       );
       console.log(
         `📡 API available at: ${process.env.BASE_URL || `http://localhost:${PORT}`}/api`,
