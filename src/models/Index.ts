@@ -1,4 +1,4 @@
-// models/Index.ts - COMPLETE WITH AGGRESSIVE INDEX FIX
+// models/Index.ts - FINAL FIX WITH UNIQUE INDEX NAMES
 import mongoose from "mongoose";
 import User from "./User";
 import Admin from "./Admin";
@@ -16,51 +16,6 @@ export async function ensureIndexes() {
   const startTime = Date.now();
 
   try {
-    // ==================== DROP ALL PROBLEMATIC INDEXES FIRST ====================
-    console.log("🔄 Dropping problematic indexes...");
-
-    // Drop ALL indexes from Billing collection except _id
-    try {
-      const billingIndexes = await Billing.collection.indexes();
-      for (const idx of billingIndexes) {
-        if (idx.name !== "_id_") {
-          await Billing.collection.dropIndex(idx.name);
-          console.log(`✅ Dropped Billing index: ${idx.name}`);
-        }
-      }
-      console.log("✅ All Billing indexes cleared");
-    } catch (err) {
-      console.log("⚠️ Error dropping Billing indexes:", err);
-    }
-
-    // Drop ALL indexes from Payment collection except _id
-    try {
-      const paymentIndexes = await Payment.collection.indexes();
-      for (const idx of paymentIndexes) {
-        if (idx.name !== "_id_") {
-          await Payment.collection.dropIndex(idx.name);
-          console.log(`✅ Dropped Payment index: ${idx.name}`);
-        }
-      }
-      console.log("✅ All Payment indexes cleared");
-    } catch (err) {
-      console.log("⚠️ Error dropping Payment indexes:", err);
-    }
-
-    // Drop ALL indexes from Building collection except _id
-    try {
-      const buildingIndexes = await Building.collection.indexes();
-      for (const idx of buildingIndexes) {
-        if (idx.name !== "_id_") {
-          await Building.collection.dropIndex(idx.name);
-          console.log(`✅ Dropped Building index: ${idx.name}`);
-        }
-      }
-      console.log("✅ All Building indexes cleared");
-    } catch (err) {
-      console.log("⚠️ Error dropping Building indexes:", err);
-    }
-
     // ==================== USER INDEXES ====================
     await User.collection.createIndex({ email: 1 }, { unique: true });
     await User.collection.createIndex({ username: 1 }, { unique: true });
@@ -78,10 +33,22 @@ export async function ensureIndexes() {
     // ==================== PAYMENT INDEXES ====================
     await Payment.collection.createIndex({ userId: 1, createdAt: -1 });
     await Payment.collection.createIndex({ status: 1, createdAt: -1 });
-    await Payment.collection.createIndex(
-      { referenceNumber: 1 },
-      { unique: true, sparse: true },
-    );
+
+    // Use a completely different index name to avoid conflict
+    try {
+      await Payment.collection.createIndex(
+        { referenceNumber: 1 },
+        { unique: true, sparse: true, name: "payment_ref_num_idx" },
+      );
+      console.log("✅ Payment referenceNumber index created");
+    } catch (err: any) {
+      if (err.code === 86) {
+        console.log("⚠️ ReferenceNumber index exists, skipping");
+      } else {
+        console.error("❌ Error creating referenceNumber index:", err.message);
+      }
+    }
+
     await Payment.collection.createIndex({ billingId: 1 });
     await Payment.collection.createIndex({ status: 1, paidAt: -1 });
     await Payment.collection.createIndex({ createdAt: -1 });
@@ -98,10 +65,22 @@ export async function ensureIndexes() {
     await Billing.collection.createIndex({ userId: 1, status: 1, dueDate: 1 });
     await Billing.collection.createIndex({ userId: 1, createdAt: -1 });
     await Billing.collection.createIndex({ status: 1, dueDate: 1 });
-    await Billing.collection.createIndex(
-      { invoiceNumber: 1 },
-      { unique: true },
-    );
+
+    // Use a completely different index name to avoid conflict with existing invoiceNumber_1
+    try {
+      await Billing.collection.createIndex(
+        { invoiceNumber: 1 },
+        { unique: true, name: "billing_invoice_num_idx" },
+      );
+      console.log("✅ Billing invoiceNumber index created");
+    } catch (err: any) {
+      if (err.code === 86) {
+        console.log("⚠️ InvoiceNumber index exists, skipping");
+      } else {
+        console.error("❌ Error creating invoiceNumber index:", err.message);
+      }
+    }
+
     await Billing.collection.createIndex({ billingCycleId: 1 });
     await Billing.collection.createIndex({ isProRated: 1, status: 1 });
     await Billing.collection.createIndex({ dueDate: 1, status: 1 });
@@ -182,10 +161,20 @@ export async function ensureIndexes() {
     console.log("✅ Plan indexes created");
 
     // ==================== BUILDING INDEXES ====================
-    await Building.collection.createIndex(
-      { buildingName: 1 },
-      { unique: true },
-    );
+    try {
+      await Building.collection.createIndex(
+        { buildingName: 1 },
+        { unique: true, name: "building_name_idx" },
+      );
+      console.log("✅ Building name index created");
+    } catch (err: any) {
+      if (err.code === 86) {
+        console.log("⚠️ Building name index exists, skipping");
+      } else {
+        console.error("❌ Error creating building name index:", err.message);
+      }
+    }
+
     await Building.collection.createIndex({ isActive: 1 });
     await Building.collection.createIndex({ city: 1, isActive: 1 });
     console.log("✅ Building indexes created");
@@ -198,10 +187,21 @@ export async function ensureIndexes() {
       isRead: 1,
       createdAt: -1,
     });
-    await Notification.collection.createIndex(
-      { createdAt: 1 },
-      { expireAfterSeconds: 2592000 },
-    );
+
+    try {
+      await Notification.collection.createIndex(
+        { createdAt: 1 },
+        { expireAfterSeconds: 2592000, name: "notification_ttl_idx" },
+      );
+      console.log("✅ Notification TTL index created");
+    } catch (err: any) {
+      if (err.code === 86) {
+        console.log("⚠️ Notification TTL index exists, skipping");
+      } else {
+        console.error("❌ Error creating notification TTL index:", err.message);
+      }
+    }
+
     console.log("✅ Notification indexes created");
 
     // ==================== BILLING SETTINGS ====================
@@ -221,7 +221,7 @@ export async function ensureIndexes() {
     }
 
     const duration = Date.now() - startTime;
-    console.log(`✅ All database indexes created in ${duration}ms`);
+    console.log(`✅ Database indexes verified in ${duration}ms`);
   } catch (error) {
     console.error("❌ Error in ensureIndexes:", error);
     console.log("⚠️ Continuing with existing indexes - app will still work");
