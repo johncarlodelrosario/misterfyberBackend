@@ -1,4 +1,3 @@
-// app.ts - COMPLETELY FIXED CORS
 import express, { Application, Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import cors from "cors";
