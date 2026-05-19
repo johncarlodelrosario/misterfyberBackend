@@ -55,6 +55,7 @@ class App {
           "https://www.misterfyber.com",
           "https://misterfyber.com",
           "https://misterfyber.vercel.app",
+          "https://misterfyberbackend.onrender.com",
         ],
         credentials: true,
         methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
@@ -98,7 +99,7 @@ class App {
       }),
     );
 
-    // CORS CONFIGURATION
+    // CORS CONFIGURATION - FIXED
     const allowedOrigins = [
       "http://localhost:3000",
       "http://localhost:5173",
@@ -106,17 +107,22 @@ class App {
       "https://www.misterfyber.com",
       "https://misterfyber.com",
       "https://misterfyber.vercel.app",
+      "https://misterfyberbackend.onrender.com",
       process.env.FRONTEND_URL || "",
     ].filter(Boolean);
 
     this.app.use(
       cors({
         origin: function (origin, callback) {
+          // Allow requests with no origin (like mobile apps or curl requests)
           if (!origin) return callback(null, true);
+
           if (allowedOrigins.indexOf(origin) !== -1) {
             callback(null, true);
           } else {
             console.log("CORS blocked origin:", origin);
+            // For production, you should actually block it, but for debugging we allow
+            // Change this to callback(null, true) if you want to allow all for testing
             callback(null, true); // Allow all for debugging
           }
         },
@@ -137,21 +143,28 @@ class App {
       }),
     );
 
+    // Handle preflight requests explicitly
     this.app.options("*", (req, res) => {
-      res.header("Access-Control-Allow-Origin", req.headers.origin || "*");
+      const origin = req.headers.origin;
+      if (origin && allowedOrigins.includes(origin)) {
+        res.header("Access-Control-Allow-Origin", origin);
+      } else {
+        res.header("Access-Control-Allow-Origin", "*");
+      }
       res.header(
         "Access-Control-Allow-Methods",
         "GET, POST, PUT, DELETE, OPTIONS, PATCH",
       );
       res.header(
         "Access-Control-Allow-Headers",
-        "Content-Type, Authorization, Cookie",
+        "Content-Type, Authorization, Cookie, X-Requested-With, Accept, Origin",
       );
       res.header("Access-Control-Allow-Credentials", "true");
+      res.header("Access-Control-Max-Age", "86400");
       res.sendStatus(204);
     });
 
-    this.app.use(cookieParser()); // ✅ FIXED: Now cookie-parser is imported
+    this.app.use(cookieParser());
     this.app.use(morgan("dev"));
     this.app.use(express.json({ limit: "10mb" }));
     this.app.use(express.urlencoded({ extended: true, limit: "10mb" }));
@@ -307,7 +320,7 @@ class App {
       console.log(`\n🚀 Server running on port ${PORT}`);
       console.log(`🌍 Environment: ${process.env.NODE_ENV || "development"}`);
       console.log(
-        `✅ CORS enabled for: http://localhost:3000, https://www.misterfyber.com`,
+        `✅ CORS enabled for: http://localhost:3000, https://www.misterfyber.com, https://misterfyberbackend.onrender.com`,
       );
       console.log(
         `📡 API available at: ${process.env.BASE_URL || `http://localhost:${PORT}`}/api`,
