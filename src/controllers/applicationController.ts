@@ -57,8 +57,7 @@ export const getRegions = async (
 ) => {
   try {
     await initializeData();
-    // OPTIMIZED: Cache control headers
-    res.setHeader("Cache-Control", "public, max-age=86400"); // 24 hours
+    res.setHeader("Cache-Control", "public, max-age=86400");
     const regions = allRegions.map((region: any) => ({
       code: region.code,
       name: region.name,
@@ -193,33 +192,47 @@ export const submitApplication = async (
       hasFile: !!req.file,
     });
 
-    if (!buildingId) {
+    // FIXED: Better validation with trimming
+    if (!buildingId || buildingId === "undefined" || buildingId === "null") {
       return res
         .status(400)
         .json({ success: false, message: "Building selection is required" });
     }
-    if (!floor) {
+    if (!floor || floor === "undefined" || floor === "null") {
       return res
         .status(400)
         .json({ success: false, message: "Floor is required" });
     }
-    if (!unitNumber) {
+    if (!unitNumber || unitNumber === "undefined" || unitNumber === "null") {
       return res
         .status(400)
         .json({ success: false, message: "Unit number is required" });
     }
+    if (!planId || planId === "undefined" || planId === "null") {
+      return res
+        .status(400)
+        .json({ success: false, message: "Plan selection is required" });
+    }
 
-    // OPTIMIZED: Parallel queries
+    // OPTIMIZED: Parallel queries with error handling
     const [building, plan, existingApplication, pendingApplication] =
       await Promise.all([
-        Building.findById(buildingId).lean(),
-        Plan.findById(planId).lean(),
+        Building.findById(buildingId)
+          .lean()
+          .catch(() => null),
+        Plan.findById(planId)
+          .lean()
+          .catch(() => null),
         Application.findOne({
           email,
           status: "approved",
           registeredUserId: { $exists: false },
-        }).lean(),
-        Application.findOne({ email, status: "pending" }).lean(),
+        })
+          .lean()
+          .catch(() => null),
+        Application.findOne({ email, status: "pending" })
+          .lean()
+          .catch(() => null),
       ]);
 
     if (!building) {
@@ -268,18 +281,18 @@ export const submitApplication = async (
     }
 
     const applicationData = {
-      firstName,
-      lastName,
-      email,
-      phoneNumber,
+      firstName: firstName?.trim(),
+      lastName: lastName?.trim(),
+      email: email?.trim().toLowerCase(),
+      phoneNumber: phoneNumber?.trim(),
       buildingId: building._id,
       buildingName: building.buildingName,
-      floor,
-      unitNumber,
+      floor: floor?.toString().trim(),
+      unitNumber: unitNumber?.toString().trim(),
       notes: notes || "",
       planId,
-      idType,
-      idNumber,
+      idType: idType?.trim(),
+      idNumber: idNumber?.trim(),
       idImage: idImagePath,
       status: "pending",
     };
@@ -287,7 +300,6 @@ export const submitApplication = async (
     const application = new Application(applicationData);
     await application.save();
 
-    // OPTIMIZED: Use lean() for faster population
     const populatedApp = await Application.findById(application._id)
       .populate("planId")
       .populate("buildingId")
@@ -295,14 +307,31 @@ export const submitApplication = async (
 
     const fullImageUrl = getImageUrl(application.idImage);
 
-    console.log("📧 Sending application received email to client...");
-    await emailService.sendApplicationReceived(application, application.planId);
+    // FIXED: Wrap email sending in try-catch to prevent 500 errors
+    try {
+      console.log("📧 Sending application received email to client...");
+      await emailService.sendApplicationReceived(
+        application,
+        application.planId,
+      );
+    } catch (emailError) {
+      console.error("Failed to send client email:", emailError);
+    }
 
-    console.log("📧 Sending new application notification to admin...");
-    await emailService.sendNewApplicationNotification(
-      application,
-      application.planId,
-    );
+    try {
+      console.log("📧 Sending new application notification to admin...");
+      await emailService.sendNewApplicationNotification(
+        application,
+        application.planId,
+      );
+    } catch (emailError) {
+      console.error("Failed to send admin email:", emailError);
+    }
+
+    // FIXED: Safe price formatting
+    const planPrice = (populatedApp?.planId as any)?.price;
+    const safePrice =
+      planPrice !== undefined && planPrice !== null ? planPrice : 0;
 
     res.status(201).json({
       success: true,
@@ -313,8 +342,8 @@ export const submitApplication = async (
         status: application.status,
         idImageUrl: fullImageUrl,
         plan: {
-          name: (populatedApp?.planId as any)?.name,
-          price: (populatedApp?.planId as any)?.price,
+          name: (populatedApp?.planId as any)?.name || "N/A",
+          price: safePrice,
         },
         building: {
           name: building.buildingName,
@@ -348,7 +377,6 @@ export const checkApplicationStatus = async (
 ) => {
   try {
     const { applicationId } = req.params;
-    // OPTIMIZED: Use lean() and select only needed fields
     const application = await Application.findOne({ applicationId })
       .select(
         "applicationId status idImage floor unitNumber notes createdAt adminNotes",
@@ -387,7 +415,6 @@ export const checkApplicationStatus = async (
   }
 };
 
-// OPTIMIZED: Added caching headers, lean queries, and pagination
 export const getAllApplications = async (
   req: Request,
   res: Response,
@@ -402,11 +429,9 @@ export const getAllApplications = async (
     let query: any = {};
     if (status && status !== "all") query.status = status;
 
-    // OPTIMIZED: Cache control headers
-    res.setHeader("Cache-Control", "private, max-age=30"); // 30 seconds cache
+    res.setHeader("Cache-Control", "private, max-age=30");
     res.setHeader("Vary", "Accept-Encoding");
 
-    // OPTIMIZED: Parallel queries for better performance
     const [total, applications] = await Promise.all([
       Application.countDocuments(query),
       Application.find(query)
@@ -419,7 +444,7 @@ export const getAllApplications = async (
         .skip(skip)
         .limit(limitNum)
         .lean()
-        .exec(), // Added exec() for better performance
+        .exec(),
     ]);
 
     const applicationsWithUrls = applications.map((app) => ({
@@ -447,7 +472,6 @@ export const getApplication = async (
   next: NextFunction,
 ) => {
   try {
-    // OPTIMIZED: Use lean() and select only needed fields
     const application = await Application.findById(req.params.id)
       .select("-__v")
       .populate("planId", "name price speed duration features")
@@ -483,7 +507,6 @@ export const approveApplication = async (
   try {
     const { adminNotes } = req.body;
 
-    // OPTIMIZED: Use lean() for initial check
     const application = await Application.findById(req.params.id).populate(
       "planId",
     );
@@ -500,7 +523,6 @@ export const approveApplication = async (
       });
     }
 
-    // OPTIMIZED: Use updateOne for better performance
     await Application.updateOne(
       { _id: req.params.id },
       {
@@ -541,7 +563,6 @@ export const rejectApplication = async (
   try {
     const { adminNotes } = req.body;
 
-    // OPTIMIZED: Use lean() for initial check
     const application = await Application.findById(req.params.id).populate(
       "planId",
     );
@@ -558,7 +579,6 @@ export const rejectApplication = async (
       });
     }
 
-    // OPTIMIZED: Use updateOne for better performance
     await Application.updateOne(
       { _id: req.params.id },
       {
