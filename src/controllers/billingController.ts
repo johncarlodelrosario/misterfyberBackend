@@ -1,4 +1,4 @@
-// controllers/billingController.ts - COMPLETE WITH PAUSE/RESUME
+// controllers/billingController.ts - COMPLETE WITH PAUSE/RESUME & NEW PRORATE FORMULA
 import { Request, Response, NextFunction } from "express";
 import Billing from "../models/Billing";
 import BillingCycle from "../models/BillingCycle";
@@ -80,12 +80,10 @@ export const pauseBilling = async (
     }).lean();
 
     if (!billingCycle) {
-      return res
-        .status(404)
-        .json({
-          success: false,
-          message: "No active billing cycle found to pause",
-        });
+      return res.status(404).json({
+        success: false,
+        message: "No active billing cycle found to pause",
+      });
     }
 
     const unpaidBills = await Billing.findOne({
@@ -192,12 +190,10 @@ export const resumeBilling = async (
     }).lean();
 
     if (!billingCycle) {
-      return res
-        .status(404)
-        .json({
-          success: false,
-          message: "No paused billing cycle found for this user",
-        });
+      return res.status(404).json({
+        success: false,
+        message: "No paused billing cycle found for this user",
+      });
     }
 
     const resumeDate = new Date();
@@ -484,12 +480,10 @@ export const confirmProRatedPayment = async (
     }
 
     if (billingCycle.proRatedPaid) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Pro-rated payment already confirmed",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "Pro-rated payment already confirmed",
+      });
     }
 
     const proRatedBill = await Billing.findOne({
@@ -500,12 +494,10 @@ export const confirmProRatedPayment = async (
     }).lean();
 
     if (!proRatedBill) {
-      return res
-        .status(404)
-        .json({
-          success: false,
-          message: "Pro-rated bill not found or not pending confirmation",
-        });
+      return res.status(404).json({
+        success: false,
+        message: "Pro-rated bill not found or not pending confirmation",
+      });
     }
 
     await Billing.updateOne(
@@ -944,7 +936,10 @@ export const startBilling = async (
     const totalDaysInPeriod = daysInMonth - installationDay + 1;
 
     const actualBillableDays = Math.max(0, totalDaysInPeriod - freeDays);
-    const dailyRate = monthlyRate / daysInMonth;
+
+    // NEW FORMULA: (Plan Price × 12) ÷ 365 = daily rate
+    const annualRate = monthlyRate * 12;
+    const dailyRate = annualRate / 365;
     let proRatedAmount = Math.round(dailyRate * actualBillableDays * 100) / 100;
 
     if (customAmount) {
@@ -982,8 +977,8 @@ export const startBilling = async (
 
     const proRatedBillDescription =
       freeDays === 1
-        ? `Pro-rated payment from ${installationDate.toLocaleDateString()} to ${lastDayOfMonth.toLocaleDateString()} (${totalDaysInPeriod} days total, ${freeDays} day free, ${actualBillableDays} days billable)`
-        : `Pro-rated payment from ${installationDate.toLocaleDateString()} to ${lastDayOfMonth.toLocaleDateString()} (${actualBillableDays} days)`;
+        ? `Pro-rated payment from ${installationDate.toLocaleDateString()} to ${lastDayOfMonth.toLocaleDateString()} (${totalDaysInPeriod} days total, ${freeDays} day free, ${actualBillableDays} days billable) - Calculated at ₱${dailyRate.toFixed(2)}/day (Annual rate: ₱${annualRate.toFixed(2)} ÷ 365 days)`
+        : `Pro-rated payment from ${installationDate.toLocaleDateString()} to ${lastDayOfMonth.toLocaleDateString()} (${actualBillableDays} days) - Calculated at ₱${dailyRate.toFixed(2)}/day (Annual rate: ₱${annualRate.toFixed(2)} ÷ 365 days)`;
 
     const proRatedBill = await Billing.create(
       [
@@ -1010,7 +1005,7 @@ export const startBilling = async (
           proRatedDays: actualBillableDays,
           notes:
             notes ||
-            `Pro-rated billing - ${freeDays} day(s) free, due in 5 days`,
+            `Pro-rated billing - ${freeDays} day(s) free, due in 5 days. Daily rate: ₱${dailyRate.toFixed(2)} (${monthlyRate} × 12 ÷ 365)`,
         },
       ],
       { session },
@@ -1035,11 +1030,14 @@ export const startBilling = async (
 
     res.status(200).json({
       success: true,
-      message: `Billing started. Pro-rated amount of ₱${proRatedAmount.toFixed(2)} (${freeDays} day(s) free) is due by ${proRatedDueDate.toLocaleDateString()}. Monthly billing will start when admin activates the service.`,
+      message: `Billing started. Pro-rated amount of ₱${proRatedAmount.toFixed(2)} (calculated as ₱${dailyRate.toFixed(2)}/day × ${actualBillableDays} billable days) is due by ${proRatedDueDate.toLocaleDateString()}. Monthly billing will start when admin activates the service.`,
       data: {
         billingCycle: billingCycle[0],
         proRatedBill: proRatedBill[0],
         proRatedAmount,
+        dailyRate: dailyRate,
+        annualRate: annualRate,
+        monthlyRate: monthlyRate,
         actualBillableDays,
         freeDays,
         totalDaysInPeriod,
@@ -1082,12 +1080,10 @@ export const stopBilling = async (
     }).lean();
 
     if (!billingCycle) {
-      return res
-        .status(404)
-        .json({
-          success: false,
-          message: "No active billing cycle found to stop",
-        });
+      return res.status(404).json({
+        success: false,
+        message: "No active billing cycle found to stop",
+      });
     }
 
     const unpaidBills = await Billing.findOne({
@@ -1870,12 +1866,10 @@ export const submitProRatedPayment = async (
     }
 
     if (bill.status === "pending_confirmation") {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Payment already submitted and pending admin confirmation",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "Payment already submitted and pending admin confirmation",
+      });
     }
 
     const existingPendingPayment = await Payment.findOne({
@@ -1979,12 +1973,10 @@ export const submitMonthlyPayment = async (
     }
 
     if (bill.status === "pending_confirmation") {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Payment already submitted and pending admin confirmation",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "Payment already submitted and pending admin confirmation",
+      });
     }
 
     const existingPendingPayment = await Payment.findOne({

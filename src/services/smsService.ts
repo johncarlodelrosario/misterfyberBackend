@@ -56,7 +56,7 @@ class SMSService {
   }
 
   async sendWelcomeSMS(phoneNumber: string, username: string): Promise<any> {
-    const message = `Welcome to ISP Management System! Your account has been created. Username: ${username}. Thank you for choosing our service.`;
+    const message = `Welcome to MisterFyber! Your account has been created. Username: ${username}. Thank you for choosing our service.`;
     return this.sendSMS(phoneNumber, message);
   }
 

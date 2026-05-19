@@ -181,7 +181,7 @@ class App {
     this.app.get("/", (req: Request, res: Response) => {
       res.status(200).json({
         success: true,
-        message: "Mister Fyber ISP Management System API",
+        message: "MisterFyber",
         version: "1.0.0",
         status: "running",
       });
