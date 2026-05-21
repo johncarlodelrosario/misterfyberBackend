@@ -1,3 +1,4 @@
+// models/BillingCycle.ts - ADD isAfterCutoff field
 import mongoose, { Document, Schema } from "mongoose";
 
 export interface IBillingCycle extends Document {
@@ -26,6 +27,9 @@ export interface IBillingCycle extends Document {
   pauseReason?: string;
   pauseUntil?: Date;
   disconnectReason?: string;
+  // NEW FIELDS
+  isAfterCutoff?: boolean;
+  cutoffDayUsed?: number;
   pendingPlanChange?: {
     newPlanId: mongoose.Types.ObjectId;
     requestedAt: Date;
@@ -69,6 +73,9 @@ const BillingCycleSchema = new Schema<IBillingCycle>(
     pauseReason: { type: String },
     pauseUntil: { type: Date },
     disconnectReason: { type: String },
+    // NEW FIELDS
+    isAfterCutoff: { type: Boolean, default: false },
+    cutoffDayUsed: { type: Number },
     pendingPlanChange: {
       newPlanId: { type: Schema.Types.ObjectId, ref: "Plan" },
       requestedAt: Date,

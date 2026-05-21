@@ -1,4 +1,4 @@
-// routes/billingRoutes.ts - COMPLETE WITH ALL ROUTES
+// routes/billingRoutes.ts - COMPLETE WITH ALL ROUTES INCLUDING SETTINGS
 import express from "express";
 import { body } from "express-validator";
 import {
@@ -23,6 +23,8 @@ import {
   autoSuspendOverdue,
   getBillingSettings,
   updateBillingSettings,
+  getBillingSettingsAdmin,
+  updateBillingSettingsAdmin,
   submitProRatedPayment,
   submitMonthlyPayment,
 } from "../controllers/billingController";
@@ -39,7 +41,21 @@ router.post("/user/submit-monthly", protect, submitMonthlyPayment);
 
 // ==================== ADMIN ROUTES ====================
 
-// Billing Settings
+// Billing Settings (NEW with full admin control)
+router.get(
+  "/settings/admin",
+  protect,
+  authorize("super_admin", "admin", "staff"),
+  getBillingSettingsAdmin,
+);
+router.put(
+  "/settings/admin",
+  protect,
+  authorize("super_admin", "admin"),
+  updateBillingSettingsAdmin,
+);
+
+// Basic billing settings (legacy)
 router.get(
   "/settings",
   protect,
@@ -49,7 +65,7 @@ router.get(
 router.put(
   "/settings",
   protect,
-  authorize("super_admin", "admin", "staff"),
+  authorize("super_admin", "admin"),
   updateBillingSettings,
 );
 
@@ -93,7 +109,7 @@ router.get(
   getPendingActivations,
 );
 
-// Start billing
+// Start billing (UPDATED with new flow)
 router.post(
   "/start",
   protect,
@@ -145,7 +161,7 @@ router.post(
   stopBilling,
 );
 
-// PAUSE BILLING (for vacation/temporary) - FIXED
+// PAUSE BILLING (for vacation/temporary)
 router.post(
   "/pause",
   protect,
@@ -158,7 +174,7 @@ router.post(
   pauseBilling,
 );
 
-// RESUME BILLING (after pause) - FIXED
+// RESUME BILLING (after pause)
 router.post(
   "/resume",
   protect,
