@@ -1,10 +1,8 @@
-// routes/billingRoutes.ts - COMPLETE WITH ALL ROUTES INCLUDING SETTINGS
+// routes/billingRoutes.ts - COMPLETE FIXED VERSION
 import express from "express";
 import { body } from "express-validator";
 import {
   startBilling,
-  confirmProRatedPayment,
-  startMonthlyBilling,
   markBillAsPaid,
   getPendingProRatedBills,
   getPendingActivations,
@@ -27,6 +25,7 @@ import {
   updateBillingSettingsAdmin,
   submitProRatedPayment,
   submitMonthlyPayment,
+  confirmProRatedPayment,
 } from "../controllers/billingController";
 import { protect, authorize } from "../middleware/auth";
 
@@ -41,7 +40,7 @@ router.post("/user/submit-monthly", protect, submitMonthlyPayment);
 
 // ==================== ADMIN ROUTES ====================
 
-// Billing Settings (NEW with full admin control)
+// Billing Settings
 router.get(
   "/settings/admin",
   protect,
@@ -54,8 +53,6 @@ router.put(
   authorize("super_admin", "admin"),
   updateBillingSettingsAdmin,
 );
-
-// Basic billing settings (legacy)
 router.get(
   "/settings",
   protect,
@@ -109,7 +106,7 @@ router.get(
   getPendingActivations,
 );
 
-// Start billing (UPDATED with new flow)
+// Start billing
 router.post(
   "/start",
   protect,
@@ -118,29 +115,24 @@ router.post(
     body("userId").isMongoId().withMessage("User ID is required"),
     body("startDate").optional().isISO8601(),
     body("customAmount").optional().isNumeric(),
+    body("notes").optional().isString(),
   ],
   startBilling,
 );
 
-// Confirm pro-rated payment
-router.post(
-  "/confirm-pro-rated",
+// Confirm pro-rated payment (UPDATED: use billId instead of userId)
+router.put(
+  "/confirm-pro-rated/:billId",
   protect,
   authorize("super_admin", "admin", "staff"),
-  [body("userId").isMongoId().withMessage("User ID is required")],
+  [
+    body("referenceNumber").optional().isString(),
+    body("notes").optional().isString(),
+  ],
   confirmProRatedPayment,
 );
 
-// Start monthly billing
-router.post(
-  "/start-monthly",
-  protect,
-  authorize("super_admin", "admin", "staff"),
-  [body("userId").isMongoId().withMessage("User ID is required")],
-  startMonthlyBilling,
-);
-
-// Mark bill as paid (Manual admin)
+// Mark bill as paid
 router.put(
   "/mark-paid/:billId",
   protect,
@@ -152,7 +144,7 @@ router.put(
   markBillAsPaid,
 );
 
-// Stop billing (permanent cancellation)
+// Stop billing
 router.post(
   "/stop",
   protect,
@@ -161,7 +153,7 @@ router.post(
   stopBilling,
 );
 
-// PAUSE BILLING (for vacation/temporary)
+// Pause billing
 router.post(
   "/pause",
   protect,
@@ -174,7 +166,7 @@ router.post(
   pauseBilling,
 );
 
-// RESUME BILLING (after pause)
+// Resume billing
 router.post(
   "/resume",
   protect,
@@ -183,15 +175,19 @@ router.post(
   resumeBilling,
 );
 
-// Disconnect/Reconnect (service suspension)
+// Disconnect client
 router.post(
   "/disconnect",
   protect,
   authorize("super_admin", "admin", "staff"),
-  [body("userId").isMongoId().withMessage("User ID is required")],
+  [
+    body("userId").isMongoId().withMessage("User ID is required"),
+    body("reason").optional().isString(),
+  ],
   disconnectClient,
 );
 
+// Reconnect client
 router.post(
   "/reconnect",
   protect,
@@ -200,7 +196,7 @@ router.post(
   reconnectClient,
 );
 
-// ==================== CRON JOB ROUTES (Internal) ====================
+// ==================== CRON JOB ROUTES ====================
 router.post("/auto-generate", autoGenerateMonthlyBills);
 router.post("/auto-reminders", autoSendReminders);
 router.post("/auto-suspend", autoSuspendOverdue);

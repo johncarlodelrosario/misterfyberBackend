@@ -1,4 +1,4 @@
-// models/BillingCycle.ts - ADD isAfterCutoff field
+// models/BillingCycle.ts
 import mongoose, { Document, Schema } from "mongoose";
 
 export interface IBillingCycle extends Document {
@@ -12,6 +12,7 @@ export interface IBillingCycle extends Document {
   currentProRatedAmount: number;
   proRatedPaid: boolean;
   proRatedPaidAt?: Date;
+  proRatedAmountAddedToNextBill: boolean;
   freeDays: number;
   actualBillableDays: number;
   manualBillStart: boolean;
@@ -27,9 +28,9 @@ export interface IBillingCycle extends Document {
   pauseReason?: string;
   pauseUntil?: Date;
   disconnectReason?: string;
-  // NEW FIELDS
-  isAfterCutoff?: boolean;
-  cutoffDayUsed?: number;
+  isAfterCutoff: boolean;
+  cutoffDayUsed: number;
+  installationDay: number;
   pendingPlanChange?: {
     newPlanId: mongoose.Types.ObjectId;
     requestedAt: Date;
@@ -53,9 +54,10 @@ const BillingCycleSchema = new Schema<IBillingCycle>(
       default: "pending_activation",
     },
     monthlyRate: { type: Number, required: true },
-    currentProRatedAmount: { type: Number, required: true },
+    currentProRatedAmount: { type: Number, required: true, default: 0 },
     proRatedPaid: { type: Boolean, default: false },
     proRatedPaidAt: { type: Date },
+    proRatedAmountAddedToNextBill: { type: Boolean, default: false },
     freeDays: { type: Number, default: 1 },
     actualBillableDays: { type: Number, default: 0 },
     manualBillStart: { type: Boolean, default: false },
@@ -73,9 +75,9 @@ const BillingCycleSchema = new Schema<IBillingCycle>(
     pauseReason: { type: String },
     pauseUntil: { type: Date },
     disconnectReason: { type: String },
-    // NEW FIELDS
     isAfterCutoff: { type: Boolean, default: false },
     cutoffDayUsed: { type: Number },
+    installationDay: { type: Number },
     pendingPlanChange: {
       newPlanId: { type: Schema.Types.ObjectId, ref: "Plan" },
       requestedAt: Date,
