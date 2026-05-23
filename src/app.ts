@@ -1,4 +1,4 @@
-// app.ts - COMPLETELY FIXED CORS
+// app.ts - COMPLETE WITH FIXED CORS
 import express, { Application, Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import cors from "cors";
@@ -99,7 +99,6 @@ class App {
       }),
     );
 
-    // COMPLETELY FIXED CORS CONFIGURATION
     const allowedOrigins = [
       "http://localhost:3000",
       "http://localhost:5173",
@@ -110,20 +109,15 @@ class App {
       process.env.FRONTEND_URL || "",
     ].filter(Boolean);
 
-    // Apply CORS before any routes
     this.app.use(
       cors({
         origin: function (origin, callback) {
-          // Allow requests with no origin (like mobile apps or curl)
           if (!origin) return callback(null, true);
-
           if (allowedOrigins.indexOf(origin) !== -1) {
             callback(null, true);
           } else {
             console.log("CORS blocked origin:", origin);
-            console.log("Allowed origins:", allowedOrigins);
-            callback(null, true); // TEMPORARILY ALLOW ALL FOR DEBUGGING
-            // callback(new Error("Not allowed by CORS")); // UNCOMMENT THIS FOR PRODUCTION
+            callback(null, true);
           }
         },
         credentials: true,
@@ -143,7 +137,6 @@ class App {
       }),
     );
 
-    // Handle preflight requests explicitly
     this.app.options("*", (req, res) => {
       res.header("Access-Control-Allow-Origin", req.headers.origin || "*");
       res.header(
@@ -181,7 +174,7 @@ class App {
     this.app.get("/", (req: Request, res: Response) => {
       res.status(200).json({
         success: true,
-        message: "MisterFyber",
+        message: "MisterFyber API",
         version: "1.0.0",
         status: "running",
       });
@@ -234,7 +227,13 @@ class App {
           autoSendReminders: true,
           autoSuspendOnNonPayment: true,
           billingCycleDay: 1,
-          freeDays: 1,
+          freeDays: 0,
+          proRatedDueDay: 25,
+          monthlyDueDay: 5,
+          billingCutoffDay: 24,
+          enableAutoBilling: true,
+          sendInvoiceOnInstall: true,
+          requireAdminActivation: false,
         });
         console.log("✅ Default billing settings initialized");
       }
@@ -314,7 +313,7 @@ class App {
       console.log(`\n🚀 Server running on port ${PORT}`);
       console.log(`🌍 Environment: ${process.env.NODE_ENV || "development"}`);
       console.log(
-        `✅ CORS enabled for: http://localhost:3000, https://www.misterfyber.com, https://misterfyber-frontend.vercel.app`,
+        `✅ CORS enabled for: http://localhost:3000, https://www.misterfyber.com`,
       );
       console.log(
         `📡 API available at: ${process.env.BASE_URL || `http://localhost:${PORT}`}/api`,

@@ -52,7 +52,7 @@ const BillingSettingsSchema: Schema = new Schema(
     },
     freeDays: {
       type: Number,
-      default: 1,
+      default: 0,
     },
     proRatedDueDay: {
       type: Number,
@@ -68,7 +68,7 @@ const BillingSettingsSchema: Schema = new Schema(
     },
     billingCutoffDay: {
       type: Number,
-      default: 23,
+      default: 24,
       min: 1,
       max: 31,
     },
@@ -101,10 +101,10 @@ BillingSettingsSchema.statics.getDefaultSettings = async function () {
       autoSendReminders: true,
       autoSuspendOnNonPayment: true,
       billingCycleDay: 1,
-      freeDays: 1,
+      freeDays: 0,
       proRatedDueDay: 25,
       monthlyDueDay: 5,
-      billingCutoffDay: 23,
+      billingCutoffDay: 24,
       enableAutoBilling: true,
       sendInvoiceOnInstall: true,
       requireAdminActivation: false,

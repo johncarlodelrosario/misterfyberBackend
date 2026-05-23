@@ -1,3 +1,4 @@
+// middleware/auth.ts - COMPLETE WORKING VERSION
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import User from "../models/User";
@@ -7,11 +8,9 @@ import Admin from "../models/Admin";
 export interface AuthRequest extends Request {
   user?: any;
   admin?: any;
-  cookies: any; // Add cookies property
-  headers: any; // Add headers property (though it exists, explicitly declare)
 }
 
-export const protect = async (
+export const authMiddleware = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
@@ -81,6 +80,30 @@ export const protect = async (
   }
 };
 
+export const adminMiddleware = (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!req.user) {
+    return res.status(401).json({ success: false, message: "Not authorized" });
+  }
+
+  // Check if user has admin role
+  if (
+    !req.user.role ||
+    (req.user.role !== "super_admin" && req.user.role !== "admin")
+  ) {
+    return res
+      .status(403)
+      .json({ success: false, message: "Admin access required" });
+  }
+
+  next();
+};
+
+export const protect = authMiddleware;
+
 export const authorize = (...roles: string[]) => {
   return (req: AuthRequest, res: Response, next: NextFunction) => {
     const userRole = req.user?.role;
@@ -108,26 +131,7 @@ export const authorize = (...roles: string[]) => {
   };
 };
 
-export const adminOnly = (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  if (!req.user) {
-    return res.status(401).json({ success: false, message: "Not authorized" });
-  }
-
-  if (
-    !req.user.role ||
-    (req.user.role !== "super_admin" && req.user.role !== "admin")
-  ) {
-    return res
-      .status(403)
-      .json({ success: false, message: "Admin access required" });
-  }
-
-  next();
-};
+export const adminOnly = adminMiddleware;
 
 export const staffOrAdmin = (
   req: AuthRequest,

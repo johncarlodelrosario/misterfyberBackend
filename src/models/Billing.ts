@@ -31,8 +31,6 @@ export interface IBilling extends Document {
   isProRated: boolean;
   proRatedDays: number;
   billingCycleId: mongoose.Types.ObjectId;
-  includesProRatedAmount: boolean;
-  proRatedAmountIncluded: number;
   reminder7DaySent: boolean;
   reminder3DaySent: boolean;
   reminder1DaySent: boolean;
@@ -96,8 +94,6 @@ const BillingSchema: Schema = new Schema(
     isProRated: { type: Boolean, default: false },
     proRatedDays: { type: Number, default: 0 },
     billingCycleId: { type: Schema.Types.ObjectId, ref: "BillingCycle" },
-    includesProRatedAmount: { type: Boolean, default: false },
-    proRatedAmountIncluded: { type: Number, default: 0 },
     reminder7DaySent: { type: Boolean, default: false },
     reminder3DaySent: { type: Boolean, default: false },
     reminder1DaySent: { type: Boolean, default: false },

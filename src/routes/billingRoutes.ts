@@ -1,204 +1,127 @@
-// routes/billingRoutes.ts - COMPLETE FIXED VERSION
+// routes/billingRoutes.ts - COMPLETE WORKING VERSION
 import express from "express";
-import { body } from "express-validator";
 import {
   startBilling,
-  markBillAsPaid,
-  getPendingProRatedBills,
-  getPendingActivations,
-  getBillingSummaryAdmin,
-  getUserCurrentBilling,
-  getUserBillingHistory,
-  getAllBillingCycles,
-  getAllBills,
   stopBilling,
   pauseBilling,
   resumeBilling,
-  reconnectClient,
   disconnectClient,
+  reconnectClient,
+  getBillingSettings,
+  updateBillingSettings,
+  getBillingSettingsAdmin,
+  updateBillingSettingsAdmin,
+  getBillingSummaryAdmin,
+  getAllBillingCycles,
+  getAllBills,
+  markBillAsPaid,
+  getPendingProRatedBills,
+  getPendingActivations,
+  confirmProRatedPayment,
+  startMonthlyBilling,
   autoGenerateMonthlyBills,
   autoSendReminders,
   autoSuspendOverdue,
-  getBillingSettings,
-  updateBillingSettings,
-  getBillingSettingsAdmin,
-  updateBillingSettingsAdmin,
+  getUserCurrentBilling,
+  getUserBillingHistory,
   submitProRatedPayment,
   submitMonthlyPayment,
-  confirmProRatedPayment,
 } from "../controllers/billingController";
-import { protect, authorize } from "../middleware/auth";
+import { authMiddleware, adminMiddleware } from "../middleware/auth";
 
 const router = express.Router();
 
-// ==================== USER ROUTES ====================
-router.get("/my-status", protect, getUserCurrentBilling);
-router.get("/user/current", protect, getUserCurrentBilling);
-router.get("/user/history", protect, getUserBillingHistory);
-router.post("/user/submit-pro-rated", protect, submitProRatedPayment);
-router.post("/user/submit-monthly", protect, submitMonthlyPayment);
-
 // ==================== ADMIN ROUTES ====================
 
-// Billing Settings
+// Settings
+router.get("/settings", authMiddleware, getBillingSettings);
+router.put("/settings", authMiddleware, adminMiddleware, updateBillingSettings);
 router.get(
   "/settings/admin",
-  protect,
-  authorize("super_admin", "admin", "staff"),
+  authMiddleware,
+  adminMiddleware,
   getBillingSettingsAdmin,
 );
 router.put(
   "/settings/admin",
-  protect,
-  authorize("super_admin", "admin"),
+  authMiddleware,
+  adminMiddleware,
   updateBillingSettingsAdmin,
 );
-router.get(
-  "/settings",
-  protect,
-  authorize("super_admin", "admin", "staff"),
-  getBillingSettings,
-);
-router.put(
-  "/settings",
-  protect,
-  authorize("super_admin", "admin"),
-  updateBillingSettings,
-);
 
-// Billing cycles
-router.get(
-  "/cycles",
-  protect,
-  authorize("super_admin", "admin", "staff"),
-  getAllBillingCycles,
-);
+// Summary
+router.get("/summary", authMiddleware, adminMiddleware, getBillingSummaryAdmin);
 
-// All bills
-router.get(
-  "/all-bills",
-  protect,
-  authorize("super_admin", "admin", "staff"),
-  getAllBills,
-);
+// Billing Cycles
+router.get("/cycles", authMiddleware, adminMiddleware, getAllBillingCycles);
 
-// Billing summary
-router.get(
-  "/summary",
-  protect,
-  authorize("super_admin", "admin", "staff"),
-  getBillingSummaryAdmin,
-);
-
-// Pending pro-rated bills
-router.get(
-  "/pending-pro-rated",
-  protect,
-  authorize("super_admin", "admin", "staff"),
-  getPendingProRatedBills,
-);
-
-// Pending activations
-router.get(
-  "/pending-activations",
-  protect,
-  authorize("super_admin", "admin", "staff"),
-  getPendingActivations,
-);
-
-// Start billing
-router.post(
-  "/start",
-  protect,
-  authorize("super_admin", "admin", "staff"),
-  [
-    body("userId").isMongoId().withMessage("User ID is required"),
-    body("startDate").optional().isISO8601(),
-    body("customAmount").optional().isNumeric(),
-    body("notes").optional().isString(),
-  ],
-  startBilling,
-);
-
-// Confirm pro-rated payment (UPDATED: use billId instead of userId)
-router.put(
-  "/confirm-pro-rated/:billId",
-  protect,
-  authorize("super_admin", "admin", "staff"),
-  [
-    body("referenceNumber").optional().isString(),
-    body("notes").optional().isString(),
-  ],
-  confirmProRatedPayment,
-);
-
-// Mark bill as paid
+// Bills
+router.get("/all-bills", authMiddleware, adminMiddleware, getAllBills);
 router.put(
   "/mark-paid/:billId",
-  protect,
-  authorize("super_admin", "admin", "staff"),
-  [
-    body("referenceNumber").optional().isString(),
-    body("notes").optional().isString(),
-  ],
+  authMiddleware,
+  adminMiddleware,
   markBillAsPaid,
 );
 
-// Stop billing
+// Pending Actions
+router.get(
+  "/pending-pro-rated",
+  authMiddleware,
+  adminMiddleware,
+  getPendingProRatedBills,
+);
+router.get(
+  "/pending-activations",
+  authMiddleware,
+  adminMiddleware,
+  getPendingActivations,
+);
 router.post(
-  "/stop",
-  protect,
-  authorize("super_admin", "admin", "staff"),
-  [body("userId").isMongoId().withMessage("User ID is required")],
-  stopBilling,
+  "/confirm-pro-rated",
+  authMiddleware,
+  adminMiddleware,
+  confirmProRatedPayment,
+);
+router.post(
+  "/start-monthly",
+  authMiddleware,
+  adminMiddleware,
+  startMonthlyBilling,
 );
 
-// Pause billing
+// Billing Actions
+router.post("/start", authMiddleware, adminMiddleware, startBilling);
+router.post("/stop", authMiddleware, adminMiddleware, stopBilling);
+router.post("/pause", authMiddleware, adminMiddleware, pauseBilling);
+router.post("/resume", authMiddleware, adminMiddleware, resumeBilling);
+router.post("/disconnect", authMiddleware, adminMiddleware, disconnectClient);
+router.post("/reconnect", authMiddleware, adminMiddleware, reconnectClient);
+
+// Auto Jobs (for cron)
 router.post(
-  "/pause",
-  protect,
-  authorize("super_admin", "admin", "staff"),
-  [
-    body("userId").isMongoId().withMessage("User ID is required"),
-    body("reason").optional().isString(),
-    body("pauseUntilDate").optional().isISO8601(),
-  ],
-  pauseBilling,
+  "/auto-generate",
+  authMiddleware,
+  adminMiddleware,
+  autoGenerateMonthlyBills,
+);
+router.post(
+  "/auto-reminders",
+  authMiddleware,
+  adminMiddleware,
+  autoSendReminders,
+);
+router.post(
+  "/auto-suspend",
+  authMiddleware,
+  adminMiddleware,
+  autoSuspendOverdue,
 );
 
-// Resume billing
-router.post(
-  "/resume",
-  protect,
-  authorize("super_admin", "admin", "staff"),
-  [body("userId").isMongoId().withMessage("User ID is required")],
-  resumeBilling,
-);
-
-// Disconnect client
-router.post(
-  "/disconnect",
-  protect,
-  authorize("super_admin", "admin", "staff"),
-  [
-    body("userId").isMongoId().withMessage("User ID is required"),
-    body("reason").optional().isString(),
-  ],
-  disconnectClient,
-);
-
-// Reconnect client
-router.post(
-  "/reconnect",
-  protect,
-  authorize("super_admin", "admin", "staff"),
-  [body("userId").isMongoId().withMessage("User ID is required")],
-  reconnectClient,
-);
-
-// ==================== CRON JOB ROUTES ====================
-router.post("/auto-generate", autoGenerateMonthlyBills);
-router.post("/auto-reminders", autoSendReminders);
-router.post("/auto-suspend", autoSuspendOverdue);
+// ==================== USER ROUTES ====================
+router.get("/user/current", authMiddleware, getUserCurrentBilling);
+router.get("/user/history", authMiddleware, getUserBillingHistory);
+router.post("/user/submit-pro-rated", authMiddleware, submitProRatedPayment);
+router.post("/user/submit-monthly", authMiddleware, submitMonthlyPayment);
 
 export default router;

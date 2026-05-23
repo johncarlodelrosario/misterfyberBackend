@@ -1,3 +1,4 @@
+// services/emailService.ts - UPDATED WITH CORRECT PRO-RATED FORMULA
 import { IUser } from "../models/User";
 import dotenv from "dotenv";
 import path from "path";
@@ -393,10 +394,9 @@ class EmailService {
     );
   }
 
-  // ==================== APPLICATION EMAILS - FIXED with safeToFixed ====================
+  // ==================== APPLICATION EMAILS ====================
 
   async sendApplicationReceived(application: any, plan: any): Promise<void> {
-    // SAFE: Get price with fallback
     const planPrice = plan?.price ?? 0;
 
     const html = `
@@ -664,7 +664,7 @@ class EmailService {
     await this.sendEmail(user.email, "Password Reset Request", html);
   }
 
-  // ==================== BILLING & PAYMENT - FIXED with safeToFixed ====================
+  // ==================== BILLING & PAYMENT ====================
 
   async sendInvoice(user: IUser, billing: any): Promise<void> {
     const dueDate = billing.dueDate
@@ -673,6 +673,23 @@ class EmailService {
     const amount = billing.totalAmount || billing.amount || billing.total || 0;
     const frontendUrl =
       process.env.FRONTEND_URL || "https://www.misterfyber.com";
+
+    // Calculate daily rate info for pro-rated bills
+    let additionalInfo = "";
+    if (billing.isProRated && billing.items && billing.items[0]) {
+      const item = billing.items[0];
+      const monthlyRate = item.rate * 30;
+      const annualRate = monthlyRate * 12;
+      const dailyRate = annualRate / 365;
+      additionalInfo = `
+        <div style="margin-top: 15px; padding: 10px; background-color: #e8f4f8; border-radius: 5px;">
+          <p style="margin: 0; font-size: 12px; color: #0056b3;">
+            <strong>📌 Pro-rated Calculation:</strong> Daily rate = (₱${safeToFixed(monthlyRate)} × 12) ÷ 365 = ₱${safeToFixed(dailyRate, 4)}/day<br>
+            Billable days: ${item.quantity} days × ₱${safeToFixed(dailyRate, 4)} = ₱${safeToFixed(amount)}
+          </p>
+        </div>
+      `;
+    }
 
     const html = `
             <!DOCTYPE html>
@@ -692,7 +709,10 @@ class EmailService {
                         <p><strong>Invoice Number:</strong> ${billing.invoiceNumber || billing._id}</p>
                         <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
                         <p><strong>Due Date:</strong> ${dueDate}</p>
+                        ${billing.isProRated ? `<p><strong>Bill Type:</strong> Pro-rated (First Bill)</p>` : `<p><strong>Bill Type:</strong> Monthly Subscription</p>`}
                     </div>
+                    
+                    ${additionalInfo}
                     
                     <div style="text-align: center; margin: 30px 0;">
                         <a href="${frontendUrl}/billing" 
@@ -701,7 +721,12 @@ class EmailService {
                         </a>
                     </div>
                     
-                    <p>Please pay before the due date to avoid service interruption.</p>
+                    <div style="margin-top: 20px; padding: 10px; background-color: #fff3cd; border-left: 4px solid #ffc107; font-size: 12px;">
+                        <p style="margin: 0;"><strong>📌 Billing Information:</strong></p>
+                        <p style="margin: 5px 0 0;">• Install Day 1-24: Pro-rated bill from installation to end of month<br>
+                        • Install Day 25-31: No pro-rated, first bill is next month's full bill<br>
+                        • Daily rate formula: (Monthly Price × 12) ÷ 365 days</p>
+                    </div>
                     
                     <hr>
                     <p style="color: #666; font-size: 12px;">Mister Fyber</p>
@@ -723,6 +748,7 @@ class EmailService {
                 <p><strong>Invoice:</strong> ${billing.invoiceNumber || billing._id}</p>
                 <p><strong>Amount:</strong> ₱${safeToFixed(amount)}</p>
                 <p><strong>Due Date:</strong> ${dueDate}</p>
+                ${billing.isProRated ? `<p><strong>Type:</strong> Pro-rated Bill</p>` : `<p><strong>Type:</strong> Monthly Bill</p>`}
             </div>
         `;
     await this.sendToAdmin(
@@ -758,6 +784,7 @@ class EmailService {
                         <p><strong>Payment Method:</strong> ${payment.paymentMethod || "N/A"}</p>
                         <p><strong>Reference:</strong> ${payment.referenceNumber || "N/A"}</p>
                         <p><strong>Date:</strong> ${new Date().toLocaleString()}</p>
+                        ${billing?.isProRated ? `<p><strong>Note:</strong> Your pro-rated payment has been confirmed. Your service is now active!</p>` : ""}
                     </div>
                     
                     <hr>
@@ -781,6 +808,7 @@ class EmailService {
                 <p><strong>Method:</strong> ${payment.paymentMethod || "N/A"}</p>
                 <p><strong>Reference:</strong> ${payment.referenceNumber || "N/A"}</p>
                 <p><strong>Date:</strong> ${new Date().toLocaleString()}</p>
+                ${billing?.isProRated ? `<p><strong>Note:</strong> Pro-rated payment confirmed. User service activated.</p>` : ""}
             </div>
         `;
     await this.sendToAdmin(
@@ -813,6 +841,7 @@ class EmailService {
                     <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
                         <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
                         <p><strong>Due Date:</strong> ${dueDate}</p>
+                        ${billing?.isProRated ? `<p><strong>Note:</strong> This is your pro-rated first bill. Once paid, your service will be fully activated.</p>` : ""}
                     </div>
                     
                     <div style="text-align: center; margin: 30px 0;">

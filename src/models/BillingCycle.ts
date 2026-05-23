@@ -12,7 +12,6 @@ export interface IBillingCycle extends Document {
   currentProRatedAmount: number;
   proRatedPaid: boolean;
   proRatedPaidAt?: Date;
-  proRatedAmountAddedToNextBill: boolean;
   freeDays: number;
   actualBillableDays: number;
   manualBillStart: boolean;
@@ -28,9 +27,8 @@ export interface IBillingCycle extends Document {
   pauseReason?: string;
   pauseUntil?: Date;
   disconnectReason?: string;
-  isAfterCutoff: boolean;
-  cutoffDayUsed: number;
-  installationDay: number;
+  isAfterCutoff?: boolean;
+  cutoffDayUsed?: number;
   pendingPlanChange?: {
     newPlanId: mongoose.Types.ObjectId;
     requestedAt: Date;
@@ -57,8 +55,7 @@ const BillingCycleSchema = new Schema<IBillingCycle>(
     currentProRatedAmount: { type: Number, required: true, default: 0 },
     proRatedPaid: { type: Boolean, default: false },
     proRatedPaidAt: { type: Date },
-    proRatedAmountAddedToNextBill: { type: Boolean, default: false },
-    freeDays: { type: Number, default: 1 },
+    freeDays: { type: Number, default: 0 },
     actualBillableDays: { type: Number, default: 0 },
     manualBillStart: { type: Boolean, default: false },
     manuallyStartedAt: { type: Date },
@@ -77,7 +74,6 @@ const BillingCycleSchema = new Schema<IBillingCycle>(
     disconnectReason: { type: String },
     isAfterCutoff: { type: Boolean, default: false },
     cutoffDayUsed: { type: Number },
-    installationDay: { type: Number },
     pendingPlanChange: {
       newPlanId: { type: Schema.Types.ObjectId, ref: "Plan" },
       requestedAt: Date,
