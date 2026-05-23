@@ -1,4 +1,4 @@
-// middleware/auth.ts - COMPLETE WORKING VERSION
+// middleware/auth.ts - COMPLETE WORKING VERSION WITH FIXED TYPES
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import User from "../models/User";
@@ -17,14 +17,14 @@ export const authMiddleware = async (
 ) => {
   let token: string | undefined;
 
-  // Check for token in headers
+  // Check for token in headers - using req.headers directly (inherited from Request)
   if (
     req.headers.authorization &&
     req.headers.authorization.startsWith("Bearer")
   ) {
     token = req.headers.authorization.split(" ")[1];
   }
-  // Check for token in cookies
+  // Check for token in cookies - using req.cookies (needs cookie-parser)
   else if (req.cookies && req.cookies.token) {
     token = req.cookies.token;
   }
