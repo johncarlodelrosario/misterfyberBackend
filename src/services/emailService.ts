@@ -670,7 +670,8 @@ class EmailService {
     const dueDate = billing.dueDate
       ? new Date(billing.dueDate).toLocaleDateString()
       : "N/A";
-    const amount = billing.totalAmount || billing.amount || billing.total || 0;
+    // Use total from billing (matches controller)
+    const amount = billing.total || billing.amount || 0;
     const frontendUrl =
       process.env.FRONTEND_URL || "https://www.misterfyber.com";
 
@@ -678,13 +679,13 @@ class EmailService {
     let additionalInfo = "";
     if (billing.isProRated && billing.items && billing.items[0]) {
       const item = billing.items[0];
-      const monthlyRate = item.rate * 30;
-      const annualRate = monthlyRate * 12;
+      const monthlyRateFromItem = item.rate * 30;
+      const annualRate = monthlyRateFromItem * 12;
       const dailyRate = annualRate / 365;
       additionalInfo = `
         <div style="margin-top: 15px; padding: 10px; background-color: #e8f4f8; border-radius: 5px;">
           <p style="margin: 0; font-size: 12px; color: #0056b3;">
-            <strong>📌 Pro-rated Calculation:</strong> Daily rate = (₱${safeToFixed(monthlyRate)} × 12) ÷ 365 = ₱${safeToFixed(dailyRate, 4)}/day<br>
+            <strong>📌 Pro-rated Calculation:</strong> Daily rate = (₱${safeToFixed(monthlyRateFromItem)} × 12) ÷ 365 = ₱${safeToFixed(dailyRate, 4)}/day<br>
             Billable days: ${item.quantity} days × ₱${safeToFixed(dailyRate, 4)} = ₱${safeToFixed(amount)}
           </p>
         </div>
@@ -723,8 +724,9 @@ class EmailService {
                     
                     <div style="margin-top: 20px; padding: 10px; background-color: #fff3cd; border-left: 4px solid #ffc107; font-size: 12px;">
                         <p style="margin: 0;"><strong>📌 Billing Information:</strong></p>
-                        <p style="margin: 5px 0 0;">• Install Day 1-24: Pro-rated bill from installation to end of month<br>
-                        • Install Day 25-31: No pro-rated, first bill is next month's full bill<br>
+                        <p style="margin: 5px 0 0;">• Install Day 1-24: Pro-rated bill from installation to end of month (due on 25th)<br>
+                        • Install Day 25-31: Combined bill (pro-rated + next month) due on 5th of following month<br>
+                        • Monthly bills due on 5th of each month (pay before service period)<br>
                         • Daily rate formula: (Monthly Price × 12) ÷ 365 days</p>
                     </div>
                     
@@ -821,7 +823,7 @@ class EmailService {
     const dueDate = billing.dueDate
       ? new Date(billing.dueDate).toLocaleDateString()
       : "N/A";
-    const amount = billing.totalAmount || billing.amount || billing.total || 0;
+    const amount = billing.total || billing.amount || 0;
     const frontendUrl =
       process.env.FRONTEND_URL || "https://www.misterfyber.com";
 
@@ -867,7 +869,7 @@ class EmailService {
     const dueDate = billing.dueDate
       ? new Date(billing.dueDate).toLocaleDateString()
       : "N/A";
-    const amount = billing.totalAmount || billing.amount || billing.total || 0;
+    const amount = billing.total || billing.amount || 0;
     const frontendUrl =
       process.env.FRONTEND_URL || "https://www.misterfyber.com";
 
