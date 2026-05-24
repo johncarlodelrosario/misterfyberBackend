@@ -60,7 +60,6 @@ async function getOrCreateSettings(): Promise<any> {
       autoSendReminders: true,
       autoSuspendOnNonPayment: true,
       billingCycleDay: 1,
-      freeDays: 0,
       proRatedDueDay: 25,
       monthlyDueDay: 5,
       billingCutoffDay: 24,
@@ -167,14 +166,12 @@ export const startBilling = async (
     }
 
     const settings = await getOrCreateSettings();
-
-    const freeDays = 0;
     const billingCutoffDay = settings.billingCutoffDay || 24;
 
     const plan = user.planId as any;
     const monthlyRate = plan.price;
 
-    // CORRECT FORMULA: Daily Rate = (Monthly Price × 12) ÷ 365
+    // Daily Rate = (Monthly Price × 12) ÷ 365
     const dailyRate = (monthlyRate * 12) / 365;
 
     let installationDate = startDate ? new Date(startDate) : new Date();
@@ -196,8 +193,8 @@ export const startBilling = async (
     const installationDay = installationDate.getDate();
     const lastDayOfMonth = getBillingEndDate(installationDate);
     const daysInMonth = lastDayOfMonth.getDate();
-    const totalDaysInPeriod = daysInMonth - installationDay + 1;
-    const actualBillableDays = totalDaysInPeriod - freeDays;
+    // Days from installation to end of month (inclusive)
+    const actualBillableDays = daysInMonth - installationDay + 1;
     const isAfterCutoff = installationDay > billingCutoffDay;
 
     let proRatedAmount = 0;
@@ -208,14 +205,14 @@ export const startBilling = async (
     let status = "pending_activation";
 
     if (isAfterCutoff) {
-      // SCENARIO 2: Installation Day 25-31
-      // Compute pro-rated for remaining days of current month
+      // SCENARIO B: Installation Day 25-31
+      // Pro-rated for remaining days of current month ONLY (no monthly bill yet)
       proRatedAmount = Math.round(dailyRate * actualBillableDays * 100) / 100;
       if (customAmount) {
         proRatedAmount = customAmount;
       }
 
-      // Billing cycle starts NEXT month
+      // Billing cycle starts NEXT month for regular billing
       billingStartDateForCycle = new Date(installationDate);
       billingStartDateForCycle.setMonth(
         billingStartDateForCycle.getMonth() + 1,
@@ -231,48 +228,32 @@ export const startBilling = async (
       nextBillingDate = new Date(billingStartDateForCycle);
       nextBillingDate.setMonth(nextBillingDate.getMonth() + 1);
       nextBillingDate.setDate(1);
-    } else {
-      // SCENARIO 1: Installation Day 1-24
-      proRatedAmount = Math.round(dailyRate * actualBillableDays * 100) / 100;
-      if (customAmount) {
-        proRatedAmount = customAmount;
-      }
 
-      billingStartDateForCycle = installationDate;
-      billingEndDateForCycle = lastDayOfMonth;
-      nextBillingDate = getNextBillingStartDate(installationDate);
-    }
+      // Create billing cycle
+      const billingCycle = await BillingCycle.create(
+        [
+          {
+            userId,
+            planId: plan._id,
+            billingStartDate: billingStartDateForCycle,
+            billingEndDate: billingEndDateForCycle,
+            nextBillingDate: nextBillingDate,
+            status: status,
+            monthlyRate: monthlyRate,
+            currentProRatedAmount: proRatedAmount,
+            proRatedPaid: false,
+            actualBillableDays: actualBillableDays,
+            manualBillStart: true,
+            isAfterCutoff: isAfterCutoff,
+            cutoffDayUsed: billingCutoffDay,
+          },
+        ],
+        { session },
+      );
 
-    const billingCycle = await BillingCycle.create(
-      [
-        {
-          userId,
-          planId: plan._id,
-          billingStartDate: billingStartDateForCycle,
-          billingEndDate: billingEndDateForCycle,
-          nextBillingDate: nextBillingDate,
-          status: status,
-          monthlyRate: monthlyRate,
-          currentProRatedAmount: proRatedAmount,
-          proRatedPaid: false,
-          freeDays: 0,
-          actualBillableDays: actualBillableDays,
-          manualBillStart: isAfterCutoff,
-          isAfterCutoff: isAfterCutoff,
-          cutoffDayUsed: billingCutoffDay,
-        },
-      ],
-      { session },
-    );
-
-    const annualRate = monthlyRate * 12;
-    const dueDate = isAfterCutoff
-      ? getDueDateForMonthly(billingStartDateForCycle, settings)
-      : getDueDateForProRated(installationDate, settings);
-
-    if (isAfterCutoff) {
-      // COMBINED BILL: Pro-rated + Next month full bill
+      // Create combined bill: Pro-rated (current month) + Monthly (next month)
       const totalAmount = monthlyRate + proRatedAmount;
+      const dueDate = getDueDateForMonthly(billingStartDateForCycle, settings);
 
       createdBill = await Billing.create(
         [
@@ -281,7 +262,7 @@ export const startBilling = async (
             billingCycleId: billingCycle[0]._id,
             invoiceNumber: generateInvoiceNumber(),
             billingPeriod: {
-              start: billingStartDateForCycle,
+              start: installationDate,
               end: billingEndDateForCycle,
             },
             dueDate: dueDate,
@@ -321,8 +302,81 @@ export const startBilling = async (
           console.error("Failed to send invoice email:", emailError);
         }
       }
+
+      await session.commitTransaction();
+
+      await User.updateOne(
+        { _id: userId },
+        {
+          $set: {
+            "billingInfo.currentBill": totalAmount,
+            "billingInfo.nextBillingDate": nextBillingDate,
+            "billingInfo.billingCycleId": billingCycle[0]._id,
+            status: "pending_activation",
+          },
+        },
+      );
+
+      clearAllCache();
+
+      const message = `Installation on day ${installationDay} (after ${billingCutoffDay}th cutoff). Combined bill of ₱${totalAmount.toFixed(2)} (₱${proRatedAmount.toFixed(2)} pro-rated + ₱${monthlyRate.toFixed(2)} monthly) due on ${dueDate.toLocaleDateString()}.`;
+
+      res.status(200).json({
+        success: true,
+        message: message,
+        data: {
+          billingCycle: billingCycle[0],
+          bill: createdBill ? createdBill[0] : null,
+          proRatedAmount: proRatedAmount,
+          dailyRate: dailyRate,
+          monthlyRate: monthlyRate,
+          annualRate: monthlyRate * 12,
+          actualBillableDays: actualBillableDays,
+          installationDay: installationDay,
+          billingCutoffDay: billingCutoffDay,
+          isAfterCutoff: isAfterCutoff,
+          dueDate: dueDate,
+          nextBillingDate: nextBillingDate,
+          isCombinedBill: true,
+        },
+      });
     } else {
-      // SCENARIO 1: Pro-rated bill only
+      // SCENARIO A: Installation Day 1-24
+      // Pro-rated only from installation date to end of month
+      proRatedAmount = Math.round(dailyRate * actualBillableDays * 100) / 100;
+      if (customAmount) {
+        proRatedAmount = customAmount;
+      }
+
+      billingStartDateForCycle = installationDate;
+      billingEndDateForCycle = lastDayOfMonth;
+      nextBillingDate = getNextBillingStartDate(installationDate);
+
+      const billingCycle = await BillingCycle.create(
+        [
+          {
+            userId,
+            planId: plan._id,
+            billingStartDate: billingStartDateForCycle,
+            billingEndDate: billingEndDateForCycle,
+            nextBillingDate: nextBillingDate,
+            status: status,
+            monthlyRate: monthlyRate,
+            currentProRatedAmount: proRatedAmount,
+            proRatedPaid: false,
+            actualBillableDays: actualBillableDays,
+            manualBillStart: false,
+            isAfterCutoff: isAfterCutoff,
+            cutoffDayUsed: billingCutoffDay,
+          },
+        ],
+        { session },
+      );
+
+      const dueDate = getDueDateForProRated(installationDate, settings);
+      const annualRate = monthlyRate * 12;
+
+      // Pro-rated bill only
       createdBill = await Billing.create(
         [
           {
@@ -361,53 +415,45 @@ export const startBilling = async (
           console.error("Failed to send invoice email:", emailError);
         }
       }
-    }
 
-    await session.commitTransaction();
+      await session.commitTransaction();
 
-    await User.updateOne(
-      { _id: userId },
-      {
-        $set: {
-          "billingInfo.currentBill": proRatedAmount,
-          "billingInfo.nextBillingDate": nextBillingDate,
-          "billingInfo.billingCycleId": billingCycle[0]._id,
-          status: "pending_activation",
+      await User.updateOne(
+        { _id: userId },
+        {
+          $set: {
+            "billingInfo.currentBill": proRatedAmount,
+            "billingInfo.nextBillingDate": nextBillingDate,
+            "billingInfo.billingCycleId": billingCycle[0]._id,
+            status: "pending_activation",
+          },
         },
-      },
-    );
+      );
 
-    clearAllCache();
+      clearAllCache();
 
-    let message = "";
-    if (isAfterCutoff) {
-      const totalAmount = monthlyRate + proRatedAmount;
-      message = `Installation on day ${installationDay} (after ${billingCutoffDay}th cutoff). Combined bill of ₱${totalAmount.toFixed(2)} (₱${proRatedAmount.toFixed(2)} pro-rated + ₱${monthlyRate.toFixed(2)} monthly) due on ${dueDate.toLocaleDateString()}.`;
-    } else {
-      message = `Pro-rated amount of ₱${proRatedAmount.toFixed(2)} due on ${dueDate.toLocaleDateString()}. Daily rate: ₱${dailyRate.toFixed(4)} (₱${monthlyRate} × 12 ÷ 365)`;
+      const message = `Pro-rated amount of ₱${proRatedAmount.toFixed(2)} due on ${dueDate.toLocaleDateString()}. Daily rate: ₱${dailyRate.toFixed(4)} (₱${monthlyRate} × 12 ÷ 365)`;
+
+      res.status(200).json({
+        success: true,
+        message: message,
+        data: {
+          billingCycle: billingCycle[0],
+          bill: createdBill ? createdBill[0] : null,
+          proRatedAmount: proRatedAmount,
+          dailyRate: dailyRate,
+          monthlyRate: monthlyRate,
+          annualRate: monthlyRate * 12,
+          actualBillableDays: actualBillableDays,
+          installationDay: installationDay,
+          billingCutoffDay: billingCutoffDay,
+          isAfterCutoff: isAfterCutoff,
+          dueDate: dueDate,
+          nextBillingDate: nextBillingDate,
+          isCombinedBill: false,
+        },
+      });
     }
-
-    res.status(200).json({
-      success: true,
-      message: message,
-      data: {
-        billingCycle: billingCycle[0],
-        bill: createdBill ? createdBill[0] : null,
-        proRatedAmount: proRatedAmount,
-        dailyRate: dailyRate,
-        monthlyRate: monthlyRate,
-        annualRate: monthlyRate * 12,
-        actualBillableDays: actualBillableDays,
-        freeDays: 0,
-        totalDaysInPeriod: totalDaysInPeriod,
-        installationDay: installationDay,
-        billingCutoffDay: billingCutoffDay,
-        isAfterCutoff: isAfterCutoff,
-        dueDate: dueDate,
-        nextBillingDate: nextBillingDate,
-        isCombinedBill: isAfterCutoff,
-      },
-    });
   } catch (error) {
     await session.abortTransaction();
     next(error);
@@ -443,7 +489,6 @@ export const getBillingSettings = async (
         autoSendReminders: true,
         autoSuspendOnNonPayment: true,
         billingCycleDay: 1,
-        freeDays: 0,
         proRatedDueDay: 25,
         monthlyDueDay: 5,
         billingCutoffDay: 24,
@@ -500,7 +545,6 @@ export const getBillingSettingsAdmin = async (
         autoSendReminders: true,
         autoSuspendOnNonPayment: true,
         billingCycleDay: 1,
-        freeDays: 0,
         proRatedDueDay: 25,
         monthlyDueDay: 5,
         billingCutoffDay: 24,
@@ -530,7 +574,6 @@ export const updateBillingSettingsAdmin = async (
       autoSendReminders,
       autoSuspendOnNonPayment,
       billingCycleDay,
-      freeDays,
       proRatedDueDay,
       monthlyDueDay,
       billingCutoffDay,
@@ -549,7 +592,6 @@ export const updateBillingSettingsAdmin = async (
         autoSendReminders,
         autoSuspendOnNonPayment,
         billingCycleDay,
-        freeDays: 0,
         proRatedDueDay,
         monthlyDueDay,
         billingCutoffDay,
@@ -1081,6 +1123,7 @@ export const confirmProRatedPayment = async (
       isProRated: true,
       status: "pending_confirmation",
     }).lean();
+
     if (!proRatedBill) {
       return res
         .status(404)
@@ -1119,6 +1162,7 @@ export const confirmProRatedPayment = async (
       { $set: { paymentId: payment[0]._id } },
       { session },
     );
+
     await BillingCycle.updateOne(
       { _id: billingCycle._id },
       {
@@ -1130,6 +1174,7 @@ export const confirmProRatedPayment = async (
       },
       { session },
     );
+
     await User.updateOne(
       { _id: userId },
       { $set: { status: "active" } },
@@ -1137,6 +1182,7 @@ export const confirmProRatedPayment = async (
     );
 
     await session.commitTransaction();
+
     await emailService.sendEmail(
       user.email,
       "Pro-rated Payment Confirmed",
@@ -1235,7 +1281,7 @@ export const startMonthlyBilling = async (
           status: "sent",
           isProRated: false,
           proRatedDays: 0,
-          notes: "First monthly bill",
+          notes: "First monthly bill - Pay before service period",
         },
       ],
       { session },
@@ -1257,6 +1303,7 @@ export const startMonthlyBilling = async (
       },
       { session },
     );
+
     await User.updateOne(
       { _id: userId },
       { $set: { status: "active" } },
@@ -1269,7 +1316,7 @@ export const startMonthlyBilling = async (
     clearAllCache();
     res.status(200).json({
       success: true,
-      message: "Monthly billing started",
+      message: "Monthly billing started - Pay before service period",
       data: { firstMonthlyBill: firstMonthlyBill[0] },
     });
   } catch (error) {
@@ -1312,6 +1359,7 @@ export const stopBilling = async (
       { $set: { status: "cancelled", billingEndDate: new Date() } },
       { session },
     );
+
     await User.updateOne(
       { _id: userId },
       { $set: { status: "inactive" } },
@@ -1483,6 +1531,7 @@ export const autoGenerateMonthlyBills = async (
         isProRated: false,
         "billingPeriod.start": billingStart,
       }).lean();
+
       if (existingBill) continue;
 
       const bill = await Billing.create({
@@ -1570,6 +1619,7 @@ export const autoSendReminders = async (req?: AuthRequest, res?: Response) => {
       })
         .populate("userId")
         .lean();
+
       for (const bill of bills) {
         const user = bill.userId as any;
         if (user?.email) {
@@ -1628,6 +1678,7 @@ export const autoSuspendOverdue = async (req?: AuthRequest, res?: Response) => {
     })
       .populate("userId")
       .lean();
+
     let suspendedCount = 0;
 
     for (const bill of overdueBills) {
@@ -1638,6 +1689,7 @@ export const autoSuspendOverdue = async (req?: AuthRequest, res?: Response) => {
         { _id: bill._id },
         { $set: { suspensionNotified: true } },
       );
+
       if (user.status === "active") {
         await User.updateOne(
           { _id: user._id },
