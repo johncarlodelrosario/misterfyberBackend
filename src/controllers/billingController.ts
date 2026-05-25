@@ -81,6 +81,7 @@ function getDueDateForProRated(installationDate: Date, settings: any): Date {
   if (dueDay > lastDayOfMonth) {
     dueDay = lastDayOfMonth;
   }
+  // Due date is 25th of the same month
   const dueDate = new Date(year, month, dueDay, 23, 59, 59, 999);
   if (dueDate < installationDate) {
     return new Date(year, month, lastDayOfMonth, 23, 59, 59, 999);
@@ -124,25 +125,22 @@ function getDueDateForRegularMonthly(currentDate: Date, settings: any): Date {
   return dueDate;
 }
 
+// FIXED: Get the last day of the month for a given date
 function getEndOfMonth(date: Date): Date {
-  const endOfMonth = new Date(date);
-  endOfMonth.setUTCMonth(endOfMonth.getUTCMonth() + 1);
-  endOfMonth.setUTCDate(0);
-  endOfMonth.setUTCHours(23, 59, 59, 999);
-  return endOfMonth;
+  const year = date.getFullYear();
+  const month = date.getMonth();
+  // This correctly returns the last day of the month (e.g., May 31, not June 1)
+  return new Date(year, month + 1, 0, 23, 59, 59, 999);
 }
 
 function getStartOfNextMonth(date: Date): Date {
-  const nextMonthStart = new Date(date);
-  nextMonthStart.setUTCMonth(nextMonthStart.getUTCMonth() + 1);
-  nextMonthStart.setUTCDate(1);
-  nextMonthStart.setUTCHours(0, 0, 0, 0);
-  return nextMonthStart;
+  const year = date.getFullYear();
+  const month = date.getMonth();
+  return new Date(year, month + 1, 1, 0, 0, 0, 0);
 }
 
 function formatDateForDisplay(date: Date): string {
-  const d = new Date(date);
-  return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
+  return `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
 }
 
 // ==================== START BILLING WITH CORRECT FORMULA ====================
@@ -182,7 +180,7 @@ export const startBilling = async (
     const dailyRate = (monthlyRate * 12) / 365;
 
     let installationDate = startDate ? new Date(startDate) : new Date();
-    installationDate.setUTCHours(0, 0, 0, 0);
+    installationDate.setHours(0, 0, 0, 0);
 
     const existingCycle = await BillingCycle.findOne({
       userId,
@@ -197,9 +195,11 @@ export const startBilling = async (
       });
     }
 
-    const installationDay = installationDate.getUTCDate();
+    const installationDay = installationDate.getDate();
+    // Get end of current month (e.g., May 31, 2026)
     const currentMonthEnd = getEndOfMonth(installationDate);
-    const daysInMonth = currentMonthEnd.getUTCDate();
+    const daysInMonth = currentMonthEnd.getDate();
+    // Days from installation to end of month (inclusive)
     const actualBillableDays = daysInMonth - installationDay + 1;
     const isAfterCutoff = installationDay > billingCutoffDay;
 
@@ -335,8 +335,8 @@ export const startBilling = async (
       }
 
       const billingPeriodStart = installationDate;
-      const billingPeriodEnd = currentMonthEnd;
-      nextBillingDate = getStartOfNextMonth(installationDate);
+      const billingPeriodEnd = currentMonthEnd; // This is May 31, 2026
+      nextBillingDate = getStartOfNextMonth(installationDate); // This is June 1, 2026
 
       const billingCycle = await BillingCycle.create(
         [
@@ -359,6 +359,7 @@ export const startBilling = async (
         { session },
       );
 
+      // Due date for pro-rated bill: 25th of CURRENT month (e.g., May 25, 2026)
       const dueDate = getDueDateForProRated(installationDate, settings);
       const annualRate = monthlyRate * 12;
 
@@ -1212,22 +1213,22 @@ export const startMonthlyBilling = async (
 
     const today = new Date();
     let billingStart = new Date(today);
-    billingStart.setUTCDate(1);
-    billingStart.setUTCHours(0, 0, 0, 0);
+    billingStart.setDate(1);
+    billingStart.setHours(0, 0, 0, 0);
 
     const billingEnd = getEndOfMonth(billingStart);
 
     const dueDate = new Date(billingStart);
-    dueDate.setUTCMonth(dueDate.getUTCMonth() + 1);
+    dueDate.setMonth(dueDate.getMonth() + 1);
     let targetDay = monthlyDueDay;
     const lastDayOfMonth = new Date(
-      dueDate.getUTCFullYear(),
-      dueDate.getUTCMonth() + 1,
+      dueDate.getFullYear(),
+      dueDate.getMonth() + 1,
       0,
-    ).getUTCDate();
+    ).getDate();
     if (targetDay > lastDayOfMonth) targetDay = lastDayOfMonth;
-    dueDate.setUTCDate(targetDay);
-    dueDate.setUTCHours(23, 59, 59, 999);
+    dueDate.setDate(targetDay);
+    dueDate.setHours(23, 59, 59, 999);
 
     const plan = billingCycle.planId as any;
     const monthlyRate = plan.price;
@@ -1466,7 +1467,7 @@ export const autoGenerateMonthlyBills = async (
     }
 
     const today = new Date();
-    today.setUTCHours(0, 0, 0, 0);
+    today.setHours(0, 0, 0, 0);
 
     const billingCycles = await BillingCycle.find({
       status: "active",
@@ -1484,7 +1485,7 @@ export const autoGenerateMonthlyBills = async (
       if (!user || !plan) continue;
 
       const billingStart = new Date(cycle.nextBillingDate);
-      billingStart.setUTCHours(0, 0, 0, 0);
+      billingStart.setHours(0, 0, 0, 0);
       const billingEnd = getEndOfMonth(billingStart);
       const dueDate = getDueDateForRegularMonthly(billingStart, settings);
 
@@ -1558,14 +1559,14 @@ export const autoSendReminders = async (req?: AuthRequest, res?: Response) => {
     }
 
     const today = new Date();
-    today.setUTCHours(0, 0, 0, 0);
+    today.setHours(0, 0, 0, 0);
     const reminderDays = settings.reminderDays || [7, 3, 1];
     let remindersSent = 0;
 
     for (const days of reminderDays) {
       const targetDate = new Date(today);
-      targetDate.setUTCDate(targetDate.getUTCDate() + days);
-      targetDate.setUTCHours(23, 59, 59, 999);
+      targetDate.setDate(targetDate.getDate() + days);
+      targetDate.setHours(23, 59, 59, 999);
 
       let reminderField: string;
       if (days === 7) reminderField = "reminder7DaySent";
@@ -1626,10 +1627,10 @@ export const autoSuspendOverdue = async (req?: AuthRequest, res?: Response) => {
     }
 
     const today = new Date();
-    today.setUTCHours(0, 0, 0, 0);
+    today.setHours(0, 0, 0, 0);
     const gracePeriodDate = new Date(today);
-    gracePeriodDate.setUTCDate(
-      gracePeriodDate.getUTCDate() - settings.gracePeriodDays,
+    gracePeriodDate.setDate(
+      gracePeriodDate.getDate() - settings.gracePeriodDays,
     );
 
     const overdueBills = await Billing.find({
