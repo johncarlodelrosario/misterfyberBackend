@@ -1,4 +1,4 @@
-// controllers/applicationController.ts - COMPLETE FILE WITH AUTO-BILLING ON APPROVAL
+// controllers/applicationController.ts - COMPLETE UPDATED FILE
 import { Request, Response, NextFunction } from "express";
 import Application from "../models/Application";
 import Plan from "../models/Plan";
@@ -132,7 +132,7 @@ export const getBarangaysByCity = async (
   }
 };
 
-const getImageUrl = (imagePath: string): string => {
+const getImageUrl = (imagePath?: string): string => {
   if (!imagePath) return "";
   if (
     imagePath.includes("cloudinary.com") ||
@@ -544,41 +544,40 @@ export const approveApplication = async (
       counter++;
     }
 
-    // Create user account automatically
-    const user = await User.create(
-      [
-        {
-          username: finalUsername,
-          email: application.email,
-          password: generatedPassword,
-          firstName: application.firstName,
-          lastName: application.lastName,
-          phoneNumber: application.phoneNumber,
-          buildingId: application.buildingId,
-          buildingName: application.buildingName,
-          floor: application.floor,
-          unitNumber: application.unitNumber,
-          planId: application.planId,
-          status: startBillingImmediately ? "pending_activation" : "active",
-          idType: application.idType,
-          idNumber: application.idNumber,
-          idImage: application.idImage,
-          mikrotik: {
-            username: finalUsername,
-            password: generatedPassword,
-            profile: plan?.mikrotikProfile || "default",
-            ipAddress: "",
-            macAddress: "",
-          },
-          billingInfo: {
-            currentBill: 0,
-            autoPay: false,
-          },
-        },
-      ],
-      { session },
-    );
+    // Create user account automatically - handle optional fields
+    const userData: any = {
+      username: finalUsername,
+      email: application.email,
+      password: generatedPassword,
+      firstName: application.firstName,
+      lastName: application.lastName,
+      phoneNumber: application.phoneNumber,
+      planId: application.planId,
+      status: startBillingImmediately ? "pending_activation" : "active",
+      mikrotik: {
+        username: finalUsername,
+        password: generatedPassword,
+        profile: plan?.mikrotikProfile || "default",
+        ipAddress: "",
+        macAddress: "",
+      },
+      billingInfo: {
+        currentBill: 0,
+        autoPay: false,
+      },
+    };
 
+    // Only add optional fields if they exist
+    if (application.buildingId) userData.buildingId = application.buildingId;
+    if (application.buildingName)
+      userData.buildingName = application.buildingName;
+    if (application.floor) userData.floor = application.floor;
+    if (application.unitNumber) userData.unitNumber = application.unitNumber;
+    if (application.idType) userData.idType = application.idType;
+    if (application.idNumber) userData.idNumber = application.idNumber;
+    if (application.idImage) userData.idImage = application.idImage;
+
+    const user = await User.create([userData], { session });
     const userDoc = user[0];
 
     // Update application
@@ -602,7 +601,7 @@ export const approveApplication = async (
     if (startBillingImmediately && plan) {
       const billingReq = {
         body: {
-          userId: userDoc._id,
+          userId: userDoc._id.toString(),
           notes: `Auto-started on application approval`,
         },
         user: req.user,
@@ -768,6 +767,9 @@ export const startBillingForApplication = async (
   res: Response,
   next: NextFunction,
 ) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
     const { applicationId } = req.params;
     const { installationDate, notes } = req.body;
@@ -815,22 +817,15 @@ export const startBillingForApplication = async (
         counter++;
       }
 
-      const user = await User.create({
+      const userData: any = {
         username: finalUsername,
         email: application.email,
         password: generatedPassword,
         firstName: application.firstName,
         lastName: application.lastName,
         phoneNumber: application.phoneNumber,
-        buildingId: application.buildingId,
-        buildingName: application.buildingName,
-        floor: application.floor,
-        unitNumber: application.unitNumber,
         planId: application.planId,
         status: "pending_activation",
-        idType: application.idType,
-        idNumber: application.idNumber,
-        idImage: application.idImage,
         mikrotik: {
           username: finalUsername,
           password: generatedPassword,
@@ -842,12 +837,25 @@ export const startBillingForApplication = async (
           currentBill: 0,
           autoPay: false,
         },
-      });
+      };
 
-      userId = user._id;
+      // Only add optional fields if they exist
+      if (application.buildingId) userData.buildingId = application.buildingId;
+      if (application.buildingName)
+        userData.buildingName = application.buildingName;
+      if (application.floor) userData.floor = application.floor;
+      if (application.unitNumber) userData.unitNumber = application.unitNumber;
+      if (application.idType) userData.idType = application.idType;
+      if (application.idNumber) userData.idNumber = application.idNumber;
+      if (application.idImage) userData.idImage = application.idImage;
+
+      const user = await User.create([userData], { session });
+      userId = user[0]._id;
+
       await Application.updateOne(
         { _id: application._id },
         { $set: { registeredUserId: userId } },
+        { session },
       );
 
       // Send credentials email
@@ -891,7 +899,10 @@ export const startBillingForApplication = async (
     await Application.updateOne(
       { _id: application._id },
       { $set: { billingStarted: true } },
+      { session },
     );
+
+    await session.commitTransaction();
 
     res.status(200).json({
       success: true,
@@ -899,8 +910,11 @@ export const startBillingForApplication = async (
       data: result,
     });
   } catch (error) {
+    await session.abortTransaction();
     console.error("Error in startBillingForApplication:", error);
     next(error);
+  } finally {
+    session.endSession();
   }
 };
 
