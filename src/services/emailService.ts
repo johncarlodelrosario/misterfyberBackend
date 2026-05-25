@@ -1,4 +1,4 @@
-// services/emailService.ts - UPDATED WITH CORRECT PRO-RATED FORMULA
+// services/emailService.ts - COMPLETE UPDATED FILE FOR NEW FLOW
 import { IUser } from "../models/User";
 import dotenv from "dotenv";
 import path from "path";
@@ -149,211 +149,213 @@ class EmailService {
     return await this.sendEmail(this.adminEmail, `[ADMIN] ${subject}`, html);
   }
 
-  // ==================== REGISTRATION EMAIL ====================
+  // ==================== REGISTRATION EMAIL (When user creates account) ====================
 
   async sendWelcomeEmail(user: IUser): Promise<void> {
     const loginUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/login`;
     const dashboardUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/dashboard`;
 
     const html = `
-            <!DOCTYPE html>
-            <html lang="en">
-            <head>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>Welcome to Mister Fyber</title>
-                <style>
-                    body {
-                        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                        line-height: 1.6;
-                        color: #333;
-                        margin: 0;
-                        padding: 0;
-                        background-color: #f4f4f4;
-                    }
-                    .container {
-                        max-width: 600px;
-                        margin: 0 auto;
-                        padding: 20px;
-                        background-color: #ffffff;
-                        border-radius: 10px;
-                        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-                    }
-                    .header {
-                        text-align: center;
-                        padding: 20px 0;
-                        border-bottom: 3px solid #28a745;
-                        background-color: #f8f9fa;
-                        border-radius: 10px 10px 0 0;
-                    }
-                    .header h1 {
-                        color: #28a745;
-                        margin: 0;
-                        font-size: 28px;
-                    }
-                    .header p {
-                        color: #666;
-                        margin: 5px 0 0;
-                    }
-                    .content {
-                        padding: 30px 20px;
-                    }
-                    .welcome-text {
-                        font-size: 18px;
-                        color: #333;
-                        margin-bottom: 20px;
-                    }
-                    .details-box {
-                        background: #f8f9fa;
-                        padding: 20px;
-                        border-radius: 8px;
-                        margin: 20px 0;
-                        border-left: 4px solid #28a745;
-                    }
-                    .details-box h3 {
-                        margin-top: 0;
-                        color: #28a745;
-                    }
-                    .detail-row {
-                        margin: 10px 0;
-                        padding: 5px 0;
-                        border-bottom: 1px solid #e0e0e0;
-                    }
-                    .detail-label {
-                        font-weight: bold;
-                        color: #555;
-                        display: inline-block;
-                        width: 120px;
-                    }
-                    .detail-value {
-                        color: #333;
-                    }
-                    .button-container {
-                        text-align: center;
-                        margin: 30px 0;
-                    }
-                    .btn {
-                        display: inline-block;
-                        padding: 12px 30px;
-                        text-decoration: none;
-                        border-radius: 5px;
-                        font-weight: bold;
-                        margin: 0 10px;
-                        transition: all 0.3s ease;
-                    }
-                    .btn-primary {
-                        background-color: #007bff;
-                        color: white;
-                    }
-                    .btn-primary:hover {
-                        background-color: #0056b3;
-                    }
-                    .btn-success {
-                        background-color: #28a745;
-                        color: white;
-                    }
-                    .btn-success:hover {
-                        background-color: #1e7e34;
-                    }
-                    .footer {
-                        text-align: center;
-                        padding: 20px;
-                        border-top: 1px solid #e0e0e0;
-                        font-size: 12px;
-                        color: #666;
-                        background-color: #f8f9fa;
-                        border-radius: 0 0 10px 10px;
-                    }
-                    .status-badge {
-                        display: inline-block;
-                        padding: 3px 10px;
-                        border-radius: 20px;
-                        font-size: 12px;
-                        font-weight: bold;
-                    }
-                    .status-active {
-                        background-color: #d4edda;
-                        color: #155724;
-                    }
-                    .status-pending {
-                        background-color: #fff3cd;
-                        color: #856404;
-                    }
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <div class="header">
-                        <h1>🎉 Welcome Aboard!</h1>
-                        <p>Mister Fyber</p>
-                    </div>
-                    
-                    <div class="content">
-                        <div class="welcome-text">
-                            Hello <strong>${user.firstName || user.email}</strong>!
-                        </div>
-                        
-                        <p>Thank you for choosing <strong>Mister Fyber</strong>. We're excited to have you on board!</p>
-                        <p>Your account has been successfully created and is now ready to use.</p>
-                        
-                        <div class="details-box">
-                            <h3>📋 Account Details</h3>
-                            <div class="detail-row">
-                                <span class="detail-label">Username:</span>
-                                <span class="detail-value">${user.email}</span>
-                            </div>
-                            <div class="detail-row">
-                                <span class="detail-label">Email:</span>
-                                <span class="detail-value">${user.email}</span>
-                            </div>
-                            <div class="detail-row">
-                                <span class="detail-label">Full Name:</span>
-                                <span class="detail-value">${user.firstName || ""} ${user.lastName || ""}</span>
-                            </div>
-                            <div class="detail-row">
-                                <span class="detail-label">Phone:</span>
-                                <span class="detail-value">${user.phoneNumber || "Not provided"}</span>
-                            </div>
-                            <div class="detail-row">
-                                <span class="detail-label">Status:</span>
-                                <span class="detail-value">
-                                    <span class="status-badge ${user.status === "active" ? "status-active" : "status-pending"}">
-                                        ${(user.status || "pending").toUpperCase()}
-                                    </span>
-                                </span>
-                            </div>
-                            <div class="detail-row">
-                                <span class="detail-label">Registered:</span>
-                                <span class="detail-value">${new Date().toLocaleString()}</span>
-                            </div>
-                        </div>
-                        
-                        <div class="button-container">
-                            <a href="${loginUrl}" class="btn btn-primary">🔐 Login to Account</a>
-                            <a href="${dashboardUrl}" class="btn btn-success">📊 Go to Dashboard</a>
-                        </div>
-                        
-                        <p>With your account, you can:</p>
-                        <ul>
-                            <li>View and pay your bills online</li>
-                            <li>Check your internet usage</li>
-                            <li>Submit support tickets</li>
-                            <li>Change your plan</li>
-                            <li>Update your profile</li>
-                        </ul>
-                        
-                        <p>If you have any questions or need assistance, please don't hesitate to contact our support team.</p>
-                    </div>
-                    
-                    <div class="footer">
-                        <p>This is an automated message from Mister Fyber.</p>
-                        <p>© ${new Date().getFullYear()} Mister Fyber. All rights reserved.</p>
-                        <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
-                    </div>
-                </div>
-            </body>
-            </html>
-        `;
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Welcome to Mister Fyber</title>
+          <style>
+              body {
+                  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                  line-height: 1.6;
+                  color: #333;
+                  margin: 0;
+                  padding: 0;
+                  background-color: #f4f4f4;
+              }
+              .container {
+                  max-width: 600px;
+                  margin: 0 auto;
+                  padding: 20px;
+                  background-color: #ffffff;
+                  border-radius: 10px;
+                  box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+              }
+              .header {
+                  text-align: center;
+                  padding: 20px 0;
+                  border-bottom: 3px solid #28a745;
+                  background-color: #f8f9fa;
+                  border-radius: 10px 10px 0 0;
+              }
+              .header h1 {
+                  color: #28a745;
+                  margin: 0;
+                  font-size: 28px;
+              }
+              .header p {
+                  color: #666;
+                  margin: 5px 0 0;
+              }
+              .content {
+                  padding: 30px 20px;
+              }
+              .welcome-text {
+                  font-size: 18px;
+                  color: #333;
+                  margin-bottom: 20px;
+              }
+              .details-box {
+                  background: #f8f9fa;
+                  padding: 20px;
+                  border-radius: 8px;
+                  margin: 20px 0;
+                  border-left: 4px solid #28a745;
+              }
+              .details-box h3 {
+                  margin-top: 0;
+                  color: #28a745;
+              }
+              .detail-row {
+                  margin: 10px 0;
+                  padding: 5px 0;
+                  border-bottom: 1px solid #e0e0e0;
+              }
+              .detail-label {
+                  font-weight: bold;
+                  color: #555;
+                  display: inline-block;
+                  width: 120px;
+              }
+              .detail-value {
+                  color: #333;
+              }
+              .button-container {
+                  text-align: center;
+                  margin: 30px 0;
+              }
+              .btn {
+                  display: inline-block;
+                  padding: 12px 30px;
+                  text-decoration: none;
+                  border-radius: 5px;
+                  font-weight: bold;
+                  margin: 0 10px;
+                  transition: all 0.3s ease;
+              }
+              .btn-primary {
+                  background-color: #007bff;
+                  color: white;
+              }
+              .btn-primary:hover {
+                  background-color: #0056b3;
+              }
+              .btn-success {
+                  background-color: #28a745;
+                  color: white;
+              }
+              .btn-success:hover {
+                  background-color: #1e7e34;
+              }
+              .footer {
+                  text-align: center;
+                  padding: 20px;
+                  border-top: 1px solid #e0e0e0;
+                  font-size: 12px;
+                  color: #666;
+                  background-color: #f8f9fa;
+                  border-radius: 0 0 10px 10px;
+              }
+              .status-badge {
+                  display: inline-block;
+                  padding: 3px 10px;
+                  border-radius: 20px;
+                  font-size: 12px;
+                  font-weight: bold;
+              }
+              .status-active {
+                  background-color: #d4edda;
+                  color: #155724;
+              }
+              .status-pending {
+                  background-color: #fff3cd;
+                  color: #856404;
+              }
+          </style>
+      </head>
+      <body>
+          <div class="container">
+              <div class="header">
+                  <h1>🎉 Welcome Aboard!</h1>
+                  <p>Mister Fyber</p>
+              </div>
+              
+              <div class="content">
+                  <div class="welcome-text">
+                      Hello <strong>${user.firstName || user.email}</strong>!
+                  </div>
+                  
+                  <p>Thank you for choosing <strong>Mister Fyber</strong>. We're excited to have you on board!</p>
+                  <p>Your account has been successfully created and is now ready to use.</p>
+                  
+                  <div class="details-box">
+                      <h3>📋 Account Details</h3>
+                      <div class="detail-row">
+                          <span class="detail-label">Username:</span>
+                          <span class="detail-value">${user.username || user.email}</span>
+                      </div>
+                      <div class="detail-row">
+                          <span class="detail-label">Email:</span>
+                          <span class="detail-value">${user.email}</span>
+                      </div>
+                      <div class="detail-row">
+                          <span class="detail-label">Full Name:</span>
+                          <span class="detail-value">${user.firstName || ""} ${user.lastName || ""}</span>
+                      </div>
+                      <div class="detail-row">
+                          <span class="detail-label">Phone:</span>
+                          <span class="detail-value">${user.phoneNumber || "Not provided"}</span>
+                      </div>
+                      <div class="detail-row">
+                          <span class="detail-label">Status:</span>
+                          <span class="detail-value">
+                              <span class="status-badge ${user.status === "active" ? "status-active" : "status-pending"}">
+                                  ${(user.status || "pending").toUpperCase()}
+                              </span>
+                          </span>
+                      </div>
+                      <div class="detail-row">
+                          <span class="detail-label">Registered:</span>
+                          <span class="detail-value">${new Date().toLocaleString()}</span>
+                      </div>
+                  </div>
+                  
+                  <div class="button-container">
+                      <a href="${loginUrl}" class="btn btn-primary">🔐 Login to Account</a>
+                      <a href="${dashboardUrl}" class="btn btn-success">📊 Go to Dashboard</a>
+                  </div>
+                  
+                  <p><strong>Note:</strong> Your billing will be started by our admin team. You will receive another email with your first invoice.</p>
+                  
+                  <p>With your account, you can:</p>
+                  <ul>
+                      <li>View and pay your bills online</li>
+                      <li>Check your internet usage</li>
+                      <li>Submit support tickets</li>
+                      <li>Change your plan</li>
+                      <li>Update your profile</li>
+                  </ul>
+                  
+                  <p>If you have any questions or need assistance, please don't hesitate to contact our support team.</p>
+              </div>
+              
+              <div class="footer">
+                  <p>This is an automated message from Mister Fyber.</p>
+                  <p>© ${new Date().getFullYear()} Mister Fyber. All rights reserved.</p>
+                  <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
+              </div>
+          </div>
+      </body>
+      </html>
+    `;
 
     await this.sendEmail(
       user.email,
@@ -362,31 +364,31 @@ class EmailService {
     );
 
     const adminHtml = `
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="UTF-8">
-                <title>New User Registration</title>
-            </head>
-            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-                <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                    <h2 style="color: #28a745;">👤 New User Registration</h2>
-                    <p>A new user has registered on Mister Fyber.</p>
-                    <hr>
-                    <div style="background: #f8f9fa; padding: 15px; border-radius: 5px;">
-                        <p><strong>Name:</strong> ${user.firstName || ""} ${user.lastName || ""}</p>
-                        <p><strong>Username (Email):</strong> ${user.email}</p>
-                        <p><strong>Email:</strong> ${user.email}</p>
-                        <p><strong>Phone:</strong> ${user.phoneNumber || "N/A"}</p>
-                        <p><strong>Status:</strong> ${user.status || "pending"}</p>
-                        <p><strong>Registered:</strong> ${new Date().toLocaleString()}</p>
-                    </div>
-                    <hr>
-                    <p style="color: #666; font-size: 12px;">Mister Fyber</p>
-                </div>
-            </body>
-            </html>
-        `;
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <meta charset="UTF-8">
+          <title>New User Registration</title>
+      </head>
+      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+          <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+              <h2 style="color: #28a745;">👤 New User Registration</h2>
+              <p>A new user has registered on Mister Fyber.</p>
+              <hr>
+              <div style="background: #f8f9fa; padding: 15px; border-radius: 5px;">
+                  <p><strong>Name:</strong> ${user.firstName || ""} ${user.lastName || ""}</p>
+                  <p><strong>Username:</strong> ${user.username || user.email}</p>
+                  <p><strong>Email:</strong> ${user.email}</p>
+                  <p><strong>Phone:</strong> ${user.phoneNumber || "N/A"}</p>
+                  <p><strong>Status:</strong> ${user.status || "pending"}</p>
+                  <p><strong>Registered:</strong> ${new Date().toLocaleString()}</p>
+              </div>
+              <hr>
+              <p style="color: #666; font-size: 12px;">Mister Fyber</p>
+          </div>
+      </body>
+      </html>
+    `;
 
     await this.sendToAdmin(`New User Registration: ${user.email}`, adminHtml);
   }
@@ -397,35 +399,35 @@ class EmailService {
     const planPrice = plan?.price ?? 0;
 
     const html = `
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="UTF-8">
-                <title>Application Received</title>
-            </head>
-            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-                <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                    <h2 style="color: #28a745; text-align: center;">✅ Application Received!</h2>
-                    <p>Hello ${application.firstName},</p>
-                    <p>Thank you for applying for internet service with Mister Fyber. We have received your application and it is currently being reviewed.</p>
-                    
-                    <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                        <h3 style="margin-top: 0;">Application Details:</h3>
-                        <p><strong>Application ID:</strong> ${application.applicationId}</p>
-                        <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
-                        <p><strong>Monthly Price:</strong> ₱${safeToFixed(planPrice)}</p>
-                        <p><strong>Status:</strong> <span style="color: #f39c12;">Pending Review</span></p>
-                    </div>
-                    
-                    <p>You will receive another email once your application has been reviewed.</p>
-                    <p>Please keep your Application ID for future reference.</p>
-                    
-                    <hr>
-                    <p style="color: #666; font-size: 12px;">Mister Fyber</p>
-                </div>
-            </body>
-            </html>
-        `;
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <meta charset="UTF-8">
+          <title>Application Received</title>
+      </head>
+      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+          <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+              <h2 style="color: #28a745; text-align: center;">✅ Application Received!</h2>
+              <p>Hello ${application.firstName},</p>
+              <p>Thank you for applying for internet service with Mister Fyber. We have received your application and it is currently being reviewed.</p>
+              
+              <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                  <h3 style="margin-top: 0;">Application Details:</h3>
+                  <p><strong>Application ID:</strong> ${application.applicationId}</p>
+                  <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
+                  <p><strong>Monthly Price:</strong> ₱${safeToFixed(planPrice)}</p>
+                  <p><strong>Status:</strong> <span style="color: #f39c12;">Pending Review</span></p>
+              </div>
+              
+              <p>You will receive another email once your application has been reviewed.</p>
+              <p>Please keep your Application ID for future reference.</p>
+              
+              <hr>
+              <p style="color: #666; font-size: 12px;">Mister Fyber</p>
+          </div>
+      </body>
+      </html>
+    `;
 
     await this.sendEmail(
       application.email,
@@ -434,16 +436,16 @@ class EmailService {
     );
 
     const adminHtml = `
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                <h2 style="color: #f39c12;">📋 New Application</h2>
-                <p><strong>Application ID:</strong> ${application.applicationId}</p>
-                <p><strong>Name:</strong> ${application.firstName} ${application.lastName}</p>
-                <p><strong>Email:</strong> ${application.email}</p>
-                <p><strong>Phone:</strong> ${application.phoneNumber}</p>
-                <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
-                <p><strong>Submitted:</strong> ${new Date().toLocaleString()}</p>
-            </div>
-        `;
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+          <h2 style="color: #f39c12;">📋 New Application</h2>
+          <p><strong>Application ID:</strong> ${application.applicationId}</p>
+          <p><strong>Name:</strong> ${application.firstName} ${application.lastName}</p>
+          <p><strong>Email:</strong> ${application.email}</p>
+          <p><strong>Phone:</strong> ${application.phoneNumber}</p>
+          <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
+          <p><strong>Submitted:</strong> ${new Date().toLocaleString()}</p>
+      </div>
+    `;
     await this.sendToAdmin(
       `New Application: ${application.applicationId} from ${application.firstName} ${application.lastName}`,
       adminHtml,
@@ -459,41 +461,41 @@ class EmailService {
     const planPrice = plan?.price ?? 0;
 
     const adminHtml = `
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                <h2 style="color: #333;">🆕 NEW APPLICATION ALERT!</h2>
-                <p>A new application has been submitted to Mister Fyber and requires your review.</p>
-                
-                <div style="margin-top: 20px; padding: 15px; background-color: #f8f9fa; border-radius: 5px;">
-                    <h3>Application Details:</h3>
-                    <p><strong>Application ID:</strong> ${application.applicationId}</p>
-                    <p><strong>Name:</strong> ${application.firstName} ${application.lastName}</p>
-                    <p><strong>Email:</strong> ${application.email}</p>
-                    <p><strong>Phone:</strong> ${application.phoneNumber}</p>
-                    <p><strong>Plan:</strong> ${plan?.name || "N/A"} (₱${safeToFixed(planPrice)})</p>
-                    <p><strong>ID Type:</strong> ${application.idType}</p>
-                    <p><strong>Submitted:</strong> ${new Date().toLocaleString()}</p>
-                </div>
-                
-                <div style="margin-top: 20px; padding: 15px; background-color: #e7f3ff; border-radius: 5px;">
-                    <h3>Address:</h3>
-                    <p>${application.address?.street || "N/A"}<br>
-                    ${application.address?.city || "N/A"}, ${application.address?.province || "N/A"}<br>
-                    Zip Code: ${application.address?.zipCode || "N/A"}</p>
-                </div>
-                
-                <div style="text-align: center; margin-top: 30px;">
-                    <a href="${frontendUrl}/admin/applications" 
-                       style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">
-                        Review Application Now
-                    </a>
-                </div>
-                
-                <hr style="margin-top: 30px;">
-                <p style="color: #666; font-size: 12px; text-align: center;">
-                    This is an automated notification from Mister Fyber. Please review and take action.
-                </p>
-            </div>
-        `;
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+          <h2 style="color: #333;">🆕 NEW APPLICATION ALERT!</h2>
+          <p>A new application has been submitted to Mister Fyber and requires your review.</p>
+          
+          <div style="margin-top: 20px; padding: 15px; background-color: #f8f9fa; border-radius: 5px;">
+              <h3>Application Details:</h3>
+              <p><strong>Application ID:</strong> ${application.applicationId}</p>
+              <p><strong>Name:</strong> ${application.firstName} ${application.lastName}</p>
+              <p><strong>Email:</strong> ${application.email}</p>
+              <p><strong>Phone:</strong> ${application.phoneNumber}</p>
+              <p><strong>Plan:</strong> ${plan?.name || "N/A"} (₱${safeToFixed(planPrice)})</p>
+              <p><strong>ID Type:</strong> ${application.idType}</p>
+              <p><strong>Submitted:</strong> ${new Date().toLocaleString()}</p>
+          </div>
+          
+          <div style="margin-top: 20px; padding: 15px; background-color: #e7f3ff; border-radius: 5px;">
+              <h3>Address:</h3>
+              <p>${application.buildingName || "N/A"}<br>
+              ${application.floor ? `Floor: ${application.floor}` : ""} ${application.unitNumber ? `Unit: ${application.unitNumber}` : ""}<br>
+              ${application.buildingId?.streetAddress || "N/A"}</p>
+          </div>
+          
+          <div style="text-align: center; margin-top: 30px;">
+              <a href="${frontendUrl}/admin/applications" 
+                 style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">
+                  Review Application Now
+              </a>
+          </div>
+          
+          <hr style="margin-top: 30px;">
+          <p style="color: #666; font-size: 12px; text-align: center;">
+              This is an automated notification from Mister Fyber. Please review and take action.
+          </p>
+      </div>
+    `;
 
     await this.sendToAdmin(
       `🆕 NEW APPLICATION: ${application.applicationId} from ${application.firstName} ${application.lastName}`,
@@ -501,122 +503,222 @@ class EmailService {
     );
   }
 
+  // ==================== APPLICATION APPROVAL EMAIL (NO ACCOUNT CREATED YET) ====================
+
   async sendApplicationApproved(application: any, plan: any): Promise<void> {
-    const registerUrl = "https://www.misterfyber.com/register";
+    const registerUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/register`;
     const planPrice = plan?.price ?? 0;
 
     const html = `
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="UTF-8">
-                <title>Application Approved</title>
-            </head>
-            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-                <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                    <h2 style="color: #28a745;">🎉 Application Approved!</h2>
-                    <p>Hello ${application.firstName},</p>
-                    <p>Great news! Your application to Mister Fyber has been approved.</p>
-                    
-                    <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                        <p><strong>Application ID:</strong> ${application.applicationId}</p>
-                        <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
-                        <p><strong>Monthly Price:</strong> ₱${safeToFixed(planPrice)}</p>
-                    </div>
-                    
-                    <div style="text-align: center; margin: 30px 0;">
-                        <a href="${registerUrl}" style="background-color: #28a745; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">
-                            Create Your Account
-                        </a>
-                    </div>
-                    
-                    <p>Use your email address as username when registering.</p>
-                    
-                    ${
-                      application.adminNotes
-                        ? `
-                    <div style="margin-top: 20px; padding: 15px; background-color: #e7f3ff; border-left: 4px solid #007bff;">
-                        <p><strong>Admin Notes:</strong></p>
-                        <p>${application.adminNotes}</p>
-                    </div>
-                    `
-                        : ""
-                    }
-                    
-                    <hr>
-                    <p style="color: #666; font-size: 12px;">Mister Fyber</p>
-                </div>
-            </body>
-            </html>
-        `;
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <meta charset="UTF-8">
+          <title>Application Approved - Create Your Account</title>
+          <style>
+              body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+              .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
+              .header { text-align: center; border-bottom: 2px solid #28a745; padding-bottom: 20px; }
+              .header h1 { color: #28a745; margin: 0; }
+              .content { padding: 20px 0; }
+              .details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
+              .button { display: inline-block; background-color: #28a745; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; margin: 20px 0; }
+              .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
+          </style>
+      </head>
+      <body>
+          <div class="container">
+              <div class="header">
+                  <h1>✅ Application Approved!</h1>
+              </div>
+              
+              <div class="content">
+                  <p>Hello ${application.firstName},</p>
+                  <p>Great news! Your application to Mister Fyber has been approved.</p>
+                  
+                  <div class="details">
+                      <h3 style="margin-top: 0;">📋 Application Details</h3>
+                      <p><strong>Application ID:</strong> ${application.applicationId}</p>
+                      <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
+                      <p><strong>Monthly Price:</strong> ₱${safeToFixed(planPrice)}</p>
+                  </div>
+                  
+                  <div style="text-align: center;">
+                      <a href="${registerUrl}" class="button">🎯 Create Your Account Now</a>
+                  </div>
+                  
+                  <p><strong>What's next?</strong></p>
+                  <ol>
+                      <li>Click the button above to create your account</li>
+                      <li>Use your email address and create a password</li>
+                      <li>Once registered, the admin will start your billing</li>
+                      <li>You'll receive an invoice via email</li>
+                  </ol>
+                  
+                  ${
+                    application.adminNotes
+                      ? `
+                  <div style="margin-top: 20px; padding: 15px; background-color: #e7f3ff; border-left: 4px solid #007bff;">
+                      <p><strong>📝 Admin Notes:</strong></p>
+                      <p>${application.adminNotes}</p>
+                  </div>
+                  `
+                      : ""
+                  }
+              </div>
+              
+              <div class="footer">
+                  <p>Mister Fyber - Your trusted internet provider</p>
+                  <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
+              </div>
+          </div>
+      </body>
+      </html>
+    `;
 
     await this.sendEmail(
       application.email,
-      `Application Approved - Create Your Account`,
+      `✅ Application Approved - Create Your Account`,
       html,
     );
 
     const adminHtml = `
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                <h2 style="color: #28a745;">✅ Application Approved</h2>
-                <p>You have approved application #${application.applicationId} for Mister Fyber.</p>
-                <p><strong>Applicant:</strong> ${application.firstName} ${application.lastName}</p>
-                <p><strong>Email:</strong> ${application.email}</p>
-                <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
-                <p>An email has been sent to the applicant with instructions to create their account.</p>
-            </div>
-        `;
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+          <h2 style="color: #28a745;">✅ Application Approved</h2>
+          <p>You have approved application #${application.applicationId} for Mister Fyber.</p>
+          <p><strong>Applicant:</strong> ${application.firstName} ${application.lastName}</p>
+          <p><strong>Email:</strong> ${application.email}</p>
+          <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
+          <p>An email has been sent to the applicant with instructions to create their account.</p>
+          <hr>
+          <p><strong>Next Step:</strong> Once the customer registers, go to the Billing page and click "Start Billing" to generate their first invoice.</p>
+      </div>
+    `;
     await this.sendToAdmin(
       `Application Approved: ${application.applicationId}`,
       adminHtml,
     );
   }
 
+  // ==================== APPLICATION REJECTED EMAIL ====================
+
   async sendApplicationRejected(
     application: any,
     reason: string,
   ): Promise<void> {
     const html = `
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="UTF-8">
-                <title>Application Update</title>
-            </head>
-            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-                <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                    <h2 style="color: #dc3545;">Application Update</h2>
-                    <p>Hello ${application.firstName},</p>
-                    <p>Thank you for your interest in Mister Fyber. Unfortunately, your application has not been approved at this time.</p>
-                    
-                    <div style="margin-top: 20px; padding: 15px; background-color: #fff3f3; border-left: 4px solid #dc3545;">
-                        <p><strong>Reason:</strong></p>
-                        <p>${reason || "No specific reason provided"}</p>
-                    </div>
-                    
-                    <p>If you have any questions, please contact our support team.</p>
-                    
-                    <hr>
-                    <p style="color: #666; font-size: 12px;">Mister Fyber</p>
-                </div>
-            </body>
-            </html>
-        `;
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <meta charset="UTF-8">
+          <title>Application Update</title>
+      </head>
+      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+          <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+              <h2 style="color: #dc3545;">Application Update</h2>
+              <p>Hello ${application.firstName},</p>
+              <p>Thank you for your interest in Mister Fyber. Unfortunately, your application has not been approved at this time.</p>
+              
+              <div style="margin-top: 20px; padding: 15px; background-color: #fff3f3; border-left: 4px solid #dc3545;">
+                  <p><strong>Reason:</strong></p>
+                  <p>${reason || "No specific reason provided"}</p>
+              </div>
+              
+              <p>If you have any questions, please contact our support team.</p>
+              
+              <hr>
+              <p style="color: #666; font-size: 12px;">Mister Fyber</p>
+          </div>
+      </body>
+      </html>
+    `;
 
     await this.sendEmail(application.email, `Application Status Update`, html);
 
     const adminHtml = `
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                <h2 style="color: #dc3545;">Application Rejected</h2>
-                <p>Application #${application.applicationId} for Mister Fyber has been rejected.</p>
-                <p><strong>Applicant:</strong> ${application.firstName} ${application.lastName}</p>
-                <p><strong>Email:</strong> ${application.email}</p>
-                <p><strong>Reason:</strong> ${reason || "Not specified"}</p>
-            </div>
-        `;
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+          <h2 style="color: #dc3545;">Application Rejected</h2>
+          <p>Application #${application.applicationId} for Mister Fyber has been rejected.</p>
+          <p><strong>Applicant:</strong> ${application.firstName} ${application.lastName}</p>
+          <p><strong>Email:</strong> ${application.email}</p>
+          <p><strong>Reason:</strong> ${reason || "Not specified"}</p>
+      </div>
+    `;
     await this.sendToAdmin(
       `Application Rejected: ${application.applicationId}`,
       adminHtml,
+    );
+  }
+
+  // ==================== CREDENTIALS EMAIL (When admin starts billing) ====================
+
+  async sendAccountCredentials(
+    user: IUser,
+    username: string,
+    password: string,
+    applicationId: string,
+  ): Promise<void> {
+    const loginUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/login`;
+
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <meta charset="UTF-8">
+          <title>Your Mister Fyber Account Credentials</title>
+          <style>
+              body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+              .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
+              .header { text-align: center; border-bottom: 2px solid #007bff; padding-bottom: 20px; }
+              .header h1 { color: #007bff; margin: 0; }
+              .content { padding: 20px 0; }
+              .credentials { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
+              .button { display: inline-block; background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; }
+              .warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }
+              .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
+          </style>
+      </head>
+      <body>
+          <div class="container">
+              <div class="header">
+                  <h1>🔐 Your Account Credentials</h1>
+              </div>
+              
+              <div class="content">
+                  <p>Hello ${user.firstName},</p>
+                  <p>Your Mister Fyber account has been set up by our admin team. Here are your login credentials:</p>
+                  
+                  <div class="credentials">
+                      <h3 style="margin-top: 0;">📋 Login Information</h3>
+                      <p><strong>Username:</strong> ${username}</p>
+                      <p><strong>Password:</strong> ${password}</p>
+                      <p><strong>Application ID:</strong> ${applicationId}</p>
+                  </div>
+                  
+                  <div class="warning">
+                      <strong>⚠️ Important:</strong> Please change your password after your first login for security purposes.
+                  </div>
+                  
+                  <div style="text-align: center;">
+                      <a href="${loginUrl}" class="button">🔑 Login to Your Account</a>
+                  </div>
+                  
+                  <p>Your first invoice has been sent to this email address. Please check your inbox for the invoice details.</p>
+              </div>
+              
+              <div class="footer">
+                  <p>Mister Fyber - Your trusted internet provider</p>
+                  <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
+              </div>
+          </div>
+      </body>
+      </html>
+    `;
+
+    await this.sendEmail(
+      user.email,
+      `🔐 Your Mister Fyber Account Credentials`,
+      html,
     );
   }
 
@@ -628,35 +730,35 @@ class EmailService {
     const resetUrl = `${frontendUrl}/reset-password/${resetToken}`;
 
     const html = `
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="UTF-8">
-                <title>Password Reset Request</title>
-            </head>
-            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-                <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                    <h2 style="color: #333;">Password Reset Request</h2>
-                    <p>Hello ${user.firstName || user.email},</p>
-                    <p>You requested a password reset for your Mister Fyber account. Click the button below to reset your password:</p>
-                    
-                    <div style="text-align: center; margin: 30px 0;">
-                        <a href="${resetUrl}" 
-                           style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">
-                            Reset Password
-                        </a>
-                    </div>
-                    
-                    <p>Or copy and paste this link: ${resetUrl}</p>
-                    <p>This link will expire in <strong>10 minutes</strong>.</p>
-                    <p>If you didn't request this, please ignore this email.</p>
-                    
-                    <hr>
-                    <p style="color: #666; font-size: 12px;">Mister Fyber</p>
-                </div>
-            </body>
-            </html>
-        `;
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <meta charset="UTF-8">
+          <title>Password Reset Request</title>
+      </head>
+      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+          <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+              <h2 style="color: #333;">Password Reset Request</h2>
+              <p>Hello ${user.firstName || user.email},</p>
+              <p>You requested a password reset for your Mister Fyber account. Click the button below to reset your password:</p>
+              
+              <div style="text-align: center; margin: 30px 0;">
+                  <a href="${resetUrl}" 
+                     style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">
+                      Reset Password
+                  </a>
+              </div>
+              
+              <p>Or copy and paste this link: ${resetUrl}</p>
+              <p>This link will expire in <strong>10 minutes</strong>.</p>
+              <p>If you didn't request this, please ignore this email.</p>
+              
+              <hr>
+              <p style="color: #666; font-size: 12px;">Mister Fyber</p>
+          </div>
+      </body>
+      </html>
+    `;
 
     await this.sendEmail(user.email, "Password Reset Request", html);
   }
@@ -667,7 +769,6 @@ class EmailService {
     const dueDate = billing.dueDate
       ? new Date(billing.dueDate).toLocaleDateString()
       : "N/A";
-    // Use total from billing (matches controller)
     const amount = billing.total || billing.amount || 0;
     const frontendUrl =
       process.env.FRONTEND_URL || "https://www.misterfyber.com";
@@ -690,66 +791,66 @@ class EmailService {
     }
 
     const html = `
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="UTF-8">
-                <title>Invoice Ready</title>
-            </head>
-            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-                <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                    <h2 style="color: #333;">🧾 Invoice Ready</h2>
-                    <p>Hello ${user.firstName || user.email},</p>
-                    <p>Your Mister Fyber invoice is now ready for payment.</p>
-                    
-                    <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                        <h3 style="margin-top: 0;">Invoice Details</h3>
-                        <p><strong>Invoice Number:</strong> ${billing.invoiceNumber || billing._id}</p>
-                        <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
-                        <p><strong>Due Date:</strong> ${dueDate}</p>
-                        ${billing.isProRated ? `<p><strong>Bill Type:</strong> Pro-rated (First Bill)</p>` : `<p><strong>Bill Type:</strong> Monthly Subscription</p>`}
-                    </div>
-                    
-                    ${additionalInfo}
-                    
-                    <div style="text-align: center; margin: 30px 0;">
-                        <a href="${frontendUrl}/billing" 
-                           style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">
-                            View & Pay Invoice
-                        </a>
-                    </div>
-                    
-                    <div style="margin-top: 20px; padding: 10px; background-color: #fff3cd; border-left: 4px solid #ffc107; font-size: 12px;">
-                        <p style="margin: 0;"><strong>📌 Billing Information:</strong></p>
-                        <p style="margin: 5px 0 0;">• Install Day 1-24: Pro-rated bill from installation to end of month (due on 25th)<br>
-                        • Install Day 25-31: Combined bill (pro-rated + next month) due on 5th of following month<br>
-                        • Monthly bills due on 5th of each month (pay before service period)<br>
-                        • Daily rate formula: (Monthly Price × 12) ÷ 365 days</p>
-                    </div>
-                    
-                    <hr>
-                    <p style="color: #666; font-size: 12px;">Mister Fyber</p>
-                </div>
-            </body>
-            </html>
-        `;
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <meta charset="UTF-8">
+          <title>Invoice Ready</title>
+      </head>
+      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+          <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+              <h2 style="color: #333;">🧾 Invoice Ready</h2>
+              <p>Hello ${user.firstName || user.email},</p>
+              <p>Your Mister Fyber invoice is now ready for payment.</p>
+              
+              <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                  <h3 style="margin-top: 0;">Invoice Details</h3>
+                  <p><strong>Invoice Number:</strong> ${billing.invoiceNumber || billing._id}</p>
+                  <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
+                  <p><strong>Due Date:</strong> ${dueDate}</p>
+                  ${billing.isProRated ? `<p><strong>Bill Type:</strong> Pro-rated (First Bill)</p>` : `<p><strong>Bill Type:</strong> Monthly Subscription</p>`}
+              </div>
+              
+              ${additionalInfo}
+              
+              <div style="text-align: center; margin: 30px 0;">
+                  <a href="${frontendUrl}/billing" 
+                     style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">
+                      View & Pay Invoice
+                  </a>
+              </div>
+              
+              <div style="margin-top: 20px; padding: 10px; background-color: #fff3cd; border-left: 4px solid #ffc107; font-size: 12px;">
+                  <p style="margin: 0;"><strong>📌 Billing Information:</strong></p>
+                  <p style="margin: 5px 0 0;">• Install Day 1-24: Pro-rated bill from installation to end of month (due on 25th)<br>
+                  • Install Day 25-31: Combined bill (pro-rated + next month) due on 5th of following month<br>
+                  • Monthly bills due on 5th of each month (pay before service period)<br>
+                  • Daily rate formula: (Monthly Price × 12) ÷ 365 days</p>
+              </div>
+              
+              <hr>
+              <p style="color: #666; font-size: 12px;">Mister Fyber</p>
+          </div>
+      </body>
+      </html>
+    `;
 
     await this.sendEmail(
       user.email,
-      `Invoice #${billing.invoiceNumber || billing._id} Ready`,
+      `🧾 Invoice #${billing.invoiceNumber || billing._id} Ready`,
       html,
     );
 
     const adminHtml = `
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                <h2 style="color: #333;">🧾 Invoice Generated</h2>
-                <p>An invoice has been generated for Mister Fyber user ${user.firstName || ""} ${user.lastName || ""}.</p>
-                <p><strong>Invoice:</strong> ${billing.invoiceNumber || billing._id}</p>
-                <p><strong>Amount:</strong> ₱${safeToFixed(amount)}</p>
-                <p><strong>Due Date:</strong> ${dueDate}</p>
-                ${billing.isProRated ? `<p><strong>Type:</strong> Pro-rated Bill</p>` : `<p><strong>Type:</strong> Monthly Bill</p>`}
-            </div>
-        `;
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+          <h2 style="color: #333;">🧾 Invoice Generated</h2>
+          <p>An invoice has been generated for Mister Fyber user ${user.firstName || ""} ${user.lastName || ""}.</p>
+          <p><strong>Invoice:</strong> ${billing.invoiceNumber || billing._id}</p>
+          <p><strong>Amount:</strong> ₱${safeToFixed(amount)}</p>
+          <p><strong>Due Date:</strong> ${dueDate}</p>
+          ${billing.isProRated ? `<p><strong>Type:</strong> Pro-rated Bill</p>` : `<p><strong>Type:</strong> Monthly Bill</p>`}
+      </div>
+    `;
     await this.sendToAdmin(
       `Invoice Generated: ${billing.invoiceNumber || billing._id} for ${user.email}`,
       adminHtml,
@@ -764,54 +865,54 @@ class EmailService {
     const amount = payment.amount || payment.totalAmount || 0;
 
     const html = `
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="UTF-8">
-                <title>Payment Confirmation</title>
-            </head>
-            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-                <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                    <h2 style="color: #28a745;">💰 Payment Confirmed!</h2>
-                    <p>Hello ${user.firstName || user.email},</p>
-                    <p>Thank you for your payment to Mister Fyber. Your transaction has been completed successfully.</p>
-                    
-                    <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                        <h3 style="margin-top: 0;">Payment Details</h3>
-                        <p><strong>Payment ID:</strong> ${payment._id}</p>
-                        <p><strong>Amount Paid:</strong> ₱${safeToFixed(amount)}</p>
-                        <p><strong>Payment Method:</strong> ${payment.paymentMethod || "N/A"}</p>
-                        <p><strong>Reference:</strong> ${payment.referenceNumber || "N/A"}</p>
-                        <p><strong>Date:</strong> ${new Date().toLocaleString()}</p>
-                        ${billing?.isProRated ? `<p><strong>Note:</strong> Your pro-rated payment has been confirmed. Your service is now active!</p>` : ""}
-                    </div>
-                    
-                    <hr>
-                    <p style="color: #666; font-size: 12px;">Thank you for being a valued Mister Fyber customer!</p>
-                </div>
-            </body>
-            </html>
-        `;
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <meta charset="UTF-8">
+          <title>Payment Confirmation</title>
+      </head>
+      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+          <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+              <h2 style="color: #28a745;">💰 Payment Confirmed!</h2>
+              <p>Hello ${user.firstName || user.email},</p>
+              <p>Thank you for your payment to Mister Fyber. Your transaction has been completed successfully.</p>
+              
+              <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                  <h3 style="margin-top: 0;">Payment Details</h3>
+                  <p><strong>Payment ID:</strong> ${payment._id}</p>
+                  <p><strong>Amount Paid:</strong> ₱${safeToFixed(amount)}</p>
+                  <p><strong>Payment Method:</strong> ${payment.paymentMethod || "N/A"}</p>
+                  <p><strong>Reference:</strong> ${payment.referenceNumber || "N/A"}</p>
+                  <p><strong>Date:</strong> ${new Date().toLocaleString()}</p>
+                  ${billing?.isProRated ? `<p><strong>Note:</strong> Your pro-rated payment has been confirmed. Your service is now active!</p>` : ""}
+              </div>
+              
+              <hr>
+              <p style="color: #666; font-size: 12px;">Thank you for being a valued Mister Fyber customer!</p>
+          </div>
+      </body>
+      </html>
+    `;
 
     await this.sendEmail(
       user.email,
-      `Payment Confirmation - ₱${safeToFixed(amount)}`,
+      `💰 Payment Confirmation - ₱${safeToFixed(amount)}`,
       html,
     );
 
     const adminHtml = `
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                <h2 style="color: #28a745;">💰 Payment Received</h2>
-                <p>Payment received from ${user.firstName || ""} ${user.lastName || ""} (${user.email}) for Mister Fyber.</p>
-                <p><strong>Amount:</strong> ₱${safeToFixed(amount)}</p>
-                <p><strong>Method:</strong> ${payment.paymentMethod || "N/A"}</p>
-                <p><strong>Reference:</strong> ${payment.referenceNumber || "N/A"}</p>
-                <p><strong>Date:</strong> ${new Date().toLocaleString()}</p>
-                ${billing?.isProRated ? `<p><strong>Note:</strong> Pro-rated payment confirmed. User service activated.</p>` : ""}
-            </div>
-        `;
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+          <h2 style="color: #28a745;">💰 Payment Received</h2>
+          <p>Payment received from ${user.firstName || ""} ${user.lastName || ""} (${user.email}) for Mister Fyber.</p>
+          <p><strong>Amount:</strong> ₱${safeToFixed(amount)}</p>
+          <p><strong>Method:</strong> ${payment.paymentMethod || "N/A"}</p>
+          <p><strong>Reference:</strong> ${payment.referenceNumber || "N/A"}</p>
+          <p><strong>Date:</strong> ${new Date().toLocaleString()}</p>
+          ${billing?.isProRated ? `<p><strong>Note:</strong> Pro-rated payment confirmed. User service activated.</p>` : ""}
+      </div>
+    `;
     await this.sendToAdmin(
-      `Payment Received: ₱${safeToFixed(amount)} from ${user.email}`,
+      `💰 Payment Received: ₱${safeToFixed(amount)} from ${user.email}`,
       adminHtml,
     );
   }
@@ -825,41 +926,45 @@ class EmailService {
       process.env.FRONTEND_URL || "https://www.misterfyber.com";
 
     const html = `
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="UTF-8">
-                <title>Payment Reminder</title>
-            </head>
-            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-                <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                    <h2 style="color: #f39c12;">⚠️ Payment Reminder</h2>
-                    <p>Hello ${user.firstName || user.email},</p>
-                    <p>This is a friendly reminder that your Mister Fyber payment is due soon.</p>
-                    
-                    <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                        <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
-                        <p><strong>Due Date:</strong> ${dueDate}</p>
-                        ${billing?.isProRated ? `<p><strong>Note:</strong> This is your pro-rated first bill. Once paid, your service will be fully activated.</p>` : ""}
-                    </div>
-                    
-                    <div style="text-align: center; margin: 30px 0;">
-                        <a href="${frontendUrl}/billing" 
-                           style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">
-                            Pay Now
-                        </a>
-                    </div>
-                    
-                    <p>Please pay before the due date to avoid service interruption.</p>
-                    
-                    <hr>
-                    <p style="color: #666; font-size: 12px;">This is an automated reminder from Mister Fyber.</p>
-                </div>
-            </body>
-            </html>
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <meta charset="UTF-8">
+          <title>Payment Reminder</title>
+      </head>
+      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+              <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+                  <h2 style="color: #f39c12;">⚠️ Payment Reminder</h2>
+                  <p>Hello ${user.firstName || user.email},</p>
+                  <p>This is a friendly reminder that your Mister Fyber payment is due soon.</p>
+                  
+                  <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                      <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
+                      <p><strong>Due Date:</strong> ${dueDate}</p>
+                      ${billing?.isProRated ? `<p><strong>Note:</strong> This is your pro-rated first bill. Once paid, your service will be fully activated.</p>` : ""}
+                  </div>
+                  
+                  <div style="text-align: center; margin: 30px 0;">
+                      <a href="${frontendUrl}/billing" 
+                         style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">
+                          Pay Now
+                      </a>
+                  </div>
+                  
+                  <p>Please pay before the due date to avoid service interruption.</p>
+                  
+                  <hr>
+                  <p style="color: #666; font-size: 12px;">This is an automated reminder from Mister Fyber.</p>
+              </div>
+          </body>
+          </html>
         `;
 
-    await this.sendEmail(user.email, `Payment Reminder - Due ${dueDate}`, html);
+    await this.sendEmail(
+      user.email,
+      `⚠️ Payment Reminder - Due ${dueDate}`,
+      html,
+    );
   }
 
   async sendBillingReminder(user: IUser, billing: any): Promise<void> {
@@ -871,38 +976,42 @@ class EmailService {
       process.env.FRONTEND_URL || "https://www.misterfyber.com";
 
     const html = `
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="UTF-8">
-                <title>Billing Reminder</title>
-            </head>
-            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-                <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                    <h2 style="color: #f39c12;">📅 Billing Reminder</h2>
-                    <p>Hello ${user.firstName || user.email},</p>
-                    <p>Your Mister Fyber bill is due on ${dueDate}.</p>
-                    
-                    <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                        <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
-                        <p><strong>Due Date:</strong> ${dueDate}</p>
-                    </div>
-                    
-                    <div style="text-align: center; margin: 30px 0;">
-                        <a href="${frontendUrl}/billing" 
-                           style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">
-                            View Bill
-                        </a>
-                    </div>
-                    
-                    <hr>
-                    <p style="color: #666; font-size: 12px;">This is an automated reminder from Mister Fyber.</p>
-                </div>
-            </body>
-            </html>
-        `;
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <meta charset="UTF-8">
+          <title>Billing Reminder</title>
+      </head>
+      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+          <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+              <h2 style="color: #f39c12;">📅 Billing Reminder</h2>
+              <p>Hello ${user.firstName || user.email},</p>
+              <p>Your Mister Fyber bill is due on ${dueDate}.</p>
+              
+              <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                  <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
+                  <p><strong>Due Date:</strong> ${dueDate}</p>
+              </div>
+              
+              <div style="text-align: center; margin: 30px 0;">
+                  <a href="${frontendUrl}/billing" 
+                     style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">
+                      View Bill
+                  </a>
+              </div>
+              
+              <hr>
+              <p style="color: #666; font-size: 12px;">This is an automated reminder from Mister Fyber.</p>
+          </div>
+      </body>
+      </html>
+    `;
 
-    await this.sendEmail(user.email, `Billing Reminder - Due ${dueDate}`, html);
+    await this.sendEmail(
+      user.email,
+      `📅 Billing Reminder - Due ${dueDate}`,
+      html,
+    );
   }
 
   // ==================== ACCOUNT & SERVICE UPDATES ====================
@@ -924,41 +1033,41 @@ class EmailService {
       `Your Mister Fyber account status has been updated to: ${user.status}`;
 
     const html = `
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="UTF-8">
-                <title>Account Status Update</title>
-            </head>
-            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-                <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                    <h2 style="color: #333;">🔄 Account Status Update</h2>
-                    <p>Hello ${user.firstName || user.email},</p>
-                    <div style="padding: 20px; background-color: #f8f9fa; border-left: 4px solid #007bff;">
-                        <p>${message}</p>
-                    </div>
-                    <p>If you have any questions, please contact our support team.</p>
-                    
-                    <hr>
-                    <p style="color: #666; font-size: 12px;">Mister Fyber</p>
-                </div>
-            </body>
-            </html>
-        `;
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <meta charset="UTF-8">
+          <title>Account Status Update</title>
+      </head>
+      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+          <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+              <h2 style="color: #333;">🔄 Account Status Update</h2>
+              <p>Hello ${user.firstName || user.email},</p>
+              <div style="padding: 20px; background-color: #f8f9fa; border-left: 4px solid #007bff;">
+                  <p>${message}</p>
+              </div>
+              <p>If you have any questions, please contact our support team.</p>
+              
+              <hr>
+              <p style="color: #666; font-size: 12px;">Mister Fyber</p>
+          </div>
+      </body>
+      </html>
+    `;
 
     await this.sendEmail(
       user.email,
-      `Account Status Update: ${user.status || "pending"}`,
+      `🔄 Account Status Update: ${user.status || "pending"}`,
       html,
     );
 
     const adminHtml = `
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                <h2 style="color: #333;">🔄 Account Status Changed</h2>
-                <p>Mister Fyber user ${user.firstName || ""} ${user.lastName || ""} (${user.email}) status changed to: <strong>${user.status || "pending"}</strong></p>
-                <p>Date: ${new Date().toLocaleString()}</p>
-            </div>
-        `;
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+          <h2 style="color: #333;">🔄 Account Status Changed</h2>
+          <p>Mister Fyber user ${user.firstName || ""} ${user.lastName || ""} (${user.email}) status changed to: <strong>${user.status || "pending"}</strong></p>
+          <p>Date: ${new Date().toLocaleString()}</p>
+      </div>
+    `;
     await this.sendToAdmin(
       `Account Status Changed: ${user.email} → ${user.status || "pending"}`,
       adminHtml,
@@ -973,49 +1082,49 @@ class EmailService {
     const newPlanPrice = newPlan?.price ?? 0;
 
     const html = `
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="UTF-8">
-                <title>Plan Updated</title>
-            </head>
-            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-                <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                    <h2 style="color: #333;">📡 Plan Updated</h2>
-                    <p>Hello ${user.firstName || user.email},</p>
-                    <p>Your Mister Fyber plan has been changed successfully.</p>
-                    
-                    <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                        <p><strong>Old Plan:</strong> ${oldPlan?.name || "N/A"}</p>
-                        <p><strong>New Plan:</strong> ${newPlan?.name || "N/A"}</p>
-                        <p><strong>New Price:</strong> ₱${safeToFixed(newPlanPrice)}</p>
-                        <p><strong>New Speed:</strong> ${newPlan?.speed?.download || "N/A"} Mbps / ${newPlan?.speed?.upload || "N/A"} Mbps</p>
-                    </div>
-                    
-                    <p>The changes will take effect immediately.</p>
-                    
-                    <hr>
-                    <p style="color: #666; font-size: 12px;">Mister Fyber</p>
-                </div>
-            </body>
-            </html>
-        `;
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <meta charset="UTF-8">
+          <title>Plan Updated</title>
+      </head>
+      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+          <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+              <h2 style="color: #333;">📡 Plan Updated</h2>
+              <p>Hello ${user.firstName || user.email},</p>
+              <p>Your Mister Fyber plan has been changed successfully.</p>
+              
+              <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                  <p><strong>Old Plan:</strong> ${oldPlan?.name || "N/A"}</p>
+                  <p><strong>New Plan:</strong> ${newPlan?.name || "N/A"}</p>
+                  <p><strong>New Price:</strong> ₱${safeToFixed(newPlanPrice)}</p>
+                  <p><strong>New Speed:</strong> ${newPlan?.speed?.download || "N/A"} Mbps / ${newPlan?.speed?.upload || "N/A"} Mbps</p>
+              </div>
+              
+              <p>The changes will take effect immediately.</p>
+              
+              <hr>
+              <p style="color: #666; font-size: 12px;">Mister Fyber</p>
+          </div>
+      </body>
+      </html>
+    `;
 
     await this.sendEmail(
       user.email,
-      `Plan Changed to ${newPlan?.name || "N/A"}`,
+      `📡 Plan Changed to ${newPlan?.name || "N/A"}`,
       html,
     );
 
     const adminHtml = `
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                <h2 style="color: #333;">📡 User Plan Changed</h2>
-                <p>Mister Fyber user ${user.firstName || ""} ${user.lastName || ""} (${user.email}) changed their plan.</p>
-                <p><strong>From:</strong> ${oldPlan?.name || "N/A"}</p>
-                <p><strong>To:</strong> ${newPlan?.name || "N/A"}</p>
-                <p><strong>Date:</strong> ${new Date().toLocaleString()}</p>
-            </div>
-        `;
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+          <h2 style="color: #333;">📡 User Plan Changed</h2>
+          <p>Mister Fyber user ${user.firstName || ""} ${user.lastName || ""} (${user.email}) changed their plan.</p>
+          <p><strong>From:</strong> ${oldPlan?.name || "N/A"}</p>
+          <p><strong>To:</strong> ${newPlan?.name || "N/A"}</p>
+          <p><strong>Date:</strong> ${new Date().toLocaleString()}</p>
+      </div>
+    `;
     await this.sendToAdmin(
       `Plan Change: ${user.email} → ${newPlan?.name || "N/A"}`,
       adminHtml,
@@ -1026,31 +1135,31 @@ class EmailService {
     const frontendUrl =
       process.env.FRONTEND_URL || "https://www.misterfyber.com";
     const html = `
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="UTF-8">
-                <title>Weekly Service Update</title>
-            </head>
-            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-                <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                    <h2 style="color: #333;">📊 Weekly Service Update</h2>
-                    <p>Hello ${user.firstName || user.email},</p>
-                    <p>Thank you for being a valued Mister Fyber customer. Check your usage and billing status in your dashboard.</p>
-                    
-                    <div style="text-align: center; margin: 30px 0;">
-                        <a href="${frontendUrl}/dashboard" 
-                           style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">
-                            Go to Dashboard
-                        </a>
-                    </div>
-                    
-                    <hr>
-                    <p style="color: #666; font-size: 12px;">Stay updated with your internet usage and billing with Mister Fyber.</p>
-                </div>
-            </body>
-            </html>
-        `;
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <meta charset="UTF-8">
+          <title>Weekly Service Update</title>
+      </head>
+      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+          <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+              <h2 style="color: #333;">📊 Weekly Service Update</h2>
+              <p>Hello ${user.firstName || user.email},</p>
+              <p>Thank you for being a valued Mister Fyber customer. Check your usage and billing status in your dashboard.</p>
+              
+              <div style="text-align: center; margin: 30px 0;">
+                  <a href="${frontendUrl}/dashboard" 
+                     style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">
+                      Go to Dashboard
+                  </a>
+              </div>
+              
+              <hr>
+              <p style="color: #666; font-size: 12px;">Stay updated with your internet usage and billing with Mister Fyber.</p>
+          </div>
+      </body>
+      </html>
+    `;
 
     await this.sendEmail(user.email, "Weekly Service Update", html);
   }
@@ -1065,43 +1174,43 @@ class EmailService {
       : "Unknown";
 
     const html = `
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="UTF-8">
-                <title>Service Interruption</title>
-            </head>
-            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-                <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                    <h2 style="color: #dc3545;">⚠️ Service Interruption</h2>
-                    <p>Hello ${user.firstName || user.email},</p>
-                    <p>We want to inform you about a service interruption with Mister Fyber.</p>
-                    
-                    <div style="margin-top: 20px; padding: 15px; background-color: #f8f9fa; border-left: 4px solid #dc3545;">
-                        <p><strong>Reason:</strong> ${reason}</p>
-                        <p><strong>Estimated Duration:</strong> ${duration}</p>
-                    </div>
-                    
-                    <p>We apologize for any inconvenience. Our team is working to restore service as soon as possible.</p>
-                    
-                    <hr>
-                    <p style="color: #666; font-size: 12px;">This is an automated notification from Mister Fyber.</p>
-                </div>
-            </body>
-            </html>
-        `;
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <meta charset="UTF-8">
+          <title>Service Interruption</title>
+      </head>
+      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+          <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+              <h2 style="color: #dc3545;">⚠️ Service Interruption</h2>
+              <p>Hello ${user.firstName || user.email},</p>
+              <p>We want to inform you about a service interruption with Mister Fyber.</p>
+              
+              <div style="margin-top: 20px; padding: 15px; background-color: #f8f9fa; border-left: 4px solid #dc3545;">
+                  <p><strong>Reason:</strong> ${reason}</p>
+                  <p><strong>Estimated Duration:</strong> ${duration}</p>
+              </div>
+              
+              <p>We apologize for any inconvenience. Our team is working to restore service as soon as possible.</p>
+              
+              <hr>
+              <p style="color: #666; font-size: 12px;">This is an automated notification from Mister Fyber.</p>
+          </div>
+      </body>
+      </html>
+    `;
 
     await this.sendEmail(user.email, "Service Interruption Notice", html);
 
     const adminHtml = `
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                <h2 style="color: #dc3545;">⚠️ Service Interruption Reported</h2>
-                <p><strong>User:</strong> ${user.firstName || ""} ${user.lastName || ""} (${user.email})</p>
-                <p><strong>Reason:</strong> ${reason}</p>
-                <p><strong>Estimated Duration:</strong> ${duration}</p>
-                <p><strong>Reported:</strong> ${new Date().toLocaleString()}</p>
-            </div>
-        `;
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+          <h2 style="color: #dc3545;">⚠️ Service Interruption Reported</h2>
+          <p><strong>User:</strong> ${user.firstName || ""} ${user.lastName || ""} (${user.email})</p>
+          <p><strong>Reason:</strong> ${reason}</p>
+          <p><strong>Estimated Duration:</strong> ${duration}</p>
+          <p><strong>Reported:</strong> ${new Date().toLocaleString()}</p>
+      </div>
+    `;
     await this.sendToAdmin(`Service Interruption: ${user.email}`, adminHtml);
   }
 }
