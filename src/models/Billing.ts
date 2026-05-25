@@ -1,4 +1,3 @@
-// models/Billing.ts
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IBilling extends Document {
@@ -100,9 +99,7 @@ const BillingSchema: Schema = new Schema(
     reminderDueDateSent: { type: Boolean, default: false },
     suspensionNotified: { type: Boolean, default: false },
   },
-  {
-    timestamps: true,
-  },
+  { timestamps: true },
 );
 
 BillingSchema.pre("validate", function (next) {

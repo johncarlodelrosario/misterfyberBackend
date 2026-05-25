@@ -1,4 +1,3 @@
-// routes/billingRoutes.ts - COMPLETE WORKING VERSION
 import express from "express";
 import {
   startBilling,

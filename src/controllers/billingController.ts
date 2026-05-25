@@ -1,4 +1,3 @@
-// controllers/billingController.ts - COMPLETE WORKING VERSION (FINAL FIXED)
 import { Request, Response, NextFunction } from "express";
 import Billing from "../models/Billing";
 import BillingCycle from "../models/BillingCycle";
@@ -73,22 +72,25 @@ async function getOrCreateSettings(): Promise<any> {
   return settings;
 }
 
-function getDueDateForProRated(installationDate: Date, settings: any): Date {
-  const year = installationDate.getFullYear();
-  const month = installationDate.getMonth();
-  let dueDay = settings.proRatedDueDay || 25;
-  const lastDayOfMonth = new Date(year, month + 1, 0).getDate();
-  if (dueDay > lastDayOfMonth) {
-    dueDay = lastDayOfMonth;
-  }
-  // Due date is 25th of the same month
-  const dueDate = new Date(year, month, dueDay, 23, 59, 59, 999);
-  if (dueDate < installationDate) {
-    return new Date(year, month, lastDayOfMonth, 23, 59, 59, 999);
-  }
-  return dueDate;
+// FIXED: Get the last day of the month for a given date (e.g., May 31, not June 1)
+function getEndOfMonth(date: Date): Date {
+  const year = date.getFullYear();
+  const month = date.getMonth();
+  // This correctly returns the last day of the month (e.g., May 31, 2026)
+  return new Date(year, month + 1, 0, 23, 59, 59, 999);
 }
 
+function getStartOfNextMonth(date: Date): Date {
+  const year = date.getFullYear();
+  const month = date.getMonth();
+  return new Date(year, month + 1, 1, 0, 0, 0, 0);
+}
+
+function formatDateForDisplay(date: Date): string {
+  return `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
+}
+
+// FIXED: Due date is on the 5th (not 6th) of the next month
 function getDueDateForMonthly(billingStartDate: Date, settings: any): Date {
   const dueDay = settings.monthlyDueDay || 5;
   const dueDate = new Date(billingStartDate);
@@ -104,6 +106,22 @@ function getDueDateForMonthly(billingStartDate: Date, settings: any): Date {
   }
   dueDate.setDate(targetDay);
   dueDate.setHours(23, 59, 59, 999);
+  return dueDate;
+}
+
+function getDueDateForProRated(installationDate: Date, settings: any): Date {
+  const dueDay = settings.proRatedDueDay || 25;
+  const year = installationDate.getFullYear();
+  const month = installationDate.getMonth();
+  const lastDayOfMonth = new Date(year, month + 1, 0).getDate();
+  let targetDay = dueDay;
+  if (targetDay > lastDayOfMonth) {
+    targetDay = lastDayOfMonth;
+  }
+  const dueDate = new Date(year, month, targetDay, 23, 59, 59, 999);
+  if (dueDate < installationDate) {
+    return new Date(year, month, lastDayOfMonth, 23, 59, 59, 999);
+  }
   return dueDate;
 }
 
@@ -123,24 +141,6 @@ function getDueDateForRegularMonthly(currentDate: Date, settings: any): Date {
   dueDate.setDate(targetDay);
   dueDate.setHours(23, 59, 59, 999);
   return dueDate;
-}
-
-// FIXED: Get the last day of the month for a given date
-function getEndOfMonth(date: Date): Date {
-  const year = date.getFullYear();
-  const month = date.getMonth();
-  // This correctly returns the last day of the month (e.g., May 31, not June 1)
-  return new Date(year, month + 1, 0, 23, 59, 59, 999);
-}
-
-function getStartOfNextMonth(date: Date): Date {
-  const year = date.getFullYear();
-  const month = date.getMonth();
-  return new Date(year, month + 1, 1, 0, 0, 0, 0);
-}
-
-function formatDateForDisplay(date: Date): string {
-  return `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
 }
 
 // ==================== START BILLING WITH CORRECT FORMULA ====================
@@ -175,8 +175,6 @@ export const startBilling = async (
 
     const plan = user.planId as any;
     const monthlyRate = plan.price;
-
-    // Daily Rate = (Monthly Price × 12) ÷ 365
     const dailyRate = (monthlyRate * 12) / 365;
 
     let installationDate = startDate ? new Date(startDate) : new Date();
@@ -196,10 +194,9 @@ export const startBilling = async (
     }
 
     const installationDay = installationDate.getDate();
-    // Get end of current month (e.g., May 31, 2026)
+    // FIXED: Get end of current month (e.g., May 31, 2026, NOT June 1)
     const currentMonthEnd = getEndOfMonth(installationDate);
     const daysInMonth = currentMonthEnd.getDate();
-    // Days from installation to end of month (inclusive)
     const actualBillableDays = daysInMonth - installationDay + 1;
     const isAfterCutoff = installationDay > billingCutoffDay;
 
@@ -217,7 +214,9 @@ export const startBilling = async (
         proRatedAmount = customAmount;
       }
 
+      // FIXED: Billing period starts on first day of NEXT month
       billingStartDateForCycle = getStartOfNextMonth(installationDate);
+      // FIXED: Billing period ends on last day of that same month
       billingEndDateForCycle = getEndOfMonth(billingStartDateForCycle);
       nextBillingDate = getStartOfNextMonth(billingStartDateForCycle);
 
@@ -243,6 +242,7 @@ export const startBilling = async (
       );
 
       const totalAmount = monthlyRate + proRatedAmount;
+      // FIXED: Due date is on the 5th of the month
       const dueDate = getDueDateForMonthly(billingStartDateForCycle, settings);
 
       createdBill = await Billing.create(
@@ -334,9 +334,10 @@ export const startBilling = async (
         proRatedAmount = customAmount;
       }
 
+      // FIXED: Billing period ends on last day of CURRENT month (e.g., May 31, 2026)
       const billingPeriodStart = installationDate;
-      const billingPeriodEnd = currentMonthEnd; // This is May 31, 2026
-      nextBillingDate = getStartOfNextMonth(installationDate); // This is June 1, 2026
+      const billingPeriodEnd = currentMonthEnd;
+      nextBillingDate = getStartOfNextMonth(installationDate);
 
       const billingCycle = await BillingCycle.create(
         [
@@ -359,7 +360,7 @@ export const startBilling = async (
         { session },
       );
 
-      // Due date for pro-rated bill: 25th of CURRENT month (e.g., May 25, 2026)
+      // FIXED: Due date for pro-rated bill: 25th of CURRENT month (e.g., May 25, 2026)
       const dueDate = getDueDateForProRated(installationDate, settings);
       const annualRate = monthlyRate * 12;
 
@@ -772,10 +773,12 @@ export const pauseBilling = async (
       status: "active",
     }).lean();
     if (!billingCycle) {
-      return res.status(404).json({
-        success: false,
-        message: "No active billing cycle found to pause",
-      });
+      return res
+        .status(404)
+        .json({
+          success: false,
+          message: "No active billing cycle found to pause",
+        });
     }
 
     const unpaidBills = await Billing.findOne({
@@ -784,10 +787,12 @@ export const pauseBilling = async (
     }).lean();
 
     if (unpaidBills) {
-      return res.status(400).json({
-        success: false,
-        message: "User has unpaid bills. Please settle before pausing.",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "User has unpaid bills. Please settle before pausing.",
+        });
     }
 
     const pauseDate = new Date();
@@ -914,10 +919,12 @@ export const resumeBilling = async (
     );
 
     clearAllCache();
-    res.status(200).json({
-      success: true,
-      message: `Service resumed for ${user.firstName}`,
-    });
+    res
+      .status(200)
+      .json({
+        success: true,
+        message: `Service resumed for ${user.firstName}`,
+      });
   } catch (error) {
     await session.abortTransaction();
     next(error);
@@ -1016,10 +1023,12 @@ export const markBillAsPaid = async (
     await emailService.sendPaymentConfirmation(user, payment[0], bill);
 
     clearAllCache();
-    res.status(200).json({
-      success: true,
-      message: `Bill ${bill.invoiceNumber} marked as paid`,
-    });
+    res
+      .status(200)
+      .json({
+        success: true,
+        message: `Bill ${bill.invoiceNumber} marked as paid`,
+      });
   } catch (error) {
     await session.abortTransaction();
     next(error);
@@ -1218,6 +1227,7 @@ export const startMonthlyBilling = async (
 
     const billingEnd = getEndOfMonth(billingStart);
 
+    // FIXED: Due date is on the 5th of the next month
     const dueDate = new Date(billingStart);
     dueDate.setMonth(dueDate.getMonth() + 1);
     let targetDay = monthlyDueDay;
@@ -1287,11 +1297,13 @@ export const startMonthlyBilling = async (
     await emailService.sendInvoice(user, firstMonthlyBill[0]);
 
     clearAllCache();
-    res.status(200).json({
-      success: true,
-      message: "Monthly billing started",
-      data: { firstMonthlyBill: firstMonthlyBill[0] },
-    });
+    res
+      .status(200)
+      .json({
+        success: true,
+        message: "Monthly billing started",
+        data: { firstMonthlyBill: firstMonthlyBill[0] },
+      });
   } catch (error) {
     await session.abortTransaction();
     next(error);
@@ -1349,10 +1361,12 @@ export const stopBilling = async (
 
     await session.commitTransaction();
     clearAllCache();
-    res.status(200).json({
-      success: true,
-      message: `Billing stopped for ${user.firstName}`,
-    });
+    res
+      .status(200)
+      .json({
+        success: true,
+        message: `Billing stopped for ${user.firstName}`,
+      });
   } catch (error) {
     await session.abortTransaction();
     next(error);
@@ -1394,10 +1408,12 @@ export const disconnectClient = async (
 
     await session.commitTransaction();
     clearAllCache();
-    res.status(200).json({
-      success: true,
-      message: `Service disconnected for ${user.firstName}`,
-    });
+    res
+      .status(200)
+      .json({
+        success: true,
+        message: `Service disconnected for ${user.firstName}`,
+      });
   } catch (error) {
     await session.abortTransaction();
     next(error);
@@ -1439,10 +1455,12 @@ export const reconnectClient = async (
 
     await session.commitTransaction();
     clearAllCache();
-    res.status(200).json({
-      success: true,
-      message: `Service reconnected for ${user.firstName}`,
-    });
+    res
+      .status(200)
+      .json({
+        success: true,
+        message: `Service reconnected for ${user.firstName}`,
+      });
   } catch (error) {
     await session.abortTransaction();
     next(error);
@@ -1487,6 +1505,7 @@ export const autoGenerateMonthlyBills = async (
       const billingStart = new Date(cycle.nextBillingDate);
       billingStart.setHours(0, 0, 0, 0);
       const billingEnd = getEndOfMonth(billingStart);
+      // FIXED: Due date is on the 5th of the next month
       const dueDate = getDueDateForRegularMonthly(billingStart, settings);
 
       const existingBill = await Billing.findOne({
@@ -1826,11 +1845,13 @@ export const submitProRatedPayment = async (
     await session.commitTransaction();
 
     clearAllCache();
-    res.status(200).json({
-      success: true,
-      message: "Payment submitted! Awaiting admin confirmation.",
-      data: { status: "pending_confirmation" },
-    });
+    res
+      .status(200)
+      .json({
+        success: true,
+        message: "Payment submitted! Awaiting admin confirmation.",
+        data: { status: "pending_confirmation" },
+      });
   } catch (error) {
     await session.abortTransaction();
     next(error);
@@ -1842,7 +1863,6 @@ export const submitProRatedPayment = async (
 // ==================== SUBMIT MONTHLY PAYMENT ====================
 export const submitMonthlyPayment = submitProRatedPayment;
 
-// Export all functions
 export default {
   startBilling,
   stopBilling,

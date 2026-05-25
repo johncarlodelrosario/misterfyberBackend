@@ -1,4 +1,3 @@
-// models/BillingSettings.ts
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IBillingSettings extends Document {
@@ -22,72 +21,22 @@ export interface IBillingSettings extends Document {
 
 const BillingSettingsSchema: Schema = new Schema(
   {
-    reminderDays: {
-      type: [Number],
-      default: [7, 3, 1],
-    },
-    dueDateDaysAfterPeriod: {
-      type: Number,
-      default: 5,
-    },
-    gracePeriodDays: {
-      type: Number,
-      default: 5,
-    },
-    autoGenerateBills: {
-      type: Boolean,
-      default: true,
-    },
-    autoSendReminders: {
-      type: Boolean,
-      default: true,
-    },
-    autoSuspendOnNonPayment: {
-      type: Boolean,
-      default: true,
-    },
-    billingCycleDay: {
-      type: Number,
-      default: 1,
-    },
-    freeDays: {
-      type: Number,
-      default: 0,
-    },
-    proRatedDueDay: {
-      type: Number,
-      default: 25,
-      min: 1,
-      max: 31,
-    },
-    monthlyDueDay: {
-      type: Number,
-      default: 5,
-      min: 1,
-      max: 31,
-    },
-    billingCutoffDay: {
-      type: Number,
-      default: 24,
-      min: 1,
-      max: 31,
-    },
-    enableAutoBilling: {
-      type: Boolean,
-      default: true,
-    },
-    sendInvoiceOnInstall: {
-      type: Boolean,
-      default: true,
-    },
-    requireAdminActivation: {
-      type: Boolean,
-      default: false,
-    },
+    reminderDays: { type: [Number], default: [7, 3, 1] },
+    dueDateDaysAfterPeriod: { type: Number, default: 5 },
+    gracePeriodDays: { type: Number, default: 5 },
+    autoGenerateBills: { type: Boolean, default: true },
+    autoSendReminders: { type: Boolean, default: true },
+    autoSuspendOnNonPayment: { type: Boolean, default: true },
+    billingCycleDay: { type: Number, default: 1 },
+    freeDays: { type: Number, default: 0 },
+    proRatedDueDay: { type: Number, default: 25, min: 1, max: 31 },
+    monthlyDueDay: { type: Number, default: 5, min: 1, max: 31 },
+    billingCutoffDay: { type: Number, default: 24, min: 1, max: 31 },
+    enableAutoBilling: { type: Boolean, default: true },
+    sendInvoiceOnInstall: { type: Boolean, default: true },
+    requireAdminActivation: { type: Boolean, default: false },
   },
-  {
-    timestamps: true,
-  },
+  { timestamps: true },
 );
 
 BillingSettingsSchema.statics.getDefaultSettings = async function () {
