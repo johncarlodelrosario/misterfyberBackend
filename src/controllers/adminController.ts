@@ -850,7 +850,9 @@ const getTimeAgo = (date: Date): string => {
   return `${diffDays} day${diffDays > 1 ? "s" : ""} ago`;
 };
 
-// ==================== NEW: MANUAL CUSTOMER CREATION ====================
+// ==================== MANUAL CUSTOMER CREATION ====================
+// This creates BOTH application and user account in one go
+// For walk-in customers who don't need to apply online first
 
 export const createManualCustomer = async (
   req: AuthRequest,
@@ -911,7 +913,7 @@ export const createManualCustomer = async (
       });
     }
 
-    // Create application record
+    // Create application record (for tracking)
     const application = await Application.create(
       [
         {
@@ -928,7 +930,7 @@ export const createManualCustomer = async (
           idType: idType || "N/A",
           idNumber: idNumber || "MANUAL-" + Date.now(),
           idImage: "",
-          status: "approved",
+          status: "approved", // Auto-approved since admin creates
           reviewedBy: req.user?._id,
           reviewedAt: new Date(),
           approvalEmailSent: true,
@@ -940,10 +942,8 @@ export const createManualCustomer = async (
 
     const appDoc = application[0];
 
-    // Generate a simple password for the user
+    // Generate username and password for the user
     const generatedPassword = Math.random().toString(36).slice(-8);
-
-    // Create user account
     const username =
       `${firstName.toLowerCase()}.${lastName.toLowerCase()}`.replace(
         /[^a-z0-9.]/g,
@@ -956,6 +956,7 @@ export const createManualCustomer = async (
       counter++;
     }
 
+    // Create user account
     const user = await User.create(
       [
         {
@@ -997,7 +998,6 @@ export const createManualCustomer = async (
 
     // Start billing if requested
     if (startBillingImmediately) {
-      // Create a request object for the billing controller
       const billingReq = {
         body: {
           userId: userDoc._id.toString(),
@@ -1007,7 +1007,6 @@ export const createManualCustomer = async (
         user: req.user,
       } as any;
 
-      // Create a response object to capture the result
       let capturedData: any = null;
       const billingRes = {
         status: (code: number) => ({
@@ -1023,7 +1022,6 @@ export const createManualCustomer = async (
         billingResult = capturedData;
       } catch (billingError) {
         console.error("Error starting billing:", billingError);
-        // Don't fail the whole operation if billing fails
       }
     }
 
@@ -1113,7 +1111,9 @@ export const createManualCustomer = async (
   }
 };
 
-// ==================== NEW: GET CUSTOMERS WITHOUT ACCOUNTS ====================
+// ==================== GET CUSTOMERS WITHOUT ACCOUNTS ====================
+// Returns approved applications that don't have a user account yet
+// These are customers who applied online and got approved but haven't registered
 
 export const getCustomersWithoutAccounts = async (
   req: AuthRequest,
@@ -1123,17 +1123,20 @@ export const getCustomersWithoutAccounts = async (
   try {
     const applications = await Application.find({
       status: "approved",
-      registeredUserId: { $exists: false },
+      registeredUserId: { $exists: false, $eq: null },
+      billingStarted: { $ne: true },
     })
-      .populate("planId", "name price")
+      .populate("planId", "name price speed")
       .sort({ createdAt: -1 })
       .lean();
 
     res.status(200).json({
       success: true,
       data: applications,
+      count: applications.length,
     });
   } catch (error) {
+    console.error("Error in getCustomersWithoutAccounts:", error);
     next(error);
   }
 };

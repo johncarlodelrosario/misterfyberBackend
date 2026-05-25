@@ -290,7 +290,7 @@ class EmailService {
                     
                     <div class="content">
                         <div class="welcome-text">
-                            Hello <strong>${user.firstName || user.username}</strong>!
+                            Hello <strong>${user.firstName || user.email}</strong>!
                         </div>
                         
                         <p>Thank you for choosing <strong>Mister Fyber</strong>. We're excited to have you on board!</p>
@@ -300,7 +300,7 @@ class EmailService {
                             <h3>📋 Account Details</h3>
                             <div class="detail-row">
                                 <span class="detail-label">Username:</span>
-                                <span class="detail-value">${user.username}</span>
+                                <span class="detail-value">${user.email}</span>
                             </div>
                             <div class="detail-row">
                                 <span class="detail-label">Email:</span>
@@ -357,7 +357,7 @@ class EmailService {
 
     await this.sendEmail(
       user.email,
-      `🎉 Welcome to Mister Fyber, ${user.firstName || user.username}!`,
+      `🎉 Welcome to Mister Fyber, ${user.firstName || user.email}!`,
       html,
     );
 
@@ -375,7 +375,7 @@ class EmailService {
                     <hr>
                     <div style="background: #f8f9fa; padding: 15px; border-radius: 5px;">
                         <p><strong>Name:</strong> ${user.firstName || ""} ${user.lastName || ""}</p>
-                        <p><strong>Username:</strong> ${user.username}</p>
+                        <p><strong>Username (Email):</strong> ${user.email}</p>
                         <p><strong>Email:</strong> ${user.email}</p>
                         <p><strong>Phone:</strong> ${user.phoneNumber || "N/A"}</p>
                         <p><strong>Status:</strong> ${user.status || "pending"}</p>
@@ -388,10 +388,7 @@ class EmailService {
             </html>
         `;
 
-    await this.sendToAdmin(
-      `New User Registration: ${user.username}`,
-      adminHtml,
-    );
+    await this.sendToAdmin(`New User Registration: ${user.email}`, adminHtml);
   }
 
   // ==================== APPLICATION EMAILS ====================
@@ -533,7 +530,7 @@ class EmailService {
                         </a>
                     </div>
                     
-                    <p>Use your Application ID: <strong>${application.applicationId}</strong> when registering.</p>
+                    <p>Use your email address as username when registering.</p>
                     
                     ${
                       application.adminNotes
@@ -640,7 +637,7 @@ class EmailService {
             <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
                 <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
                     <h2 style="color: #333;">Password Reset Request</h2>
-                    <p>Hello ${user.firstName || user.username},</p>
+                    <p>Hello ${user.firstName || user.email},</p>
                     <p>You requested a password reset for your Mister Fyber account. Click the button below to reset your password:</p>
                     
                     <div style="text-align: center; margin: 30px 0;">
@@ -702,7 +699,7 @@ class EmailService {
             <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
                 <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
                     <h2 style="color: #333;">🧾 Invoice Ready</h2>
-                    <p>Hello ${user.firstName || user.username},</p>
+                    <p>Hello ${user.firstName || user.email},</p>
                     <p>Your Mister Fyber invoice is now ready for payment.</p>
                     
                     <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
@@ -776,7 +773,7 @@ class EmailService {
             <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
                 <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
                     <h2 style="color: #28a745;">💰 Payment Confirmed!</h2>
-                    <p>Hello ${user.firstName || user.username},</p>
+                    <p>Hello ${user.firstName || user.email},</p>
                     <p>Thank you for your payment to Mister Fyber. Your transaction has been completed successfully.</p>
                     
                     <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
@@ -837,7 +834,7 @@ class EmailService {
             <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
                 <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
                     <h2 style="color: #f39c12;">⚠️ Payment Reminder</h2>
-                    <p>Hello ${user.firstName || user.username},</p>
+                    <p>Hello ${user.firstName || user.email},</p>
                     <p>This is a friendly reminder that your Mister Fyber payment is due soon.</p>
                     
                     <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
@@ -883,7 +880,7 @@ class EmailService {
             <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
                 <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
                     <h2 style="color: #f39c12;">📅 Billing Reminder</h2>
-                    <p>Hello ${user.firstName || user.username},</p>
+                    <p>Hello ${user.firstName || user.email},</p>
                     <p>Your Mister Fyber bill is due on ${dueDate}.</p>
                     
                     <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
@@ -936,7 +933,7 @@ class EmailService {
             <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
                 <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
                     <h2 style="color: #333;">🔄 Account Status Update</h2>
-                    <p>Hello ${user.firstName || user.username},</p>
+                    <p>Hello ${user.firstName || user.email},</p>
                     <div style="padding: 20px; background-color: #f8f9fa; border-left: 4px solid #007bff;">
                         <p>${message}</p>
                     </div>
@@ -985,7 +982,7 @@ class EmailService {
             <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
                 <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
                     <h2 style="color: #333;">📡 Plan Updated</h2>
-                    <p>Hello ${user.firstName || user.username},</p>
+                    <p>Hello ${user.firstName || user.email},</p>
                     <p>Your Mister Fyber plan has been changed successfully.</p>
                     
                     <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
@@ -1038,7 +1035,7 @@ class EmailService {
             <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
                 <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
                     <h2 style="color: #333;">📊 Weekly Service Update</h2>
-                    <p>Hello ${user.firstName || user.username},</p>
+                    <p>Hello ${user.firstName || user.email},</p>
                     <p>Thank you for being a valued Mister Fyber customer. Check your usage and billing status in your dashboard.</p>
                     
                     <div style="text-align: center; margin: 30px 0;">
@@ -1077,7 +1074,7 @@ class EmailService {
             <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
                 <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
                     <h2 style="color: #dc3545;">⚠️ Service Interruption</h2>
-                    <p>Hello ${user.firstName || user.username},</p>
+                    <p>Hello ${user.firstName || user.email},</p>
                     <p>We want to inform you about a service interruption with Mister Fyber.</p>
                     
                     <div style="margin-top: 20px; padding: 15px; background-color: #f8f9fa; border-left: 4px solid #dc3545;">

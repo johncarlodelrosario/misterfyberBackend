@@ -212,25 +212,42 @@ export const submitApplication = async (
         .json({ success: false, message: "Plan selection is required" });
     }
 
-    const [building, plan, existingApplication, pendingApplication] =
-      await Promise.all([
-        Building.findById(buildingId)
-          .lean()
-          .catch(() => null),
-        Plan.findById(planId)
-          .lean()
-          .catch(() => null),
-        Application.findOne({
-          email,
-          status: "approved",
-          registeredUserId: { $exists: false },
-        })
-          .lean()
-          .catch(() => null),
-        Application.findOne({ email, status: "pending" })
-          .lean()
-          .catch(() => null),
-      ]);
+    const normalizedEmail = email?.trim().toLowerCase();
+
+    const existingApplication = await Application.findOne({
+      email: normalizedEmail,
+      status: { $in: ["pending", "approved", "rejected"] },
+    }).lean();
+
+    if (existingApplication) {
+      let message = "";
+      if (existingApplication.status === "pending") {
+        message =
+          "You already have a pending application. Please wait for approval.";
+      } else if (existingApplication.status === "approved") {
+        message =
+          "You already have an approved application. Please create your account using your application ID.";
+      } else if (existingApplication.status === "rejected") {
+        message =
+          "Your previous application was rejected. Please contact support for assistance.";
+      }
+
+      return res.status(400).json({
+        success: false,
+        message: message,
+        applicationId: existingApplication.applicationId,
+        status: existingApplication.status,
+      });
+    }
+
+    const [building, plan] = await Promise.all([
+      Building.findById(buildingId)
+        .lean()
+        .catch(() => null),
+      Plan.findById(planId)
+        .lean()
+        .catch(() => null),
+    ]);
 
     if (!building) {
       return res
@@ -241,23 +258,6 @@ export const submitApplication = async (
       return res.status(400).json({
         success: false,
         message: "This building is not currently accepting applications",
-      });
-    }
-
-    if (existingApplication) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "You already have an approved application. Please create your account using your application ID.",
-        applicationId: existingApplication.applicationId,
-      });
-    }
-
-    if (pendingApplication) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "You already have a pending application. Please wait for approval.",
       });
     }
 
@@ -280,7 +280,7 @@ export const submitApplication = async (
     const applicationData = {
       firstName: firstName?.trim(),
       lastName: lastName?.trim(),
-      email: email?.trim().toLowerCase(),
+      email: normalizedEmail,
       phoneNumber: phoneNumber?.trim(),
       buildingId: building._id,
       buildingName: building.buildingName,
@@ -500,7 +500,7 @@ export const getApplication = async (
   }
 };
 
-// MODIFIED: Approve application with auto-account creation and auto-billing
+// ==================== APPROVE APPLICATION - NO USER ACCOUNT CREATED ====================
 export const approveApplication = async (
   req: AuthRequest,
   res: Response,
@@ -510,7 +510,7 @@ export const approveApplication = async (
   session.startTransaction();
 
   try {
-    const { adminNotes, startBillingImmediately = true } = req.body;
+    const { adminNotes } = req.body;
 
     const application = await Application.findById(req.params.id).populate(
       "planId",
@@ -528,59 +528,7 @@ export const approveApplication = async (
       });
     }
 
-    const plan = application.planId as any;
-
-    // Generate credentials for the user
-    const generatedPassword = Math.random().toString(36).slice(-8);
-    const username =
-      `${application.firstName.toLowerCase()}.${application.lastName.toLowerCase()}`.replace(
-        /[^a-z0-9.]/g,
-        "",
-      );
-    let finalUsername = username;
-    let counter = 1;
-    while (await User.findOne({ username: finalUsername })) {
-      finalUsername = `${username}${counter}`;
-      counter++;
-    }
-
-    // Create user account automatically - handle optional fields
-    const userData: any = {
-      username: finalUsername,
-      email: application.email,
-      password: generatedPassword,
-      firstName: application.firstName,
-      lastName: application.lastName,
-      phoneNumber: application.phoneNumber,
-      planId: application.planId,
-      status: startBillingImmediately ? "pending_activation" : "active",
-      mikrotik: {
-        username: finalUsername,
-        password: generatedPassword,
-        profile: plan?.mikrotikProfile || "default",
-        ipAddress: "",
-        macAddress: "",
-      },
-      billingInfo: {
-        currentBill: 0,
-        autoPay: false,
-      },
-    };
-
-    // Only add optional fields if they exist
-    if (application.buildingId) userData.buildingId = application.buildingId;
-    if (application.buildingName)
-      userData.buildingName = application.buildingName;
-    if (application.floor) userData.floor = application.floor;
-    if (application.unitNumber) userData.unitNumber = application.unitNumber;
-    if (application.idType) userData.idType = application.idType;
-    if (application.idNumber) userData.idNumber = application.idNumber;
-    if (application.idImage) userData.idImage = application.idImage;
-
-    const user = await User.create([userData], { session });
-    const userDoc = user[0];
-
-    // Update application
+    // UPDATE APPLICATION STATUS ONLY - NO USER CREATION
     await Application.updateOne(
       { _id: req.params.id },
       {
@@ -589,40 +537,16 @@ export const approveApplication = async (
           adminNotes: adminNotes || "",
           reviewedBy: req.user?._id || null,
           reviewedAt: new Date(),
-          registeredUserId: userDoc._id,
+          // DO NOT set registeredUserId yet - user will register later
         },
       },
       { session },
     );
 
-    let billingResult = null;
-
-    // Start billing automatically if requested
-    if (startBillingImmediately && plan) {
-      const billingReq = {
-        body: {
-          userId: userDoc._id.toString(),
-          notes: `Auto-started on application approval`,
-        },
-        user: req.user,
-      } as any;
-
-      const billingRes = {
-        status: (code: number) => ({
-          json: (data: any) => {
-            billingResult = data;
-            return data;
-          },
-        }),
-      } as any;
-
-      await startBillingService(billingReq, billingRes, next);
-    }
-
     await session.commitTransaction();
 
-    // Send approval email with credentials
-    const loginUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/login`;
+    // Send approval email WITHOUT credentials - just instructions to register
+    const registerUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/register`;
 
     const emailHtml = `
       <!DOCTYPE html>
@@ -635,24 +559,22 @@ export const approveApplication = async (
         <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
           <h2 style="color: #28a745;">✅ Application Approved!</h2>
           <p>Dear ${application.firstName} ${application.lastName},</p>
-          <p>Great news! Your application to Mister Fyber has been approved. Your account has been automatically created.</p>
+          <p>Great news! Your application to Mister Fyber has been approved.</p>
           
           <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-            <h3 style="margin-top: 0;">Your Account Details:</h3>
+            <h3 style="margin-top: 0;">Your Application Details:</h3>
             <p><strong>Application ID:</strong> ${application.applicationId}</p>
-            <p><strong>Username:</strong> ${finalUsername}</p>
-            <p><strong>Password:</strong> ${generatedPassword}</p>
-            <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
+            <p><strong>Plan:</strong> ${(application.planId as any)?.name || "N/A"}</p>
           </div>
           
           <div style="text-align: center; margin: 30px 0;">
-            <a href="${loginUrl}" style="background-color: #28a745; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px;">
-              Login to Your Account
+            <a href="${registerUrl}" style="background-color: #28a745; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">
+              Create Your Account Now
             </a>
           </div>
           
-          <p><strong>Important:</strong> Please change your password after your first login.</p>
-          ${startBillingImmediately ? `<p>Your billing has been automatically started. You will receive a separate email with your first invoice.</p>` : ""}
+          <p><strong>Important:</strong> You need to create your account using your Application ID. Once registered, the admin will start your billing.</p>
+          
           ${adminNotes ? `<div style="margin-top: 20px; padding: 10px; background-color: #e7f3ff; border-left: 4px solid #007bff;"><strong>Admin Notes:</strong><br>${adminNotes}</div>` : ""}
           
           <hr>
@@ -664,36 +586,20 @@ export const approveApplication = async (
 
     await emailService.sendEmail(
       application.email,
-      `Application Approved - Welcome to Mister Fyber!`,
+      `Application Approved - Create Your Account`,
       emailHtml,
     );
 
     console.log(`✅ Application approved: ${application.applicationId}`);
     console.log(`📧 Approval email sent to: ${application.email}`);
-    if (startBillingImmediately) {
-      console.log(
-        `💰 Billing started automatically for user: ${userDoc.email}`,
-      );
-    }
 
     res.status(200).json({
       success: true,
-      message: startBillingImmediately
-        ? "Application approved. User account created and billing started successfully!"
-        : "Application approved. User account created successfully!",
+      message:
+        "Application approved. Customer can now register using their Application ID.",
       data: {
         applicationId: application.applicationId,
         status: "approved",
-        user: {
-          id: userDoc._id,
-          username: finalUsername,
-          email: userDoc.email,
-        },
-        credentials: {
-          username: finalUsername,
-          password: generatedPassword,
-        },
-        billing: billingResult?.data || null,
       },
     });
   } catch (error) {
@@ -761,7 +667,7 @@ export const rejectApplication = async (
   }
 };
 
-// NEW: Start billing for an existing approved application
+// ==================== START BILLING FOR APPLICATION - CREATES USER ACCOUNT ====================
 export const startBillingForApplication = async (
   req: AuthRequest,
   res: Response,
@@ -799,13 +705,24 @@ export const startBillingForApplication = async (
       });
     }
 
+    // CHECK IF USER ALREADY EXISTS
     let userId = application.registeredUserId;
+    let userExists = false;
 
-    // If no user account exists yet, create one
-    if (!userId) {
+    if (userId) {
+      const existingUser = await User.findById(userId);
+      if (existingUser) {
+        userExists = true;
+      }
+    }
+
+    // CREATE USER ACCOUNT NOW - THIS IS WHEN USER IS CREATED, NOT ON APPROVAL
+    if (!userExists) {
       const plan = application.planId as any;
       const generatedPassword = Math.random().toString(36).slice(-8);
-      const username =
+
+      // Generate username from name
+      let username =
         `${application.firstName.toLowerCase()}.${application.lastName.toLowerCase()}`.replace(
           /[^a-z0-9.]/g,
           "",
@@ -825,7 +742,7 @@ export const startBillingForApplication = async (
         lastName: application.lastName,
         phoneNumber: application.phoneNumber,
         planId: application.planId,
-        status: "pending_activation",
+        status: "pending_activation", // Will become active after first payment
         mikrotik: {
           username: finalUsername,
           password: generatedPassword,
@@ -839,7 +756,6 @@ export const startBillingForApplication = async (
         },
       };
 
-      // Only add optional fields if they exist
       if (application.buildingId) userData.buildingId = application.buildingId;
       if (application.buildingName)
         userData.buildingName = application.buildingName;
@@ -858,7 +774,7 @@ export const startBillingForApplication = async (
         { session },
       );
 
-      // Send credentials email
+      // Send credentials email to user
       const loginUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/login`;
       await emailService.sendEmail(
         application.email,
@@ -871,6 +787,7 @@ export const startBillingForApplication = async (
           <p><strong>Password:</strong> ${generatedPassword}</p>
           <p><strong>Application ID:</strong> ${application.applicationId}</p>
           <a href="${loginUrl}">Click here to login</a>
+          <p>Please change your password after first login.</p>
         `,
       );
     }
@@ -906,7 +823,7 @@ export const startBillingForApplication = async (
 
     res.status(200).json({
       success: true,
-      message: "Billing started successfully for this application!",
+      message: "User account created and billing started successfully!",
       data: result,
     });
   } catch (error) {

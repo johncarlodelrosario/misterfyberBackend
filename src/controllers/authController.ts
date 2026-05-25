@@ -1,3 +1,4 @@
+// controllers/authController.ts - COMPLETE UPDATED FILE
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { randomBytes, createHash } from "crypto";
@@ -137,7 +138,7 @@ export const checkApplication = async (
   }
 };
 
-// ==================== REGISTER WITH APPLICATION ====================
+// ==================== REGISTER WITH APPLICATION - CREATES USER ACCOUNT ====================
 
 export const registerWithApplication = async (
   req: Request,
@@ -203,9 +204,11 @@ export const registerWithApplication = async (
       });
     }
 
+    // CREATE USER ACCOUNT
     let user = await User.findOne({ email: application.email });
 
     if (user) {
+      // Update existing user (if somehow exists but not linked)
       user.username = username;
       user.password = password;
       user.firstName = application.firstName;
@@ -219,7 +222,7 @@ export const registerWithApplication = async (
       user.idNumber = application.idNumber;
       if (application.idImage) user.idImage = application.idImage;
       user.planId = application.planId;
-      user.status = "active";
+      user.status = "active"; // User account is active, but billing not started yet
 
       await user.save();
     } else {
@@ -238,7 +241,7 @@ export const registerWithApplication = async (
         idNumber: application.idNumber,
         idImage: application.idImage || "",
         planId: application.planId,
-        status: "active",
+        status: "active", // Account active
         mikrotik: {
           username: "",
           password: "",
@@ -253,9 +256,11 @@ export const registerWithApplication = async (
       });
     }
 
+    // Link application to user
     application.registeredUserId = user._id;
     await application.save();
 
+    // Set Mikrotik credentials if not set
     if (!user.mikrotik) {
       user.mikrotik = {
         username: "",
@@ -357,7 +362,7 @@ export const registerAdmin = async (
   }
 };
 
-// ==================== REGULAR USER REGISTRATION ====================
+// ==================== REGULAR USER REGISTRATION (DIRECT) ====================
 
 export const register = async (
   req: Request,
@@ -456,7 +461,7 @@ export const createInitialAdmin = async (
   }
 };
 
-// ==================== LOGIN (FIXED) ====================
+// ==================== LOGIN ====================
 
 export const login = async (
   req: Request,

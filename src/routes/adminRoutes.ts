@@ -28,7 +28,7 @@ router.use(authorize("super_admin", "admin", "staff"));
 router.get("/dashboard", getDashboardStats);
 router.get("/recent-activities", getRecentActivities);
 
-// Manual Customer Creation
+// Manual Customer Creation (walk-in customers)
 router.post(
   "/manual-customer",
   [
@@ -40,6 +40,8 @@ router.post(
   ],
   createManualCustomer,
 );
+
+// Get approved applications without user accounts (for starting billing)
 router.get("/customers-without-accounts", getCustomersWithoutAccounts);
 
 // User management
