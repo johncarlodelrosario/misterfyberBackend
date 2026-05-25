@@ -1,4 +1,3 @@
-// controllers/adminController.ts - COMPLETE FIXED FILE
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import User from "../models/User";
@@ -17,10 +16,9 @@ interface AuthRequest extends Request {
   body: any;
 }
 
-// Cache for dashboard stats (5 minutes)
 let dashboardCache: any = null;
 let dashboardCacheTime = 0;
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const CACHE_TTL = 5 * 60 * 1000;
 
 export const getDashboardStats = async (
   req: AuthRequest,
@@ -851,9 +849,6 @@ const getTimeAgo = (date: Date): string => {
 };
 
 // ==================== MANUAL CUSTOMER CREATION ====================
-// This creates BOTH application and user account in one go
-// For walk-in customers who don't need to apply online first
-
 export const createManualCustomer = async (
   req: AuthRequest,
   res: Response,
@@ -880,7 +875,6 @@ export const createManualCustomer = async (
       notes,
     } = req.body;
 
-    // Validation
     if (!firstName || !lastName || !email || !phoneNumber) {
       return res.status(400).json({
         success: false,
@@ -895,7 +889,6 @@ export const createManualCustomer = async (
       });
     }
 
-    // Check if email already exists
     const existingUser = await User.findOne({ email });
     if (existingUser) {
       return res.status(400).json({
@@ -904,7 +897,6 @@ export const createManualCustomer = async (
       });
     }
 
-    // Get plan details
     const plan = await Plan.findById(planId);
     if (!plan) {
       return res.status(404).json({
@@ -913,7 +905,6 @@ export const createManualCustomer = async (
       });
     }
 
-    // Create application record (for tracking)
     const application = await Application.create(
       [
         {
@@ -930,7 +921,7 @@ export const createManualCustomer = async (
           idType: idType || "N/A",
           idNumber: idNumber || "MANUAL-" + Date.now(),
           idImage: "",
-          status: "approved", // Auto-approved since admin creates
+          status: "approved",
           reviewedBy: req.user?._id,
           reviewedAt: new Date(),
           approvalEmailSent: true,
@@ -942,7 +933,6 @@ export const createManualCustomer = async (
 
     const appDoc = application[0];
 
-    // Generate username and password for the user
     const generatedPassword = Math.random().toString(36).slice(-8);
     const username =
       `${firstName.toLowerCase()}.${lastName.toLowerCase()}`.replace(
@@ -956,7 +946,6 @@ export const createManualCustomer = async (
       counter++;
     }
 
-    // Create user account
     const user = await User.create(
       [
         {
@@ -990,13 +979,11 @@ export const createManualCustomer = async (
 
     const userDoc = user[0];
 
-    // Link application to user
     appDoc.registeredUserId = userDoc._id;
     await appDoc.save({ session });
 
     let billingResult = null;
 
-    // Start billing if requested
     if (startBillingImmediately) {
       const billingReq = {
         body: {
@@ -1027,7 +1014,6 @@ export const createManualCustomer = async (
 
     await session.commitTransaction();
 
-    // Send welcome email with credentials
     const loginUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/login`;
 
     const emailHtml = `
@@ -1112,23 +1098,35 @@ export const createManualCustomer = async (
 };
 
 // ==================== GET CUSTOMERS WITHOUT ACCOUNTS ====================
-// Returns approved applications that don't have a user account yet
-// These are customers who applied online and got approved but haven't registered
-
 export const getCustomersWithoutAccounts = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ) => {
   try {
+    console.log("🔍 [ADMIN] Fetching customers without accounts...");
+
     const applications = await Application.find({
       status: "approved",
-      registeredUserId: { $exists: false, $eq: null },
+      $or: [
+        { registeredUserId: { $exists: false } },
+        { registeredUserId: null },
+      ],
       billingStarted: { $ne: true },
     })
       .populate("planId", "name price speed")
       .sort({ createdAt: -1 })
       .lean();
+
+    console.log(
+      `✅ [ADMIN] Found ${applications.length} approved applications without user accounts`,
+    );
+
+    applications.forEach((app, index) => {
+      console.log(
+        `  ${index + 1}. ${app.firstName} ${app.lastName} - ${app.applicationId}`,
+      );
+    });
 
     res.status(200).json({
       success: true,

@@ -1,4 +1,3 @@
-// routes/adminRoutes.ts - COMPLETE FILE
 import express from "express";
 import { body } from "express-validator";
 import {
@@ -20,15 +19,12 @@ import { protect, authorize } from "../middleware/auth";
 
 const router = express.Router();
 
-// All admin routes require authentication and admin role
 router.use(protect);
 router.use(authorize("super_admin", "admin", "staff"));
 
-// Dashboard routes
 router.get("/dashboard", getDashboardStats);
 router.get("/recent-activities", getRecentActivities);
 
-// Manual Customer Creation (walk-in customers)
 router.post(
   "/manual-customer",
   [
@@ -41,10 +37,8 @@ router.post(
   createManualCustomer,
 );
 
-// Get approved applications without user accounts (for starting billing)
 router.get("/customers-without-accounts", getCustomersWithoutAccounts);
 
-// User management
 router.get("/users", getAllUsers);
 router.get("/users/:id", getUser);
 router.put("/users/:id", updateUser);
@@ -52,11 +46,9 @@ router.delete("/users/:id", deleteUser);
 router.put("/users/:id/approve", approveUser);
 router.put("/users/:id/suspend", suspendUser);
 
-// Payment and billing
 router.get("/payments", getAllPayments);
 router.get("/bills", getAllBills);
 
-// Reports
 router.post(
   "/reports",
   [

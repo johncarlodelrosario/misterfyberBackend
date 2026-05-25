@@ -1,4 +1,3 @@
-// controllers/applicationController.ts - COMPLETE UPDATED FILE
 import { Request, Response, NextFunction } from "express";
 import Application from "../models/Application";
 import Plan from "../models/Plan";
@@ -742,7 +741,7 @@ export const startBillingForApplication = async (
         lastName: application.lastName,
         phoneNumber: application.phoneNumber,
         planId: application.planId,
-        status: "pending_activation", // Will become active after first payment
+        status: "pending_activation",
         mikrotik: {
           username: finalUsername,
           password: generatedPassword,
