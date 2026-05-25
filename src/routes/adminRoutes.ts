@@ -15,18 +15,21 @@ import {
   createManualCustomer,
   getCustomersWithoutAccounts,
 } from "../controllers/adminController";
-import { protect, authorize } from "../middleware/auth";
+import { optionalAuth, adminMiddleware } from "../middleware/auth";
 
 const router = express.Router();
 
-router.use(protect);
-router.use(authorize("super_admin", "admin", "staff"));
+// Use optional auth para hindi mag-error kahit walang login
+router.use(optionalAuth);
 
+// Dashboard routes (viewable kahit walang login)
 router.get("/dashboard", getDashboardStats);
 router.get("/recent-activities", getRecentActivities);
 
+// Manual Customer Creation - need admin role
 router.post(
   "/manual-customer",
+  adminMiddleware,
   [
     body("firstName").notEmpty().withMessage("First name is required"),
     body("lastName").notEmpty().withMessage("Last name is required"),
@@ -37,20 +40,29 @@ router.post(
   createManualCustomer,
 );
 
-router.get("/customers-without-accounts", getCustomersWithoutAccounts);
+// Get customers without accounts - need admin role
+router.get(
+  "/customers-without-accounts",
+  adminMiddleware,
+  getCustomersWithoutAccounts,
+);
 
-router.get("/users", getAllUsers);
-router.get("/users/:id", getUser);
-router.put("/users/:id", updateUser);
-router.delete("/users/:id", deleteUser);
-router.put("/users/:id/approve", approveUser);
-router.put("/users/:id/suspend", suspendUser);
+// User management - need admin role
+router.get("/users", adminMiddleware, getAllUsers);
+router.get("/users/:id", adminMiddleware, getUser);
+router.put("/users/:id", adminMiddleware, updateUser);
+router.delete("/users/:id", adminMiddleware, deleteUser);
+router.put("/users/:id/approve", adminMiddleware, approveUser);
+router.put("/users/:id/suspend", adminMiddleware, suspendUser);
 
-router.get("/payments", getAllPayments);
-router.get("/bills", getAllBills);
+// Payment and billing - need admin role
+router.get("/payments", adminMiddleware, getAllPayments);
+router.get("/bills", adminMiddleware, getAllBills);
 
+// Reports - need admin role
 router.post(
   "/reports",
+  adminMiddleware,
   [
     body("type")
       .isIn(["revenue", "users", "plans", "billing"])
