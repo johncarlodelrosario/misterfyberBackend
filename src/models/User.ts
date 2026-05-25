@@ -1,4 +1,4 @@
-// models/User.ts - COMPLETE WITH APPLICATION LINK
+// models/User.ts - COMPLETE WITH CORRECT STATUS ENUM
 import mongoose, { Schema, Document } from "mongoose";
 import bcrypt from "bcryptjs";
 
@@ -24,8 +24,14 @@ export interface IUser extends Document {
   idImage?: string;
   profilePicture?: string;
   planId?: mongoose.Types.ObjectId;
-  applicationId?: string; // LINK to application
-  status: "active" | "inactive" | "suspended" | "pending" | "paused";
+  applicationId?: string;
+  status:
+    | "active"
+    | "inactive"
+    | "suspended"
+    | "pending"
+    | "paused"
+    | "pending_activation";
   lastLogin?: Date;
   failedLoginAttempts: number;
   lastFailedLogin?: Date;
@@ -88,10 +94,17 @@ const UserSchema: Schema = new Schema(
     idImage: { type: String },
     profilePicture: { type: String },
     planId: { type: Schema.Types.ObjectId, ref: "Plan" },
-    applicationId: { type: String, index: true }, // LINK to application
+    applicationId: { type: String, index: true },
     status: {
       type: String,
-      enum: ["active", "inactive", "suspended", "pending", "paused"],
+      enum: [
+        "active",
+        "inactive",
+        "suspended",
+        "pending",
+        "paused",
+        "pending_activation",
+      ],
       default: "pending",
     },
     lastLogin: { type: Date },
