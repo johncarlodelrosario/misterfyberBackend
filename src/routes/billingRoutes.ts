@@ -1,4 +1,5 @@
 import express from "express";
+import { optionalAuth, adminMiddleware } from "../middleware/auth";
 import {
   startBilling,
   stopBilling,
@@ -26,101 +27,41 @@ import {
   submitProRatedPayment,
   submitMonthlyPayment,
 } from "../controllers/billingController";
-import { authMiddleware, adminMiddleware } from "../middleware/auth";
 
 const router = express.Router();
 
-// ==================== ADMIN ROUTES ====================
+// ==================== USE OPTIONAL AUTH PARA WALANG "NOT AUTHORIZED" ERROR ====================
+router.use(optionalAuth);
 
-// Settings
-router.get("/settings", authMiddleware, getBillingSettings);
-router.put("/settings", authMiddleware, adminMiddleware, updateBillingSettings);
-router.get(
-  "/settings/admin",
-  authMiddleware,
-  adminMiddleware,
-  getBillingSettingsAdmin,
-);
-router.put(
-  "/settings/admin",
-  authMiddleware,
-  adminMiddleware,
-  updateBillingSettingsAdmin,
-);
+// ==================== ADMIN ROUTES (VIEW ONLY - PUBLIC, NO LOGIN NEEDED) ====================
+router.get("/settings", getBillingSettings);
+router.get("/cycles", getAllBillingCycles);
+router.get("/all-bills", getAllBills);
+router.get("/summary", getBillingSummaryAdmin);
+router.get("/pending-pro-rated", getPendingProRatedBills);
+router.get("/pending-activations", getPendingActivations);
 
-// Summary
-router.get("/summary", authMiddleware, adminMiddleware, getBillingSummaryAdmin);
+// ==================== ADMIN ROUTES (NEED ADMIN ROLE FOR ACTIONS) ====================
+router.put("/settings", adminMiddleware, updateBillingSettings);
+router.get("/settings/admin", adminMiddleware, getBillingSettingsAdmin);
+router.put("/settings/admin", adminMiddleware, updateBillingSettingsAdmin);
+router.put("/mark-paid/:billId", adminMiddleware, markBillAsPaid);
+router.post("/confirm-pro-rated", adminMiddleware, confirmProRatedPayment);
+router.post("/start-monthly", adminMiddleware, startMonthlyBilling);
+router.post("/start", adminMiddleware, startBilling);
+router.post("/stop", adminMiddleware, stopBilling);
+router.post("/pause", adminMiddleware, pauseBilling);
+router.post("/resume", adminMiddleware, resumeBilling);
+router.post("/disconnect", adminMiddleware, disconnectClient);
+router.post("/reconnect", adminMiddleware, reconnectClient);
+router.post("/auto-generate", adminMiddleware, autoGenerateMonthlyBills);
+router.post("/auto-reminders", adminMiddleware, autoSendReminders);
+router.post("/auto-suspend", adminMiddleware, autoSuspendOverdue);
 
-// Billing Cycles
-router.get("/cycles", authMiddleware, adminMiddleware, getAllBillingCycles);
-
-// Bills
-router.get("/all-bills", authMiddleware, adminMiddleware, getAllBills);
-router.put(
-  "/mark-paid/:billId",
-  authMiddleware,
-  adminMiddleware,
-  markBillAsPaid,
-);
-
-// Pending Actions
-router.get(
-  "/pending-pro-rated",
-  authMiddleware,
-  adminMiddleware,
-  getPendingProRatedBills,
-);
-router.get(
-  "/pending-activations",
-  authMiddleware,
-  adminMiddleware,
-  getPendingActivations,
-);
-router.post(
-  "/confirm-pro-rated",
-  authMiddleware,
-  adminMiddleware,
-  confirmProRatedPayment,
-);
-router.post(
-  "/start-monthly",
-  authMiddleware,
-  adminMiddleware,
-  startMonthlyBilling,
-);
-
-// Billing Actions
-router.post("/start", authMiddleware, adminMiddleware, startBilling);
-router.post("/stop", authMiddleware, adminMiddleware, stopBilling);
-router.post("/pause", authMiddleware, adminMiddleware, pauseBilling);
-router.post("/resume", authMiddleware, adminMiddleware, resumeBilling);
-router.post("/disconnect", authMiddleware, adminMiddleware, disconnectClient);
-router.post("/reconnect", authMiddleware, adminMiddleware, reconnectClient);
-
-// Auto Jobs (for cron)
-router.post(
-  "/auto-generate",
-  authMiddleware,
-  adminMiddleware,
-  autoGenerateMonthlyBills,
-);
-router.post(
-  "/auto-reminders",
-  authMiddleware,
-  adminMiddleware,
-  autoSendReminders,
-);
-router.post(
-  "/auto-suspend",
-  authMiddleware,
-  adminMiddleware,
-  autoSuspendOverdue,
-);
-
-// ==================== USER ROUTES ====================
-router.get("/user/current", authMiddleware, getUserCurrentBilling);
-router.get("/user/history", authMiddleware, getUserBillingHistory);
-router.post("/user/submit-pro-rated", authMiddleware, submitProRatedPayment);
-router.post("/user/submit-monthly", authMiddleware, submitMonthlyPayment);
+// ==================== USER ROUTES (NEED AUTH FOR ACTIONS) ====================
+router.get("/user/current", getUserCurrentBilling);
+router.get("/user/history", getUserBillingHistory);
+router.post("/user/submit-pro-rated", submitProRatedPayment);
+router.post("/user/submit-monthly", submitMonthlyPayment);
 
 export default router;

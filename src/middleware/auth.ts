@@ -1,10 +1,8 @@
-// middleware/auth.ts - COMPLETELY FIXED VERSION - NO TYPESCRIPT ERRORS
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import User from "../models/User";
 import Admin from "../models/Admin";
 
-// EXTEND Request interface properly with all properties
 export interface AuthRequest extends Request {
   user?: any;
   admin?: any;
@@ -13,6 +11,59 @@ export interface AuthRequest extends Request {
   authorization?: string;
 }
 
+// ==================== OPTIONAL AUTH - HINDI MAG EERROR KAHIT WALANG TOKEN ====================
+export const optionalAuth = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  let token: string | undefined;
+
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith("Bearer")) {
+    token = authHeader.split(" ")[1];
+  } else if (req.cookies && req.cookies.token) {
+    token = req.cookies.token;
+  }
+
+  if (!token) {
+    console.log("[Auth] No token found - continuing as public user");
+    req.user = null;
+    return next();
+  }
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as {
+      id: string;
+      role?: string;
+    };
+
+    if (decoded.role) {
+      const admin = await Admin.findById(decoded.id);
+      if (admin) {
+        req.user = admin;
+        console.log(`✅ Authenticated Admin: ${admin.email}`);
+      } else {
+        req.user = null;
+      }
+    } else {
+      const user = await User.findById(decoded.id);
+      if (user) {
+        req.user = user;
+        console.log(`✅ Authenticated User: ${user.email}`);
+      } else {
+        req.user = null;
+      }
+    }
+    next();
+  } catch (error: any) {
+    console.log("[Auth] Invalid token - continuing as public user");
+    req.user = null;
+    next();
+  }
+};
+
+// ==================== REQUIRED AUTH - MAG EERROR KUNG WALANG TOKEN ====================
 export const authMiddleware = async (
   req: AuthRequest,
   res: Response,
@@ -20,13 +71,10 @@ export const authMiddleware = async (
 ) => {
   let token: string | undefined;
 
-  // Check for token in headers
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith("Bearer")) {
     token = authHeader.split(" ")[1];
-  }
-  // Check for token in cookies
-  else if (req.cookies && req.cookies.token) {
+  } else if (req.cookies && req.cookies.token) {
     token = req.cookies.token;
   }
 
@@ -49,7 +97,6 @@ export const authMiddleware = async (
       role: decoded.role,
     });
 
-    // Check if it's an admin token (has role field)
     if (decoded.role) {
       const admin = await Admin.findById(decoded.id);
       if (!admin) {
@@ -60,7 +107,6 @@ export const authMiddleware = async (
       req.user = admin;
       console.log(`✅ Authenticated Admin: ${admin.email} (${admin.role})`);
     } else {
-      // Regular user (no role field in token)
       const user = await User.findById(decoded.id);
       if (!user) {
         return res
@@ -90,7 +136,6 @@ export const adminMiddleware = (
     return res.status(401).json({ success: false, message: "Not authorized" });
   }
 
-  // Check if user has admin role
   if (
     !req.user.role ||
     (req.user.role !== "super_admin" && req.user.role !== "admin")

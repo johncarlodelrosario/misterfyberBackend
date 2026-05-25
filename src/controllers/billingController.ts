@@ -72,11 +72,9 @@ async function getOrCreateSettings(): Promise<any> {
   return settings;
 }
 
-// FIXED: Get the last day of the month for a given date (e.g., May 31, not June 1)
 function getEndOfMonth(date: Date): Date {
   const year = date.getFullYear();
   const month = date.getMonth();
-  // This correctly returns the last day of the month (e.g., May 31, 2026)
   return new Date(year, month + 1, 0, 23, 59, 59, 999);
 }
 
@@ -90,7 +88,6 @@ function formatDateForDisplay(date: Date): string {
   return `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
 }
 
-// FIXED: Due date is on the 5th (not 6th) of the next month
 function getDueDateForMonthly(billingStartDate: Date, settings: any): Date {
   const dueDay = settings.monthlyDueDay || 5;
   const dueDate = new Date(billingStartDate);
@@ -143,12 +140,35 @@ function getDueDateForRegularMonthly(currentDate: Date, settings: any): Date {
   return dueDate;
 }
 
+// ==================== CHECK ADMIN FUNCTION ====================
+function checkAdmin(req: AuthRequest, res: Response): boolean {
+  if (!req.user || !req.user.role) {
+    res.status(401).json({
+      success: false,
+      message: "You must be logged in as admin to perform this action",
+    });
+    return false;
+  }
+  const role = req.user.role;
+  if (role !== "super_admin" && role !== "admin" && role !== "staff") {
+    res.status(403).json({
+      success: false,
+      message: "Admin access required for this action",
+    });
+    return false;
+  }
+  return true;
+}
+
 // ==================== START BILLING WITH CORRECT FORMULA ====================
 export const startBilling = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ) => {
+  // CHECK IF ADMIN
+  if (!checkAdmin(req, res)) return;
+
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -194,7 +214,6 @@ export const startBilling = async (
     }
 
     const installationDay = installationDate.getDate();
-    // FIXED: Get end of current month (e.g., May 31, 2026, NOT June 1)
     const currentMonthEnd = getEndOfMonth(installationDate);
     const daysInMonth = currentMonthEnd.getDate();
     const actualBillableDays = daysInMonth - installationDay + 1;
@@ -208,15 +227,12 @@ export const startBilling = async (
     let billingStatus = "pending_activation";
 
     if (isAfterCutoff) {
-      // SCENARIO B: Installation Day 25-31 (after cutoff)
       proRatedAmount = Math.round(dailyRate * actualBillableDays * 100) / 100;
       if (customAmount) {
         proRatedAmount = customAmount;
       }
 
-      // FIXED: Billing period starts on first day of NEXT month
       billingStartDateForCycle = getStartOfNextMonth(installationDate);
-      // FIXED: Billing period ends on last day of that same month
       billingEndDateForCycle = getEndOfMonth(billingStartDateForCycle);
       nextBillingDate = getStartOfNextMonth(billingStartDateForCycle);
 
@@ -242,7 +258,6 @@ export const startBilling = async (
       );
 
       const totalAmount = monthlyRate + proRatedAmount;
-      // FIXED: Due date is on the 5th of the month
       const dueDate = getDueDateForMonthly(billingStartDateForCycle, settings);
 
       createdBill = await Billing.create(
@@ -328,13 +343,11 @@ export const startBilling = async (
         },
       });
     } else {
-      // SCENARIO A: Installation Day 1-24 (on or before cutoff)
       proRatedAmount = Math.round(dailyRate * actualBillableDays * 100) / 100;
       if (customAmount) {
         proRatedAmount = customAmount;
       }
 
-      // FIXED: Billing period ends on last day of CURRENT month (e.g., May 31, 2026)
       const billingPeriodStart = installationDate;
       const billingPeriodEnd = currentMonthEnd;
       nextBillingDate = getStartOfNextMonth(installationDate);
@@ -360,7 +373,6 @@ export const startBilling = async (
         { session },
       );
 
-      // FIXED: Due date for pro-rated bill: 25th of CURRENT month (e.g., May 25, 2026)
       const dueDate = getDueDateForProRated(installationDate, settings);
       const annualRate = monthlyRate * 12;
 
@@ -450,7 +462,7 @@ export const startBilling = async (
   }
 };
 
-// ==================== GET BILLING SETTINGS ====================
+// ==================== GET BILLING SETTINGS (PUBLIC - NO AUTH NEEDED) ====================
 export const getBillingSettings = async (
   req: AuthRequest,
   res: Response,
@@ -501,6 +513,8 @@ export const updateBillingSettings = async (
   res: Response,
   next: NextFunction,
 ) => {
+  if (!checkAdmin(req, res)) return;
+
   try {
     const settings = await BillingSettings.findOneAndUpdate({}, req.body, {
       new: true,
@@ -522,6 +536,8 @@ export const getBillingSettingsAdmin = async (
   res: Response,
   next: NextFunction,
 ) => {
+  if (!checkAdmin(req, res)) return;
+
   try {
     let settings = await BillingSettings.findOne().lean();
     if (!settings) {
@@ -553,6 +569,8 @@ export const updateBillingSettingsAdmin = async (
   res: Response,
   next: NextFunction,
 ) => {
+  if (!checkAdmin(req, res)) return;
+
   try {
     const {
       reminderDays,
@@ -609,6 +627,8 @@ export const getBillingSummaryAdmin = async (
   res: Response,
   next: NextFunction,
 ) => {
+  if (!checkAdmin(req, res)) return;
+
   try {
     const now = Date.now();
     if (summaryCache && now - summaryCache.timestamp < SUMMARY_CACHE_TTL) {
@@ -688,6 +708,8 @@ export const getAllBillingCycles = async (
   res: Response,
   next: NextFunction,
 ) => {
+  if (!checkAdmin(req, res)) return;
+
   try {
     const cacheKey = getCacheKey(req.query);
     const cached = billingCyclesCache.get(cacheKey);
@@ -715,6 +737,8 @@ export const getAllBills = async (
   res: Response,
   next: NextFunction,
 ) => {
+  if (!checkAdmin(req, res)) return;
+
   try {
     const cacheKey = getCacheKey(req.query);
     const cached = billsCache.get(cacheKey);
@@ -749,6 +773,8 @@ export const pauseBilling = async (
   res: Response,
   next: NextFunction,
 ) => {
+  if (!checkAdmin(req, res)) return;
+
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -773,12 +799,10 @@ export const pauseBilling = async (
       status: "active",
     }).lean();
     if (!billingCycle) {
-      return res
-        .status(404)
-        .json({
-          success: false,
-          message: "No active billing cycle found to pause",
-        });
+      return res.status(404).json({
+        success: false,
+        message: "No active billing cycle found to pause",
+      });
     }
 
     const unpaidBills = await Billing.findOne({
@@ -787,12 +811,10 @@ export const pauseBilling = async (
     }).lean();
 
     if (unpaidBills) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "User has unpaid bills. Please settle before pausing.",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "User has unpaid bills. Please settle before pausing.",
+      });
     }
 
     const pauseDate = new Date();
@@ -849,6 +871,8 @@ export const resumeBilling = async (
   res: Response,
   next: NextFunction,
 ) => {
+  if (!checkAdmin(req, res)) return;
+
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -919,12 +943,10 @@ export const resumeBilling = async (
     );
 
     clearAllCache();
-    res
-      .status(200)
-      .json({
-        success: true,
-        message: `Service resumed for ${user.firstName}`,
-      });
+    res.status(200).json({
+      success: true,
+      message: `Service resumed for ${user.firstName}`,
+    });
   } catch (error) {
     await session.abortTransaction();
     next(error);
@@ -939,6 +961,8 @@ export const markBillAsPaid = async (
   res: Response,
   next: NextFunction,
 ) => {
+  if (!checkAdmin(req, res)) return;
+
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -1023,12 +1047,10 @@ export const markBillAsPaid = async (
     await emailService.sendPaymentConfirmation(user, payment[0], bill);
 
     clearAllCache();
-    res
-      .status(200)
-      .json({
-        success: true,
-        message: `Bill ${bill.invoiceNumber} marked as paid`,
-      });
+    res.status(200).json({
+      success: true,
+      message: `Bill ${bill.invoiceNumber} marked as paid`,
+    });
   } catch (error) {
     await session.abortTransaction();
     next(error);
@@ -1043,6 +1065,8 @@ export const getPendingProRatedBills = async (
   res: Response,
   next: NextFunction,
 ) => {
+  if (!checkAdmin(req, res)) return;
+
   try {
     const pendingBills = await Billing.find({
       isProRated: true,
@@ -1063,6 +1087,8 @@ export const getPendingActivations = async (
   res: Response,
   next: NextFunction,
 ) => {
+  if (!checkAdmin(req, res)) return;
+
   try {
     const pendingCycles = await BillingCycle.find({
       status: "pending_activation",
@@ -1085,6 +1111,8 @@ export const confirmProRatedPayment = async (
   res: Response,
   next: NextFunction,
 ) => {
+  if (!checkAdmin(req, res)) return;
+
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -1194,6 +1222,8 @@ export const startMonthlyBilling = async (
   res: Response,
   next: NextFunction,
 ) => {
+  if (!checkAdmin(req, res)) return;
+
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -1227,7 +1257,6 @@ export const startMonthlyBilling = async (
 
     const billingEnd = getEndOfMonth(billingStart);
 
-    // FIXED: Due date is on the 5th of the next month
     const dueDate = new Date(billingStart);
     dueDate.setMonth(dueDate.getMonth() + 1);
     let targetDay = monthlyDueDay;
@@ -1297,13 +1326,11 @@ export const startMonthlyBilling = async (
     await emailService.sendInvoice(user, firstMonthlyBill[0]);
 
     clearAllCache();
-    res
-      .status(200)
-      .json({
-        success: true,
-        message: "Monthly billing started",
-        data: { firstMonthlyBill: firstMonthlyBill[0] },
-      });
+    res.status(200).json({
+      success: true,
+      message: "Monthly billing started",
+      data: { firstMonthlyBill: firstMonthlyBill[0] },
+    });
   } catch (error) {
     await session.abortTransaction();
     next(error);
@@ -1318,6 +1345,8 @@ export const stopBilling = async (
   res: Response,
   next: NextFunction,
 ) => {
+  if (!checkAdmin(req, res)) return;
+
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -1361,12 +1390,10 @@ export const stopBilling = async (
 
     await session.commitTransaction();
     clearAllCache();
-    res
-      .status(200)
-      .json({
-        success: true,
-        message: `Billing stopped for ${user.firstName}`,
-      });
+    res.status(200).json({
+      success: true,
+      message: `Billing stopped for ${user.firstName}`,
+    });
   } catch (error) {
     await session.abortTransaction();
     next(error);
@@ -1381,6 +1408,8 @@ export const disconnectClient = async (
   res: Response,
   next: NextFunction,
 ) => {
+  if (!checkAdmin(req, res)) return;
+
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -1408,12 +1437,10 @@ export const disconnectClient = async (
 
     await session.commitTransaction();
     clearAllCache();
-    res
-      .status(200)
-      .json({
-        success: true,
-        message: `Service disconnected for ${user.firstName}`,
-      });
+    res.status(200).json({
+      success: true,
+      message: `Service disconnected for ${user.firstName}`,
+    });
   } catch (error) {
     await session.abortTransaction();
     next(error);
@@ -1428,6 +1455,8 @@ export const reconnectClient = async (
   res: Response,
   next: NextFunction,
 ) => {
+  if (!checkAdmin(req, res)) return;
+
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -1455,12 +1484,10 @@ export const reconnectClient = async (
 
     await session.commitTransaction();
     clearAllCache();
-    res
-      .status(200)
-      .json({
-        success: true,
-        message: `Service reconnected for ${user.firstName}`,
-      });
+    res.status(200).json({
+      success: true,
+      message: `Service reconnected for ${user.firstName}`,
+    });
   } catch (error) {
     await session.abortTransaction();
     next(error);
@@ -1505,7 +1532,6 @@ export const autoGenerateMonthlyBills = async (
       const billingStart = new Date(cycle.nextBillingDate);
       billingStart.setHours(0, 0, 0, 0);
       const billingEnd = getEndOfMonth(billingStart);
-      // FIXED: Due date is on the 5th of the next month
       const dueDate = getDueDateForRegularMonthly(billingStart, settings);
 
       const existingBill = await Billing.findOne({
@@ -1701,7 +1727,7 @@ export const autoSuspendOverdue = async (req?: AuthRequest, res?: Response) => {
   }
 };
 
-// ==================== GET USER CURRENT BILLING ====================
+// ==================== GET USER CURRENT BILLING (PUBLIC - NO AUTH NEEDED FOR VIEW) ====================
 export const getUserCurrentBilling = async (
   req: AuthRequest,
   res: Response,
@@ -1709,6 +1735,11 @@ export const getUserCurrentBilling = async (
 ) => {
   try {
     const userId = req.user?._id;
+
+    if (!userId) {
+      return res.status(200).json({ success: true, data: null });
+    }
+
     const billingCycle = await BillingCycle.findOne({
       userId,
       status: { $in: ["active", "pending_activation", "paused"] },
@@ -1745,7 +1776,7 @@ export const getUserCurrentBilling = async (
   }
 };
 
-// ==================== GET USER BILLING HISTORY ====================
+// ==================== GET USER BILLING HISTORY (PUBLIC - NO AUTH NEEDED FOR VIEW) ====================
 export const getUserBillingHistory = async (
   req: AuthRequest,
   res: Response,
@@ -1753,6 +1784,14 @@ export const getUserBillingHistory = async (
 ) => {
   try {
     const userId = req.user?._id;
+
+    if (!userId) {
+      return res.status(200).json({
+        success: true,
+        data: { billingHistory: [], total: 0, page: 1, pages: 0 },
+      });
+    }
+
     const { limit = 50, page = 1 } = req.query;
     const skip = (Number(page) - 1) * Number(limit);
 
@@ -1792,6 +1831,12 @@ export const submitProRatedPayment = async (
   try {
     const { billId, referenceNumber, notes } = req.body;
     const userId = req.user?._id;
+
+    if (!userId) {
+      return res
+        .status(401)
+        .json({ success: false, message: "Please login to submit payment" });
+    }
 
     const bill = await Billing.findOne({ _id: billId, userId });
     if (!bill)
@@ -1845,13 +1890,11 @@ export const submitProRatedPayment = async (
     await session.commitTransaction();
 
     clearAllCache();
-    res
-      .status(200)
-      .json({
-        success: true,
-        message: "Payment submitted! Awaiting admin confirmation.",
-        data: { status: "pending_confirmation" },
-      });
+    res.status(200).json({
+      success: true,
+      message: "Payment submitted! Awaiting admin confirmation.",
+      data: { status: "pending_confirmation" },
+    });
   } catch (error) {
     await session.abortTransaction();
     next(error);
