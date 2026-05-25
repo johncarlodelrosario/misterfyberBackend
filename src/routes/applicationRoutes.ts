@@ -1,3 +1,4 @@
+// routes/applicationRoutes.ts - COMPLETE FILE
 import express from "express";
 import { body } from "express-validator";
 import {
@@ -11,6 +12,7 @@ import {
   getProvincesByRegion,
   getCitiesByProvince,
   getBarangaysByCity,
+  startBillingForApplication,
 } from "../controllers/applicationController";
 import { protect, authorize } from "../middleware/auth";
 import { uploadIdCard } from "../middleware/upload";
@@ -53,5 +55,6 @@ router.get("/", getAllApplications);
 router.get("/:id", getApplication);
 router.put("/:id/approve", approveApplication);
 router.put("/:id/reject", rejectApplication);
+router.post("/:applicationId/start-billing", startBillingForApplication);
 
 export default router;

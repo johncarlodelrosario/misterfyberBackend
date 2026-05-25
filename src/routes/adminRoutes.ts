@@ -1,4 +1,4 @@
-// routes/adminRoutes.ts - COMPLETE FIXED FILE
+// routes/adminRoutes.ts - COMPLETE FILE
 import express from "express";
 import { body } from "express-validator";
 import {
@@ -13,6 +13,8 @@ import {
   getAllBills,
   generateReport,
   getRecentActivities,
+  createManualCustomer,
+  getCustomersWithoutAccounts,
 } from "../controllers/adminController";
 import { protect, authorize } from "../middleware/auth";
 
@@ -25,6 +27,20 @@ router.use(authorize("super_admin", "admin", "staff"));
 // Dashboard routes
 router.get("/dashboard", getDashboardStats);
 router.get("/recent-activities", getRecentActivities);
+
+// Manual Customer Creation
+router.post(
+  "/manual-customer",
+  [
+    body("firstName").notEmpty().withMessage("First name is required"),
+    body("lastName").notEmpty().withMessage("Last name is required"),
+    body("email").isEmail().withMessage("Valid email is required"),
+    body("phoneNumber").notEmpty().withMessage("Phone number is required"),
+    body("planId").notEmpty().withMessage("Plan selection is required"),
+  ],
+  createManualCustomer,
+);
+router.get("/customers-without-accounts", getCustomersWithoutAccounts);
 
 // User management
 router.get("/users", getAllUsers);

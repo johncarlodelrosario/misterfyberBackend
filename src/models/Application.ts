@@ -1,3 +1,4 @@
+// models/Application.ts - COMPLETE FILE
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IApplication extends Document {
@@ -20,6 +21,8 @@ export interface IApplication extends Document {
   reviewedBy: mongoose.Types.ObjectId;
   reviewedAt: Date;
   registeredUserId: mongoose.Types.ObjectId;
+  billingStarted: boolean; // NEW: Track if billing has been started
+  approvalEmailSent: boolean; // NEW: Track if approval email sent
   createdAt: Date;
   updatedAt: Date;
 }
@@ -88,6 +91,8 @@ const ApplicationSchema: Schema = new Schema(
     reviewedBy: { type: Schema.Types.ObjectId, ref: "User" },
     reviewedAt: { type: Date },
     registeredUserId: { type: Schema.Types.ObjectId, ref: "User" },
+    billingStarted: { type: Boolean, default: false },
+    approvalEmailSent: { type: Boolean, default: false },
   },
   {
     timestamps: true,
@@ -100,7 +105,6 @@ ApplicationSchema.index({ email: 1 });
 ApplicationSchema.index({ status: 1 });
 ApplicationSchema.index({ buildingId: 1 });
 ApplicationSchema.index({ createdAt: -1 });
-// Compound indexes for common query patterns
 ApplicationSchema.index({ status: 1, createdAt: -1 });
 ApplicationSchema.index({ email: 1, status: 1 });
 ApplicationSchema.index({ buildingId: 1, status: 1 });

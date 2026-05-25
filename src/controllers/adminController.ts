@@ -1,9 +1,14 @@
+// controllers/adminController.ts - COMPLETE FIXED FILE
 import { Request, Response, NextFunction } from "express";
+import mongoose from "mongoose";
 import User from "../models/User";
 import Plan from "../models/Plan";
 import Payment from "../models/Payment";
 import Billing from "../models/Billing";
 import BillingCycle from "../models/BillingCycle";
+import Application from "../models/Application";
+import emailService from "../services/emailService";
+import { startBilling as startBillingService } from "./billingController";
 
 interface AuthRequest extends Request {
   user?: any;
@@ -23,7 +28,6 @@ export const getDashboardStats = async (
   next: NextFunction,
 ) => {
   try {
-    // Check cache
     const now = Date.now();
     if (dashboardCache && now - dashboardCacheTime < CACHE_TTL) {
       return res.status(200).json({
@@ -32,7 +36,6 @@ export const getDashboardStats = async (
       });
     }
 
-    // Run ALL queries in PARALLEL - MUCH FASTER!
     const [
       totalUsers,
       activeUsers,
@@ -48,6 +51,7 @@ export const getDashboardStats = async (
       userGrowthData,
       planDistribution,
       recentPayments,
+      pendingApplications,
     ] = await Promise.all([
       User.countDocuments(),
       User.countDocuments({ status: "active" }),
@@ -85,7 +89,6 @@ export const getDashboardStats = async (
       }),
       BillingCycle.countDocuments({ status: "active" }),
       BillingCycle.countDocuments({ "pendingPlanChange.status": "pending" }),
-      // Monthly revenue for chart - LAST 6 MONTHS only (not 12)
       Payment.aggregate([
         {
           $match: {
@@ -106,7 +109,6 @@ export const getDashboardStats = async (
         },
         { $sort: { "_id.year": 1, "_id.month": 1 } },
       ]),
-      // User growth for chart - LAST 6 MONTHS only
       User.aggregate([
         {
           $match: {
@@ -145,6 +147,7 @@ export const getDashboardStats = async (
         .limit(5)
         .populate("userId", "firstName lastName email")
         .lean(),
+      Application.countDocuments({ status: "pending" }),
     ]);
 
     const months = [
@@ -235,9 +238,11 @@ export const getDashboardStats = async (
         activeCycles: activeBillingCycles,
         pendingChanges: pendingPlanChanges,
       },
+      applications: {
+        pending: pendingApplications,
+      },
     };
 
-    // Cache the result
     dashboardCache = result;
     dashboardCacheTime = now;
 
@@ -271,7 +276,6 @@ export const getAllUsers = async (
       ];
     }
 
-    // Run count and find in PARALLEL
     const [users, total] = await Promise.all([
       User.find(query)
         .select("-password")
@@ -303,7 +307,6 @@ export const getUser = async (
   try {
     const userId = req.params.id;
 
-    // Run ALL queries in PARALLEL
     const [user, payments, bills, billingCycle] = await Promise.all([
       User.findById(userId).select("-password").populate("planId").lean(),
       Payment.find({ userId }).sort({ createdAt: -1 }).limit(10).lean(),
@@ -358,7 +361,6 @@ export const updateUser = async (
 
     await user.save();
 
-    // Clear dashboard cache when user data changes
     dashboardCache = null;
 
     const updatedUser = await User.findById(user._id)
@@ -399,7 +401,6 @@ export const deleteUser = async (
       await billingCycle.save();
     }
 
-    // Clear dashboard cache
     dashboardCache = null;
 
     res.status(200).json({
@@ -441,7 +442,6 @@ export const approveUser = async (
       await user.save();
     }
 
-    // Clear dashboard cache
     dashboardCache = null;
 
     res.status(200).json({
@@ -479,7 +479,6 @@ export const suspendUser = async (
       await billingCycle.save();
     }
 
-    // Clear dashboard cache
     dashboardCache = null;
 
     res.status(200).json({
@@ -504,7 +503,6 @@ export const getAllPayments = async (
     let query: any = {};
     if (status) query.status = status;
 
-    // Run queries in PARALLEL
     const [payments, total, stats, monthlyStats] = await Promise.all([
       Payment.find(query)
         .populate("userId", "firstName lastName email username")
@@ -578,7 +576,6 @@ export const getAllBills = async (
     if (status) query.status = status;
     if (userId) query.userId = userId;
 
-    // Run queries in PARALLEL
     const [bills, total, stats] = await Promise.all([
       Billing.find(query)
         .populate("userId", "firstName lastName email username")
@@ -738,24 +735,29 @@ export const getRecentActivities = async (
   next: NextFunction,
 ) => {
   try {
-    // Run queries in PARALLEL with limits
-    const [recentPayments, recentUsers, recentBills] = await Promise.all([
-      Payment.find()
-        .sort({ createdAt: -1 })
-        .limit(5)
-        .populate("userId", "firstName lastName email")
-        .lean(),
-      User.find()
-        .sort({ createdAt: -1 })
-        .limit(5)
-        .select("firstName lastName email createdAt status")
-        .lean(),
-      Billing.find()
-        .sort({ createdAt: -1 })
-        .limit(5)
-        .populate("userId", "firstName lastName email")
-        .lean(),
-    ]);
+    const [recentPayments, recentUsers, recentBills, recentApplications] =
+      await Promise.all([
+        Payment.find()
+          .sort({ createdAt: -1 })
+          .limit(5)
+          .populate("userId", "firstName lastName email")
+          .lean(),
+        User.find()
+          .sort({ createdAt: -1 })
+          .limit(5)
+          .select("firstName lastName email createdAt status")
+          .lean(),
+        Billing.find()
+          .sort({ createdAt: -1 })
+          .limit(5)
+          .populate("userId", "firstName lastName email")
+          .lean(),
+        Application.find({ status: "pending" })
+          .sort({ createdAt: -1 })
+          .limit(3)
+          .select("firstName lastName email applicationId status createdAt")
+          .lean(),
+      ]);
 
     const activities = [];
 
@@ -786,6 +788,17 @@ export const getRecentActivities = async (
         icon: "👤",
         time: getTimeAgo(user.createdAt),
         date: user.createdAt,
+      });
+    }
+
+    for (const app of recentApplications) {
+      activities.push({
+        title: "New Application",
+        description: `${app.firstName} ${app.lastName} applied with ID ${app.applicationId}`,
+        type: "application",
+        icon: "📝",
+        time: getTimeAgo(app.createdAt),
+        date: app.createdAt,
       });
     }
 
@@ -837,6 +850,294 @@ const getTimeAgo = (date: Date): string => {
   return `${diffDays} day${diffDays > 1 ? "s" : ""} ago`;
 };
 
+// ==================== NEW: MANUAL CUSTOMER CREATION ====================
+
+export const createManualCustomer = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const {
+      firstName,
+      lastName,
+      email,
+      phoneNumber,
+      buildingId,
+      buildingName,
+      floor,
+      unitNumber,
+      planId,
+      idType,
+      idNumber,
+      startBillingImmediately,
+      installationDate,
+      notes,
+    } = req.body;
+
+    // Validation
+    if (!firstName || !lastName || !email || !phoneNumber) {
+      return res.status(400).json({
+        success: false,
+        message: "First name, last name, email, and phone number are required",
+      });
+    }
+
+    if (!planId) {
+      return res.status(400).json({
+        success: false,
+        message: "Plan selection is required",
+      });
+    }
+
+    // Check if email already exists
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({
+        success: false,
+        message: "A user with this email already exists",
+      });
+    }
+
+    // Get plan details
+    const plan = await Plan.findById(planId);
+    if (!plan) {
+      return res.status(404).json({
+        success: false,
+        message: "Plan not found",
+      });
+    }
+
+    // Create application record
+    const application = await Application.create(
+      [
+        {
+          firstName,
+          lastName,
+          email: email.toLowerCase(),
+          phoneNumber,
+          buildingId: buildingId || null,
+          buildingName: buildingName || "Manual Entry",
+          floor: floor || "",
+          unitNumber: unitNumber || "",
+          notes: notes || "Manually created by admin",
+          planId,
+          idType: idType || "N/A",
+          idNumber: idNumber || "MANUAL-" + Date.now(),
+          idImage: "",
+          status: "approved",
+          reviewedBy: req.user?._id,
+          reviewedAt: new Date(),
+          approvalEmailSent: true,
+          billingStarted: startBillingImmediately || false,
+        },
+      ],
+      { session },
+    );
+
+    const appDoc = application[0];
+
+    // Generate a simple password for the user
+    const generatedPassword = Math.random().toString(36).slice(-8);
+
+    // Create user account
+    const username =
+      `${firstName.toLowerCase()}.${lastName.toLowerCase()}`.replace(
+        /[^a-z0-9.]/g,
+        "",
+      );
+    let finalUsername = username;
+    let counter = 1;
+    while (await User.findOne({ username: finalUsername })) {
+      finalUsername = `${username}${counter}`;
+      counter++;
+    }
+
+    const user = await User.create(
+      [
+        {
+          username: finalUsername,
+          email: email.toLowerCase(),
+          password: generatedPassword,
+          firstName,
+          lastName,
+          phoneNumber,
+          buildingId: buildingId || null,
+          buildingName: buildingName || "Manual Entry",
+          floor: floor || "",
+          unitNumber: unitNumber || "",
+          planId,
+          status: startBillingImmediately ? "pending_activation" : "active",
+          mikrotik: {
+            username: finalUsername,
+            password: generatedPassword,
+            profile: plan.mikrotikProfile || "default",
+            ipAddress: "",
+            macAddress: "",
+          },
+          billingInfo: {
+            currentBill: 0,
+            autoPay: false,
+          },
+        },
+      ],
+      { session },
+    );
+
+    const userDoc = user[0];
+
+    // Link application to user
+    appDoc.registeredUserId = userDoc._id;
+    await appDoc.save({ session });
+
+    let billingResult = null;
+
+    // Start billing if requested
+    if (startBillingImmediately) {
+      // Create a request object for the billing controller
+      const billingReq = {
+        body: {
+          userId: userDoc._id.toString(),
+          startDate: installationDate,
+          notes: notes || "Manual customer created by admin",
+        },
+        user: req.user,
+      } as any;
+
+      // Create a response object to capture the result
+      let capturedData: any = null;
+      const billingRes = {
+        status: (code: number) => ({
+          json: (data: any) => {
+            capturedData = data;
+            return data;
+          },
+        }),
+      } as any;
+
+      try {
+        await startBillingService(billingReq, billingRes, next);
+        billingResult = capturedData;
+      } catch (billingError) {
+        console.error("Error starting billing:", billingError);
+        // Don't fail the whole operation if billing fails
+      }
+    }
+
+    await session.commitTransaction();
+
+    // Send welcome email with credentials
+    const loginUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/login`;
+
+    const emailHtml = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <title>Welcome to Mister Fyber</title>
+      </head>
+      <body style="font-family: Arial, sans-serif; line-height: 1.6;">
+        <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+          <h2 style="color: #28a745;">Welcome to Mister Fyber!</h2>
+          <p>Dear ${firstName} ${lastName},</p>
+          <p>Your account has been created by our admin team. Here are your login credentials:</p>
+          
+          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+            <p><strong>Application ID:</strong> ${appDoc.applicationId}</p>
+            <p><strong>Username:</strong> ${finalUsername}</p>
+            <p><strong>Password:</strong> ${generatedPassword}</p>
+            <p><strong>Plan:</strong> ${plan.name}</p>
+          </div>
+          
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="${loginUrl}" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px;">
+              Login to Your Account
+            </a>
+          </div>
+          
+          <p><strong>Important:</strong> Please change your password after your first login.</p>
+          ${startBillingImmediately ? `<p>Your billing has been started. You will receive a separate email with your first invoice.</p>` : ""}
+          
+          <hr>
+          <p style="color: #666; font-size: 12px;">Mister Fyber - Your trusted internet provider</p>
+        </div>
+      </body>
+      </html>
+    `;
+
+    try {
+      await emailService.sendEmail(
+        email,
+        "Welcome to Mister Fyber - Your Account Details",
+        emailHtml,
+      );
+    } catch (emailError) {
+      console.error("Failed to send welcome email:", emailError);
+    }
+
+    dashboardCache = null;
+
+    res.status(201).json({
+      success: true,
+      message: startBillingImmediately
+        ? "Customer created successfully and billing has been started!"
+        : "Customer created successfully! An email with login credentials has been sent.",
+      data: {
+        application: {
+          id: appDoc._id,
+          applicationId: appDoc.applicationId,
+        },
+        user: {
+          id: userDoc._id,
+          username: finalUsername,
+          email: userDoc.email,
+          firstName: userDoc.firstName,
+          lastName: userDoc.lastName,
+        },
+        billing: billingResult?.data || null,
+        credentials: {
+          username: finalUsername,
+          password: generatedPassword,
+        },
+      },
+    });
+  } catch (error: any) {
+    await session.abortTransaction();
+    console.error("Manual customer creation error:", error);
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
+// ==================== NEW: GET CUSTOMERS WITHOUT ACCOUNTS ====================
+
+export const getCustomersWithoutAccounts = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const applications = await Application.find({
+      status: "approved",
+      registeredUserId: { $exists: false },
+    })
+      .populate("planId", "name price")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    res.status(200).json({
+      success: true,
+      data: applications,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export default {
   getDashboardStats,
   getAllUsers,
@@ -849,4 +1150,6 @@ export default {
   getAllBills,
   generateReport,
   getRecentActivities,
+  createManualCustomer,
+  getCustomersWithoutAccounts,
 };

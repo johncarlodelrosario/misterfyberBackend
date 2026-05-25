@@ -1,4 +1,4 @@
-// models/User.ts - UPDATED (ADDED "paused" to status enum)
+// models/User.ts - COMPLETE WITH APPLICATION LINK
 import mongoose, { Schema, Document } from "mongoose";
 import bcrypt from "bcryptjs";
 
@@ -24,6 +24,7 @@ export interface IUser extends Document {
   idImage?: string;
   profilePicture?: string;
   planId?: mongoose.Types.ObjectId;
+  applicationId?: string; // LINK to application
   status: "active" | "inactive" | "suspended" | "pending" | "paused";
   lastLogin?: Date;
   failedLoginAttempts: number;
@@ -87,6 +88,7 @@ const UserSchema: Schema = new Schema(
     idImage: { type: String },
     profilePicture: { type: String },
     planId: { type: Schema.Types.ObjectId, ref: "Plan" },
+    applicationId: { type: String, index: true }, // LINK to application
     status: {
       type: String,
       enum: ["active", "inactive", "suspended", "pending", "paused"],
@@ -135,6 +137,7 @@ const UserSchema: Schema = new Schema(
 UserSchema.index({ email: 1 }, { unique: true });
 UserSchema.index({ username: 1 }, { unique: true });
 UserSchema.index({ status: 1 });
+UserSchema.index({ applicationId: 1 });
 UserSchema.index({ "mikrotik.username": 1 });
 UserSchema.index({ "billingInfo.billingCycleId": 1 });
 
