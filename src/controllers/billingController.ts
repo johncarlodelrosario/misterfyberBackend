@@ -205,7 +205,7 @@ export const startBilling = async (
     let status = "pending_activation";
 
     if (isAfterCutoff) {
-      // SCENARIO B: Installation Day 25-31
+      // SCENARIO B: Installation Day 25-31 (after cutoff)
       // Pro-rated for remaining days of current month ONLY (no monthly bill yet)
       proRatedAmount = Math.round(dailyRate * actualBillableDays * 100) / 100;
       if (customAmount) {
@@ -341,8 +341,8 @@ export const startBilling = async (
         },
       });
     } else {
-      // SCENARIO A: Installation Day 1-24
-      // Pro-rated only from installation date to end of month
+      // SCENARIO A: Installation Day 1-24 (on or before cutoff)
+      // Pro-rated only from installation date to end of month, due on 25th
       proRatedAmount = Math.round(dailyRate * actualBillableDays * 100) / 100;
       if (customAmount) {
         proRatedAmount = customAmount;
@@ -376,7 +376,7 @@ export const startBilling = async (
       const dueDate = getDueDateForProRated(installationDate, settings);
       const annualRate = monthlyRate * 12;
 
-      // Pro-rated bill only
+      // Pro-rated bill only, due on 25th of current month
       createdBill = await Billing.create(
         [
           {
@@ -785,12 +785,10 @@ export const pauseBilling = async (
       status: "active",
     }).lean();
     if (!billingCycle) {
-      return res
-        .status(404)
-        .json({
-          success: false,
-          message: "No active billing cycle found to pause",
-        });
+      return res.status(404).json({
+        success: false,
+        message: "No active billing cycle found to pause",
+      });
     }
 
     const unpaidBills = await Billing.findOne({
@@ -932,12 +930,10 @@ export const resumeBilling = async (
     );
 
     clearAllCache();
-    res
-      .status(200)
-      .json({
-        success: true,
-        message: `Service resumed for ${user.firstName}`,
-      });
+    res.status(200).json({
+      success: true,
+      message: `Service resumed for ${user.firstName}`,
+    });
   } catch (error) {
     await session.abortTransaction();
     next(error);
@@ -946,7 +942,7 @@ export const resumeBilling = async (
   }
 };
 
-// ==================== MARK BILL AS PAID ====================
+// ==================== MARK BILL AS PAID (FIXED) ====================
 export const markBillAsPaid = async (
   req: AuthRequest,
   res: Response,
@@ -975,6 +971,7 @@ export const markBillAsPaid = async (
 
     const user = bill.userId as any;
 
+    // Create payment record
     const payment = await Payment.create(
       [
         {
@@ -999,12 +996,14 @@ export const markBillAsPaid = async (
       { session },
     );
 
+    // Update bill with paymentId and status
     await Billing.updateOne(
       { _id: bill._id },
       { $set: { status: "paid", paymentId: payment[0]._id } },
       { session },
     );
 
+    // Update billing cycle
     const billingCycle = await BillingCycle.findById(bill.billingCycleId);
     if (billingCycle) {
       billingCycle.paymentHistory = billingCycle.paymentHistory || [];
@@ -1014,16 +1013,19 @@ export const markBillAsPaid = async (
         paidAt: new Date(),
       });
 
-      if (!billingCycle.proRatedPaid) {
+      // If this is a pro-rated bill, mark pro-rated as paid
+      if (bill.isProRated && !billingCycle.proRatedPaid) {
         billingCycle.proRatedPaid = true;
         billingCycle.proRatedPaidAt = new Date();
         if (billingCycle.status === "pending_activation") {
           billingCycle.status = "active";
         }
       }
+
       await billingCycle.save({ session });
     }
 
+    // Update user status if needed
     if (user.status === "pending_activation" || user.status === "suspended") {
       await User.updateOne(
         { _id: user._id },
@@ -1033,15 +1035,15 @@ export const markBillAsPaid = async (
     }
 
     await session.commitTransaction();
+
+    // Send confirmation email
     await emailService.sendPaymentConfirmation(user, payment[0], bill);
 
     clearAllCache();
-    res
-      .status(200)
-      .json({
-        success: true,
-        message: `Bill ${bill.invoiceNumber} marked as paid`,
-      });
+    res.status(200).json({
+      success: true,
+      message: `Bill ${bill.invoiceNumber} marked as paid`,
+    });
   } catch (error) {
     await session.abortTransaction();
     next(error);
@@ -1376,12 +1378,10 @@ export const stopBilling = async (
 
     await session.commitTransaction();
     clearAllCache();
-    res
-      .status(200)
-      .json({
-        success: true,
-        message: `Billing stopped for ${user.firstName}`,
-      });
+    res.status(200).json({
+      success: true,
+      message: `Billing stopped for ${user.firstName}`,
+    });
   } catch (error) {
     await session.abortTransaction();
     next(error);
@@ -1423,12 +1423,10 @@ export const disconnectClient = async (
 
     await session.commitTransaction();
     clearAllCache();
-    res
-      .status(200)
-      .json({
-        success: true,
-        message: `Service disconnected for ${user.firstName}`,
-      });
+    res.status(200).json({
+      success: true,
+      message: `Service disconnected for ${user.firstName}`,
+    });
   } catch (error) {
     await session.abortTransaction();
     next(error);
@@ -1470,12 +1468,10 @@ export const reconnectClient = async (
 
     await session.commitTransaction();
     clearAllCache();
-    res
-      .status(200)
-      .json({
-        success: true,
-        message: `Service reconnected for ${user.firstName}`,
-      });
+    res.status(200).json({
+      success: true,
+      message: `Service reconnected for ${user.firstName}`,
+    });
   } catch (error) {
     await session.abortTransaction();
     next(error);
