@@ -707,6 +707,8 @@ export const startBillingForApplication = async (
     // CHECK IF USER ALREADY EXISTS
     let userId = application.registeredUserId;
     let userExists = false;
+    let createdUsername = null;
+    let createdPassword = null;
 
     if (userId) {
       const existingUser = await User.findById(userId);
@@ -715,10 +717,10 @@ export const startBillingForApplication = async (
       }
     }
 
-    // CREATE USER ACCOUNT NOW - THIS IS WHEN USER IS CREATED, NOT ON APPROVAL
+    // CREATE USER ACCOUNT ONLY IF IT DOESN'T EXIST YET
     if (!userExists) {
       const plan = application.planId as any;
-      const generatedPassword = Math.random().toString(36).slice(-8);
+      createdPassword = Math.random().toString(36).slice(-8);
 
       // Generate username from name
       let username =
@@ -726,25 +728,25 @@ export const startBillingForApplication = async (
           /[^a-z0-9.]/g,
           "",
         );
-      let finalUsername = username;
+      createdUsername = username;
       let counter = 1;
-      while (await User.findOne({ username: finalUsername })) {
-        finalUsername = `${username}${counter}`;
+      while (await User.findOne({ username: createdUsername })) {
+        createdUsername = `${username}${counter}`;
         counter++;
       }
 
       const userData: any = {
-        username: finalUsername,
+        username: createdUsername,
         email: application.email,
-        password: generatedPassword,
+        password: createdPassword,
         firstName: application.firstName,
         lastName: application.lastName,
         phoneNumber: application.phoneNumber,
         planId: application.planId,
         status: "pending_activation",
         mikrotik: {
-          username: finalUsername,
-          password: generatedPassword,
+          username: createdUsername,
+          password: createdPassword,
           profile: plan?.mikrotikProfile || "default",
           ipAddress: "",
           macAddress: "",
@@ -771,23 +773,6 @@ export const startBillingForApplication = async (
         { _id: application._id },
         { $set: { registeredUserId: userId } },
         { session },
-      );
-
-      // Send credentials email to user
-      const loginUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/login`;
-      await emailService.sendEmail(
-        application.email,
-        "Your Mister Fyber Account Details",
-        `
-          <h2>Your Account Has Been Created!</h2>
-          <p>Dear ${application.firstName},</p>
-          <p>Your account has been created. Here are your credentials:</p>
-          <p><strong>Username:</strong> ${finalUsername}</p>
-          <p><strong>Password:</strong> ${generatedPassword}</p>
-          <p><strong>Application ID:</strong> ${application.applicationId}</p>
-          <a href="${loginUrl}">Click here to login</a>
-          <p>Please change your password after first login.</p>
-        `,
       );
     }
 
@@ -820,9 +805,30 @@ export const startBillingForApplication = async (
 
     await session.commitTransaction();
 
+    // SEND CREDENTIALS EMAIL ONLY IF USER WAS JUST CREATED
+    if (!userExists && createdUsername && createdPassword) {
+      const loginUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/login`;
+      await emailService.sendEmail(
+        application.email,
+        "Your Mister Fyber Account Credentials",
+        `
+          <h2>Your Account Has Been Created!</h2>
+          <p>Dear ${application.firstName},</p>
+          <p>Your account has been created. Here are your login credentials:</p>
+          <p><strong>Username:</strong> ${createdUsername}</p>
+          <p><strong>Password:</strong> ${createdPassword}</p>
+          <p><strong>Application ID:</strong> ${application.applicationId}</p>
+          <a href="${loginUrl}">Click here to login</a>
+          <p>Please change your password after first login.</p>
+        `,
+      );
+    }
+
     res.status(200).json({
       success: true,
-      message: "User account created and billing started successfully!",
+      message: userExists
+        ? "Billing started successfully! User already had an account."
+        : "User account created and billing started successfully! Credentials sent via email.",
       data: result,
     });
   } catch (error) {

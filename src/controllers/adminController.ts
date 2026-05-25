@@ -1,855 +1,506 @@
 import { Request, Response, NextFunction } from "express";
-import mongoose from "mongoose";
-import User from "../models/User";
-import Plan from "../models/Plan";
-import Payment from "../models/Payment";
-import Billing from "../models/Billing";
-import BillingCycle from "../models/BillingCycle";
 import Application from "../models/Application";
+import Plan from "../models/Plan";
+import Building from "../models/Building";
+import User from "../models/User";
 import emailService from "../services/emailService";
+import { validationResult } from "express-validator";
+import axios from "axios";
+import mongoose from "mongoose";
 import { startBilling as startBillingService } from "./billingController";
 
 interface AuthRequest extends Request {
   user?: any;
-  query: any;
-  params: any;
+  file?: any;
   body: any;
+  params: any;
+  query: any;
 }
 
-let dashboardCache: any = null;
-let dashboardCacheTime = 0;
-const CACHE_TTL = 5 * 60 * 1000;
+let allRegions: any[] = [];
+let allProvinces: any[] = [];
+let allCities: any[] = [];
+let isDataInitialized = false;
+let lastCacheUpdate = 0;
+const CACHE_DURATION = 24 * 60 * 60 * 1000;
 
-export const getDashboardStats = async (
+async function initializeData() {
+  const now = Date.now();
+  if (isDataInitialized && now - lastCacheUpdate < CACHE_DURATION) return;
+
+  try {
+    console.log("Initializing Philippine address data...");
+    const [regionsRes, provincesRes, citiesRes] = await Promise.all([
+      axios.get("https://psgc.gitlab.io/api/regions/", { timeout: 10000 }),
+      axios.get("https://psgc.gitlab.io/api/provinces/", { timeout: 10000 }),
+      axios.get("https://psgc.gitlab.io/api/cities-municipalities/", {
+        timeout: 10000,
+      }),
+    ]);
+
+    allRegions = regionsRes.data;
+    allProvinces = provincesRes.data;
+    allCities = citiesRes.data;
+    isDataInitialized = true;
+    lastCacheUpdate = now;
+    console.log(
+      `Loaded ${allRegions.length} regions, ${allProvinces.length} provinces, ${allCities.length} cities`,
+    );
+  } catch (error) {
+    console.error("Error initializing address data:", error);
+    throw error;
+  }
+}
+
+export const getRegions = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    await initializeData();
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    const regions = allRegions.map((region: any) => ({
+      code: region.code,
+      name: region.name,
+    }));
+    res.status(200).json({ success: true, data: regions });
+  } catch (error) {
+    console.error("Error fetching regions:", error);
+    next(error);
+  }
+};
+
+export const getProvincesByRegion = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    await initializeData();
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    const { regionCode } = req.params;
+    const provinces = allProvinces
+      .filter((p: any) => p.regionCode === regionCode)
+      .map((province: any) => ({ code: province.code, name: province.name }));
+    res.status(200).json({ success: true, data: provinces });
+  } catch (error) {
+    console.error("Error fetching provinces:", error);
+    next(error);
+  }
+};
+
+export const getCitiesByProvince = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    await initializeData();
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    const { provinceCode } = req.params;
+    const cities = allCities
+      .filter((c: any) => c.provinceCode === provinceCode)
+      .map((city: any) => ({ code: city.code, name: city.name }));
+    res.status(200).json({ success: true, data: cities });
+  } catch (error) {
+    console.error("Error fetching cities:", error);
+    next(error);
+  }
+};
+
+export const getBarangaysByCity = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    const { cityCode } = req.params;
+    const response = await axios.get(
+      `https://psgc.gitlab.io/api/cities-municipalities/${cityCode}/barangays/`,
+      { timeout: 10000 },
+    );
+    const barangays = response.data.map((barangay: any) => ({
+      name: barangay.name,
+    }));
+    res.status(200).json({ success: true, data: barangays });
+  } catch (error) {
+    console.error("Error fetching barangays:", error);
+    next(error);
+  }
+};
+
+const getImageUrl = (imagePath?: string): string => {
+  if (!imagePath) return "";
+  if (
+    imagePath.includes("cloudinary.com") ||
+    imagePath.startsWith("https://res.cloudinary.com")
+  ) {
+    return imagePath;
+  }
+  if (imagePath.startsWith("data:")) return imagePath;
+  const PRODUCTION_URL = "https://misterfyberbackend.onrender.com";
+  let filename = "";
+  const parts = imagePath.split(/[\\\/]/);
+  filename = parts[parts.length - 1];
+  if (!filename || filename === "placeholder.jpg") {
+    return `${PRODUCTION_URL}/uploads/id-cards/placeholder.jpg`;
+  }
+  return `${PRODUCTION_URL}/uploads/id-cards/${filename}`;
+};
+
+export const submitApplication = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ) => {
   try {
-    const now = Date.now();
-    if (dashboardCache && now - dashboardCacheTime < CACHE_TTL) {
-      return res.status(200).json({
-        success: true,
-        data: dashboardCache,
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: "Validation failed",
+        errors: errors.array(),
       });
     }
 
-    const [
-      totalUsers,
-      activeUsers,
-      pendingUsers,
-      suspendedUsers,
-      totalRevenue,
-      monthlyRevenue,
-      overdueBills,
-      upcomingBills,
-      activeBillingCycles,
-      pendingPlanChanges,
-      monthlyRevenueData,
-      userGrowthData,
-      planDistribution,
-      recentPayments,
-      pendingApplications,
-    ] = await Promise.all([
-      User.countDocuments(),
-      User.countDocuments({ status: "active" }),
-      User.countDocuments({ status: "pending" }),
-      User.countDocuments({ status: "suspended" }),
-      Payment.aggregate([
-        { $match: { status: "completed" } },
-        { $group: { _id: null, total: { $sum: "$amount" } } },
-      ]),
-      Payment.aggregate([
-        {
-          $match: {
-            status: "completed",
-            createdAt: {
-              $gte: new Date(
-                new Date().getFullYear(),
-                new Date().getMonth(),
-                1,
-              ),
-            },
-          },
-        },
-        { $group: { _id: null, total: { $sum: "$amount" } } },
-      ]),
-      Billing.countDocuments({
-        status: "overdue",
-        dueDate: { $lt: new Date() },
-      }),
-      Billing.countDocuments({
-        status: "sent",
-        dueDate: {
-          $gte: new Date(),
-          $lte: new Date(new Date().setDate(new Date().getDate() + 7)),
-        },
-      }),
-      BillingCycle.countDocuments({ status: "active" }),
-      BillingCycle.countDocuments({ "pendingPlanChange.status": "pending" }),
-      Payment.aggregate([
-        {
-          $match: {
-            status: "completed",
-            createdAt: {
-              $gte: new Date(new Date().setMonth(new Date().getMonth() - 5)),
-            },
-          },
-        },
-        {
-          $group: {
-            _id: {
-              year: { $year: "$createdAt" },
-              month: { $month: "$createdAt" },
-            },
-            total: { $sum: "$amount" },
-          },
-        },
-        { $sort: { "_id.year": 1, "_id.month": 1 } },
-      ]),
-      User.aggregate([
-        {
-          $match: {
-            createdAt: {
-              $gte: new Date(new Date().setMonth(new Date().getMonth() - 5)),
-            },
-          },
-        },
-        {
-          $group: {
-            _id: {
-              year: { $year: "$createdAt" },
-              month: { $month: "$createdAt" },
-            },
-            count: { $sum: 1 },
-          },
-        },
-        { $sort: { "_id.year": 1, "_id.month": 1 } },
-      ]),
-      User.aggregate([
-        { $match: { planId: { $ne: null } } },
-        { $group: { _id: "$planId", count: { $sum: 1 } } },
-        {
-          $lookup: {
-            from: "plans",
-            localField: "_id",
-            foreignField: "_id",
-            as: "plan",
-          },
-        },
-        { $unwind: "$plan" },
-        { $project: { planName: "$plan.name", count: 1 } },
-      ]),
-      Payment.find({ status: "completed" })
-        .sort({ createdAt: -1 })
-        .limit(5)
-        .populate("userId", "firstName lastName email")
-        .lean(),
-      Application.countDocuments({ status: "pending" }),
-    ]);
-
-    const months = [
-      "Jan",
-      "Feb",
-      "Mar",
-      "Apr",
-      "May",
-      "Jun",
-      "Jul",
-      "Aug",
-      "Sep",
-      "Oct",
-      "Nov",
-      "Dec",
-    ];
-    const currentMonth = new Date().getMonth();
-
-    const monthlyRevenueArray = new Array(12).fill(0);
-    const monthlyUserArray = new Array(12).fill(0);
-
-    for (const item of monthlyRevenueData) {
-      const index = item._id.month - 1;
-      monthlyRevenueArray[index] = item.total;
-    }
-
-    for (const item of userGrowthData) {
-      const index = item._id.month - 1;
-      monthlyUserArray[index] = item.total;
-    }
-
-    const previousMonthRevenue = monthlyRevenueArray[currentMonth - 1] || 0;
-    const currentMonthRevenue = monthlyRevenueArray[currentMonth] || 0;
-    const revenueGrowth =
-      previousMonthRevenue > 0
-        ? Math.round(
-            ((currentMonthRevenue - previousMonthRevenue) /
-              previousMonthRevenue) *
-              100,
-          )
-        : currentMonthRevenue > 0
-          ? 100
-          : 0;
-
-    const previousMonthUsers = monthlyUserArray[currentMonth - 1] || 0;
-    const currentMonthUsers = monthlyUserArray[currentMonth] || 0;
-    const userGrowth =
-      previousMonthUsers > 0
-        ? Math.round(
-            ((currentMonthUsers - previousMonthUsers) / previousMonthUsers) *
-              100,
-          )
-        : currentMonthUsers > 0
-          ? 100
-          : 0;
-
-    const totalActiveUsers = activeUsers;
-    const totalActivePercentage =
-      totalUsers > 0 ? Math.round((totalActiveUsers / totalUsers) * 100) : 0;
-
-    const result = {
-      users: {
-        total: totalUsers,
-        active: totalActiveUsers,
-        pending: pendingUsers,
-        suspended: suspendedUsers,
-        newThisMonth: currentMonthUsers,
-        growth: userGrowth,
-        monthlyGrowth: userGrowth,
-        activeGrowth: totalActivePercentage,
-        growthLabels: months,
-        growthData: monthlyUserArray,
-      },
-      revenue: {
-        total: totalRevenue[0]?.total || 0,
-        monthly: monthlyRevenue[0]?.total || 0,
-        monthlyTotal: currentMonthRevenue,
-        growth: revenueGrowth,
-        monthlyGrowth: revenueGrowth,
-        monthlyLabels: months,
-        monthlyData: monthlyRevenueArray,
-      },
-      plans: planDistribution,
-      recentPayments: recentPayments,
-      billing: {
-        overdue: overdueBills,
-        upcoming: upcomingBills,
-        activeCycles: activeBillingCycles,
-        pendingChanges: pendingPlanChanges,
-      },
-      applications: {
-        pending: pendingApplications,
-      },
-    };
-
-    dashboardCache = result;
-    dashboardCacheTime = now;
-
-    res.status(200).json({
-      success: true,
-      data: result,
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const getAllUsers = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  try {
-    const { page = 1, limit = 10, search, status } = req.query;
-    const skip = (parseInt(page as string) - 1) * parseInt(limit as string);
-    const limitNum = parseInt(limit as string);
-
-    let query: any = {};
-    if (status) query.status = status;
-    if (search) {
-      query.$or = [
-        { username: { $regex: search, $options: "i" } },
-        { email: { $regex: search, $options: "i" } },
-        { firstName: { $regex: search, $options: "i" } },
-        { lastName: { $regex: search, $options: "i" } },
-      ];
-    }
-
-    const [users, total] = await Promise.all([
-      User.find(query)
-        .select("-password")
-        .populate("planId")
-        .limit(limitNum)
-        .skip(skip)
-        .sort({ createdAt: -1 })
-        .lean(),
-      User.countDocuments(query),
-    ]);
-
-    res.status(200).json({
-      success: true,
-      data: users,
-      totalPages: Math.ceil(total / limitNum),
-      currentPage: parseInt(page as string),
-      total,
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const getUser = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  try {
-    const userId = req.params.id;
-
-    const [user, payments, bills, billingCycle] = await Promise.all([
-      User.findById(userId).select("-password").populate("planId").lean(),
-      Payment.find({ userId }).sort({ createdAt: -1 }).limit(10).lean(),
-      Billing.find({ userId }).sort({ createdAt: -1 }).limit(10).lean(),
-      BillingCycle.findOne({ userId, status: "active" })
-        .populate("planId")
-        .lean(),
-    ]);
-
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
-
-    res.status(200).json({
-      success: true,
-      data: { user, payments, bills, billingCycle },
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const updateUser = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  try {
-    let user = await User.findById(req.params.id);
-
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
-
-    const {
+    let {
       firstName,
       lastName,
+      email,
       phoneNumber,
-      address,
+      buildingId,
+      floor,
+      unitNumber,
+      notes,
       planId,
-      status,
-      mikrotik,
+      idType,
+      idNumber,
     } = req.body;
 
-    if (firstName) user.firstName = firstName;
-    if (lastName) user.lastName = lastName;
-    if (phoneNumber) user.phoneNumber = phoneNumber;
-    if (address) user.address = { ...user.address, ...address };
-    if (planId) user.planId = planId;
-    if (status) user.status = status;
-    if (mikrotik) user.mikrotik = { ...user.mikrotik, ...mikrotik };
+    console.log("Received application data:", {
+      firstName,
+      lastName,
+      email,
+      phoneNumber,
+      buildingId,
+      floor,
+      unitNumber,
+      planId,
+    });
 
-    await user.save();
+    if (!buildingId || buildingId === "undefined" || buildingId === "null") {
+      return res
+        .status(400)
+        .json({ success: false, message: "Building selection is required" });
+    }
+    if (!floor || floor === "undefined" || floor === "null") {
+      return res
+        .status(400)
+        .json({ success: false, message: "Floor is required" });
+    }
+    if (!unitNumber || unitNumber === "undefined" || unitNumber === "null") {
+      return res
+        .status(400)
+        .json({ success: false, message: "Unit number is required" });
+    }
+    if (!planId || planId === "undefined" || planId === "null") {
+      return res
+        .status(400)
+        .json({ success: false, message: "Plan selection is required" });
+    }
 
-    dashboardCache = null;
+    const normalizedEmail = email?.trim().toLowerCase();
 
-    const updatedUser = await User.findById(user._id)
-      .select("-password")
+    const existingApplication = await Application.findOne({
+      email: normalizedEmail,
+      status: { $in: ["pending", "approved", "rejected"] },
+    }).lean();
+
+    if (existingApplication) {
+      let message = "";
+      if (existingApplication.status === "pending") {
+        message =
+          "You already have a pending application. Please wait for approval.";
+      } else if (existingApplication.status === "approved") {
+        message =
+          "You already have an approved application. Please create your account using your application ID.";
+      } else if (existingApplication.status === "rejected") {
+        message =
+          "Your previous application was rejected. Please contact support for assistance.";
+      }
+
+      return res.status(400).json({
+        success: false,
+        message: message,
+        applicationId: existingApplication.applicationId,
+        status: existingApplication.status,
+      });
+    }
+
+    const [building, plan] = await Promise.all([
+      Building.findById(buildingId)
+        .lean()
+        .catch(() => null),
+      Plan.findById(planId)
+        .lean()
+        .catch(() => null),
+    ]);
+
+    if (!building) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Building not found" });
+    }
+    if (!building.isActive) {
+      return res.status(400).json({
+        success: false,
+        message: "This building is not currently accepting applications",
+      });
+    }
+
+    if (!plan) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Plan not found" });
+    }
+
+    let idImagePath = "uploads/id-cards/placeholder.jpg";
+    if (req.file) {
+      if (req.file.path) {
+        idImagePath = req.file.path;
+        console.log(`📁 File uploaded: ${idImagePath}`);
+      } else if (req.file.buffer) {
+        idImagePath = `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`;
+      }
+    }
+
+    const applicationData = {
+      firstName: firstName?.trim(),
+      lastName: lastName?.trim(),
+      email: normalizedEmail,
+      phoneNumber: phoneNumber?.trim(),
+      buildingId: building._id,
+      buildingName: building.buildingName,
+      floor: floor?.toString().trim(),
+      unitNumber: unitNumber?.toString().trim(),
+      notes: notes || "",
+      planId,
+      idType: idType?.trim(),
+      idNumber: idNumber?.trim(),
+      idImage: idImagePath,
+      status: "pending",
+    };
+
+    const application = new Application(applicationData);
+    await application.save();
+
+    const populatedApplication = await Application.findById(application._id)
       .populate("planId")
+      .populate("buildingId")
       .lean();
 
-    res.status(200).json({
-      success: true,
-      data: updatedUser,
+    const fullImageUrl = getImageUrl(application.idImage);
+    const populatedPlan = populatedApplication?.planId as any;
+
+    console.log("📊 Plan details for email:", {
+      planId: application.planId,
+      populatedPlanName: populatedPlan?.name,
+      populatedPlanPrice: populatedPlan?.price,
     });
-  } catch (error) {
-    next(error);
-  }
-};
 
-export const deleteUser = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  try {
-    const user = await User.findById(req.params.id);
-
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
+    try {
+      console.log("📧 Sending application received email to client...");
+      await emailService.sendApplicationReceived(application, populatedPlan);
+    } catch (emailError) {
+      console.error("Failed to send client email:", emailError);
     }
 
-    user.status = "inactive";
-    await user.save();
-
-    const billingCycle = await BillingCycle.findOne({
-      userId: user._id,
-      status: "active",
-    });
-    if (billingCycle) {
-      billingCycle.status = "cancelled";
-      await billingCycle.save();
-    }
-
-    dashboardCache = null;
-
-    res.status(200).json({
-      success: true,
-      message: "User deactivated successfully",
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const approveUser = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  try {
-    const user = await User.findById(req.params.id);
-
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
-
-    user.status = "active";
-    await user.save();
-
-    if (!user.mikrotik || !user.mikrotik.username) {
-      if (!user.mikrotik) {
-        user.mikrotik = {
-          username: "",
-          password: "",
-          profile: "",
-          ipAddress: "",
-          macAddress: "",
-        };
-      }
-      user.mikrotik.username = user.username;
-      user.mikrotik.password = Math.random().toString(36).slice(-8);
-      await user.save();
-    }
-
-    dashboardCache = null;
-
-    res.status(200).json({
-      success: true,
-      message: "User approved successfully",
-      data: user,
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const suspendUser = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  try {
-    const user = await User.findById(req.params.id);
-
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
-
-    user.status = "suspended";
-    await user.save();
-
-    const billingCycle = await BillingCycle.findOne({
-      userId: user._id,
-      status: "active",
-    });
-    if (billingCycle) {
-      billingCycle.status = "paused";
-      billingCycle.serviceSuspendedAt = new Date();
-      await billingCycle.save();
-    }
-
-    dashboardCache = null;
-
-    res.status(200).json({
-      success: true,
-      message: "User suspended successfully",
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const getAllPayments = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  try {
-    const { page = 1, limit = 10, status } = req.query;
-    const skip = (parseInt(page as string) - 1) * parseInt(limit as string);
-    const limitNum = parseInt(limit as string);
-
-    let query: any = {};
-    if (status) query.status = status;
-
-    const [payments, total, stats, monthlyStats] = await Promise.all([
-      Payment.find(query)
-        .populate("userId", "firstName lastName email username")
-        .sort({ createdAt: -1 })
-        .limit(limitNum)
-        .skip(skip)
-        .lean(),
-      Payment.countDocuments(query),
-      Payment.aggregate([
-        { $match: { status: "completed" } },
-        {
-          $group: {
-            _id: null,
-            totalAmount: { $sum: "$amount" },
-            count: { $sum: 1 },
-          },
-        },
-      ]),
-      Payment.aggregate([
-        {
-          $match: {
-            status: "completed",
-            createdAt: {
-              $gte: new Date(
-                new Date().getFullYear(),
-                new Date().getMonth(),
-                1,
-              ),
-            },
-          },
-        },
-        {
-          $group: {
-            _id: null,
-            totalAmount: { $sum: "$amount" },
-            count: { $sum: 1 },
-          },
-        },
-      ]),
-    ]);
-
-    res.status(200).json({
-      success: true,
-      data: payments,
-      stats: {
-        total: stats[0]?.totalAmount || 0,
-        totalCount: stats[0]?.count || 0,
-        monthly: monthlyStats[0]?.totalAmount || 0,
-        monthlyCount: monthlyStats[0]?.count || 0,
-      },
-      totalPages: Math.ceil(total / limitNum),
-      currentPage: parseInt(page as string),
-      total,
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const getAllBills = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  try {
-    const { page = 1, limit = 10, status, userId } = req.query;
-    const skip = (parseInt(page as string) - 1) * parseInt(limit as string);
-    const limitNum = parseInt(limit as string);
-
-    let query: any = {};
-    if (status) query.status = status;
-    if (userId) query.userId = userId;
-
-    const [bills, total, stats] = await Promise.all([
-      Billing.find(query)
-        .populate("userId", "firstName lastName email username")
-        .populate("paymentId")
-        .sort({ createdAt: -1 })
-        .limit(limitNum)
-        .skip(skip)
-        .lean(),
-      Billing.countDocuments(query),
-      Billing.aggregate([
-        {
-          $group: {
-            _id: "$status",
-            count: { $sum: 1 },
-            totalAmount: { $sum: "$total" },
-          },
-        },
-      ]),
-    ]);
-
-    res.status(200).json({
-      success: true,
-      data: bills,
-      stats,
-      totalPages: Math.ceil(total / limitNum),
-      currentPage: parseInt(page as string),
-      total,
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const generateReport = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  try {
-    const { type, startDate, endDate, format } = req.body;
-
-    let data: any = {};
-
-    switch (type) {
-      case "revenue":
-        data = await Payment.aggregate([
-          {
-            $match: {
-              status: "completed",
-              createdAt: { $gte: new Date(startDate), $lte: new Date(endDate) },
-            },
-          },
-          {
-            $group: {
-              _id: {
-                year: { $year: "$createdAt" },
-                month: { $month: "$createdAt" },
-                day: { $dayOfMonth: "$createdAt" },
-              },
-              total: { $sum: "$amount" },
-              count: { $sum: 1 },
-            },
-          },
-          { $sort: { "_id.year": 1, "_id.month": 1, "_id.day": 1 } },
-        ]);
-        break;
-
-      case "users":
-        data = await User.aggregate([
-          {
-            $match: {
-              createdAt: { $gte: new Date(startDate), $lte: new Date(endDate) },
-            },
-          },
-          {
-            $group: {
-              _id: {
-                year: { $year: "$createdAt" },
-                month: { $month: "$createdAt" },
-                day: { $dayOfMonth: "$createdAt" },
-              },
-              count: { $sum: 1 },
-            },
-          },
-          { $sort: { "_id.year": 1, "_id.month": 1, "_id.day": 1 } },
-        ]);
-        break;
-
-      case "plans":
-        data = await User.aggregate([
-          { $match: { planId: { $ne: null } } },
-          { $group: { _id: "$planId", count: { $sum: 1 } } },
-          {
-            $lookup: {
-              from: "plans",
-              localField: "_id",
-              foreignField: "_id",
-              as: "plan",
-            },
-          },
-          { $unwind: "$plan" },
-          {
-            $project: {
-              planName: "$plan.name",
-              planPrice: "$plan.price",
-              count: 1,
-            },
-          },
-        ]);
-        break;
-
-      case "billing":
-        data = await Billing.aggregate([
-          {
-            $match: {
-              createdAt: { $gte: new Date(startDate), $lte: new Date(endDate) },
-            },
-          },
-          {
-            $group: {
-              _id: "$status",
-              count: { $sum: 1 },
-              totalAmount: { $sum: "$total" },
-            },
-          },
-        ]);
-        break;
-
-      default:
-        return res
-          .status(400)
-          .json({ success: false, message: "Invalid report type" });
-    }
-
-    if (format === "csv") {
-      res.setHeader("Content-Type", "text/csv");
-      res.setHeader(
-        "Content-Disposition",
-        `attachment; filename=report-${type}.csv`,
+    try {
+      console.log("📧 Sending new application notification to admin...");
+      await emailService.sendNewApplicationNotification(
+        application,
+        populatedPlan,
       );
-      return res.status(200).send(JSON.stringify(data));
+    } catch (emailError) {
+      console.error("Failed to send admin email:", emailError);
     }
 
-    res.status(200).json({
+    const planPrice = populatedPlan?.price;
+    const safePrice =
+      planPrice !== undefined && planPrice !== null ? planPrice : 0;
+
+    res.status(201).json({
       success: true,
-      data,
-      metadata: { type, startDate, endDate, generatedAt: new Date() },
+      message:
+        "Application submitted successfully. You will receive an email once approved.",
+      data: {
+        applicationId: application.applicationId,
+        status: application.status,
+        idImageUrl: fullImageUrl,
+        plan: {
+          name: populatedPlan?.name || "N/A",
+          price: safePrice,
+        },
+        building: {
+          name: building.buildingName,
+          address: `${building.streetAddress}, ${building.barangay}, ${building.city}`,
+        },
+      },
     });
-  } catch (error) {
+  } catch (error: any) {
+    console.error("Application submission error:", error);
+    if (error.name === "ValidationError") {
+      return res.status(400).json({
+        success: false,
+        message: error.message,
+        errors: Object.values(error.errors).map((err: any) => err.message),
+      });
+    }
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: "Duplicate application detected. Please try again.",
+      });
+    }
     next(error);
   }
 };
 
-export const getRecentActivities = async (
-  req: AuthRequest,
+export const checkApplicationStatus = async (
+  req: Request,
   res: Response,
   next: NextFunction,
 ) => {
   try {
-    const [recentPayments, recentUsers, recentBills, recentApplications] =
-      await Promise.all([
-        Payment.find()
-          .sort({ createdAt: -1 })
-          .limit(5)
-          .populate("userId", "firstName lastName email")
-          .lean(),
-        User.find()
-          .sort({ createdAt: -1 })
-          .limit(5)
-          .select("firstName lastName email createdAt status")
-          .lean(),
-        Billing.find()
-          .sort({ createdAt: -1 })
-          .limit(5)
-          .populate("userId", "firstName lastName email")
-          .lean(),
-        Application.find({ status: "pending" })
-          .sort({ createdAt: -1 })
-          .limit(3)
-          .select("firstName lastName email applicationId status createdAt")
-          .lean(),
-      ]);
+    const { applicationId } = req.params;
+    const application = await Application.findOne({ applicationId })
+      .select(
+        "applicationId status idImage floor unitNumber notes createdAt adminNotes billingStarted",
+      )
+      .populate("planId", "name price speed")
+      .populate(
+        "buildingId",
+        "buildingName streetAddress barangay city province region zipCode",
+      )
+      .lean();
 
-    const activities = [];
-
-    for (const payment of recentPayments) {
-      const user = payment.userId as any;
-      const userName =
-        user && user.firstName && user.lastName
-          ? `${user.firstName} ${user.lastName}`
-          : user && user.email
-            ? user.email
-            : "Unknown User";
-
-      activities.push({
-        title: "Payment Received",
-        description: `${userName} paid ₱${payment.amount?.toLocaleString() || 0}`,
-        type: "payment",
-        icon: "💰",
-        time: getTimeAgo(payment.createdAt),
-        date: payment.createdAt,
-      });
+    if (!application) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Application not found" });
     }
 
-    for (const user of recentUsers) {
-      activities.push({
-        title: "New User Registered",
-        description: `${user.firstName} ${user.lastName} created an account`,
-        type: "user",
-        icon: "👤",
-        time: getTimeAgo(user.createdAt),
-        date: user.createdAt,
-      });
-    }
-
-    for (const app of recentApplications) {
-      activities.push({
-        title: "New Application",
-        description: `${app.firstName} ${app.lastName} applied with ID ${app.applicationId}`,
-        type: "application",
-        icon: "📝",
-        time: getTimeAgo(app.createdAt),
-        date: app.createdAt,
-      });
-    }
-
-    for (const bill of recentBills) {
-      if (bill.status === "overdue") {
-        const user = bill.userId as any;
-        const userName =
-          user && user.firstName && user.lastName
-            ? `${user.firstName} ${user.lastName}`
-            : user && user.email
-              ? user.email
-              : "Unknown User";
-
-        activities.push({
-          title: "Bill Overdue",
-          description: `${userName} has an overdue bill of ₱${bill.total?.toLocaleString() || 0}`,
-          type: "alert",
-          icon: "⚠️",
-          time: getTimeAgo(bill.dueDate),
-          date: bill.dueDate,
-        });
-      }
-    }
-
-    activities.sort(
-      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
-    );
-
+    const idImageUrl = getImageUrl(application.idImage);
     res.status(200).json({
       success: true,
-      data: activities.slice(0, 10),
+      data: {
+        applicationId: application.applicationId,
+        status: application.status,
+        idImageUrl: idImageUrl,
+        plan: application.planId,
+        building: application.buildingId,
+        floor: application.floor,
+        unitNumber: application.unitNumber,
+        notes: application.notes,
+        createdAt: application.createdAt,
+        adminNotes: application.adminNotes,
+        billingStarted: application.billingStarted || false,
+      },
     });
   } catch (error) {
-    console.error("Error in getRecentActivities:", error);
     next(error);
   }
 };
 
-const getTimeAgo = (date: Date): string => {
-  const now = new Date();
-  const diffMs = now.getTime() - new Date(date).getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-  const diffHours = Math.floor(diffMs / 3600000);
-  const diffDays = Math.floor(diffMs / 86400000);
+export const getAllApplications = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const { page = 1, limit = 20, status } = req.query;
+    const pageNum = parseInt(page as string);
+    const limitNum = parseInt(limit as string);
+    const skip = (pageNum - 1) * limitNum;
 
-  if (diffMins < 1) return "Just now";
-  if (diffMins < 60) return `${diffMins} minute${diffMins > 1 ? "s" : ""} ago`;
-  if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? "s" : ""} ago`;
-  return `${diffDays} day${diffDays > 1 ? "s" : ""} ago`;
+    let query: any = {};
+    if (status && status !== "all") query.status = status;
+
+    res.setHeader("Cache-Control", "private, max-age=30");
+    res.setHeader("Vary", "Accept-Encoding");
+
+    const [total, applications] = await Promise.all([
+      Application.countDocuments(query),
+      Application.find(query)
+        .select(
+          "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId",
+        )
+        .populate("planId", "name price")
+        .populate("buildingId", "buildingName streetAddress city")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum)
+        .lean()
+        .exec(),
+    ]);
+
+    const applicationsWithUrls = applications.map((app) => ({
+      ...app,
+      idImageUrl: getImageUrl(app.idImage),
+      hasAccount: !!app.registeredUserId,
+    }));
+
+    res.status(200).json({
+      success: true,
+      data: applicationsWithUrls,
+      totalPages: Math.ceil(total / limitNum),
+      currentPage: pageNum,
+      total,
+      limit: limitNum,
+    });
+  } catch (error) {
+    console.error("Error in getAllApplications:", error);
+    next(error);
+  }
 };
 
-// ==================== MANUAL CUSTOMER CREATION ====================
-export const createManualCustomer = async (
+export const getApplication = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const application = await Application.findById(req.params.id)
+      .select("-__v")
+      .populate("planId", "name price speed duration features")
+      .populate(
+        "buildingId",
+        "buildingName streetAddress region province city barangay zipCode",
+      )
+      .populate("reviewedBy", "firstName lastName email")
+      .lean()
+      .exec();
+
+    if (!application) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Application not found" });
+    }
+
+    const idImageUrl = getImageUrl(application.idImage);
+    res
+      .status(200)
+      .json({ success: true, data: { ...application, idImageUrl } });
+  } catch (error) {
+    console.error("Error in getApplication:", error);
+    next(error);
+  }
+};
+
+// ==================== APPROVE APPLICATION - NO USER ACCOUNT CREATED ====================
+export const approveApplication = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
@@ -858,192 +509,69 @@ export const createManualCustomer = async (
   session.startTransaction();
 
   try {
-    const {
-      firstName,
-      lastName,
-      email,
-      phoneNumber,
-      buildingId,
-      buildingName,
-      floor,
-      unitNumber,
-      planId,
-      idType,
-      idNumber,
-      startBillingImmediately,
-      installationDate,
-      notes,
-    } = req.body;
+    const { adminNotes } = req.body;
 
-    if (!firstName || !lastName || !email || !phoneNumber) {
+    const application = await Application.findById(req.params.id).populate(
+      "planId",
+    );
+
+    if (!application) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Application not found" });
+    }
+    if (application.status !== "pending") {
       return res.status(400).json({
         success: false,
-        message: "First name, last name, email, and phone number are required",
+        message: `Application already ${application.status}`,
       });
     }
 
-    if (!planId) {
-      return res.status(400).json({
-        success: false,
-        message: "Plan selection is required",
-      });
-    }
-
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
-      return res.status(400).json({
-        success: false,
-        message: "A user with this email already exists",
-      });
-    }
-
-    const plan = await Plan.findById(planId);
-    if (!plan) {
-      return res.status(404).json({
-        success: false,
-        message: "Plan not found",
-      });
-    }
-
-    const application = await Application.create(
-      [
-        {
-          firstName,
-          lastName,
-          email: email.toLowerCase(),
-          phoneNumber,
-          buildingId: buildingId || null,
-          buildingName: buildingName || "Manual Entry",
-          floor: floor || "",
-          unitNumber: unitNumber || "",
-          notes: notes || "Manually created by admin",
-          planId,
-          idType: idType || "N/A",
-          idNumber: idNumber || "MANUAL-" + Date.now(),
-          idImage: "",
+    await Application.updateOne(
+      { _id: req.params.id },
+      {
+        $set: {
           status: "approved",
-          reviewedBy: req.user?._id,
+          adminNotes: adminNotes || "",
+          reviewedBy: req.user?._id || null,
           reviewedAt: new Date(),
-          approvalEmailSent: true,
-          billingStarted: startBillingImmediately || false,
         },
-      ],
+      },
       { session },
     );
-
-    const appDoc = application[0];
-
-    const generatedPassword = Math.random().toString(36).slice(-8);
-    const username =
-      `${firstName.toLowerCase()}.${lastName.toLowerCase()}`.replace(
-        /[^a-z0-9.]/g,
-        "",
-      );
-    let finalUsername = username;
-    let counter = 1;
-    while (await User.findOne({ username: finalUsername })) {
-      finalUsername = `${username}${counter}`;
-      counter++;
-    }
-
-    const user = await User.create(
-      [
-        {
-          username: finalUsername,
-          email: email.toLowerCase(),
-          password: generatedPassword,
-          firstName,
-          lastName,
-          phoneNumber,
-          buildingId: buildingId || null,
-          buildingName: buildingName || "Manual Entry",
-          floor: floor || "",
-          unitNumber: unitNumber || "",
-          planId,
-          status: startBillingImmediately ? "pending_activation" : "active",
-          mikrotik: {
-            username: finalUsername,
-            password: generatedPassword,
-            profile: plan.mikrotikProfile || "default",
-            ipAddress: "",
-            macAddress: "",
-          },
-          billingInfo: {
-            currentBill: 0,
-            autoPay: false,
-          },
-        },
-      ],
-      { session },
-    );
-
-    const userDoc = user[0];
-
-    appDoc.registeredUserId = userDoc._id;
-    await appDoc.save({ session });
-
-    let billingResult = null;
-
-    if (startBillingImmediately) {
-      const billingReq = {
-        body: {
-          userId: userDoc._id.toString(),
-          startDate: installationDate,
-          notes: notes || "Manual customer created by admin",
-        },
-        user: req.user,
-      } as any;
-
-      let capturedData: any = null;
-      const billingRes = {
-        status: (code: number) => ({
-          json: (data: any) => {
-            capturedData = data;
-            return data;
-          },
-        }),
-      } as any;
-
-      try {
-        await startBillingService(billingReq, billingRes, next);
-        billingResult = capturedData;
-      } catch (billingError) {
-        console.error("Error starting billing:", billingError);
-      }
-    }
 
     await session.commitTransaction();
 
-    const loginUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/login`;
+    const registerUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/register`;
 
     const emailHtml = `
       <!DOCTYPE html>
       <html>
       <head>
         <meta charset="UTF-8">
-        <title>Welcome to Mister Fyber</title>
+        <title>Application Approved - Mister Fyber</title>
       </head>
       <body style="font-family: Arial, sans-serif; line-height: 1.6;">
         <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
-          <h2 style="color: #28a745;">Welcome to Mister Fyber!</h2>
-          <p>Dear ${firstName} ${lastName},</p>
-          <p>Your account has been created by our admin team. Here are your login credentials:</p>
+          <h2 style="color: #28a745;">✅ Application Approved!</h2>
+          <p>Dear ${application.firstName} ${application.lastName},</p>
+          <p>Great news! Your application to Mister Fyber has been approved.</p>
           
           <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-            <p><strong>Application ID:</strong> ${appDoc.applicationId}</p>
-            <p><strong>Username:</strong> ${finalUsername}</p>
-            <p><strong>Password:</strong> ${generatedPassword}</p>
-            <p><strong>Plan:</strong> ${plan.name}</p>
+            <h3 style="margin-top: 0;">Your Application Details:</h3>
+            <p><strong>Application ID:</strong> ${application.applicationId}</p>
+            <p><strong>Plan:</strong> ${(application.planId as any)?.name || "N/A"}</p>
           </div>
           
           <div style="text-align: center; margin: 30px 0;">
-            <a href="${loginUrl}" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px;">
-              Login to Your Account
+            <a href="${registerUrl}" style="background-color: #28a745; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">
+              Create Your Account Now
             </a>
           </div>
           
-          <p><strong>Important:</strong> Please change your password after your first login.</p>
-          ${startBillingImmediately ? `<p>Your billing has been started. You will receive a separate email with your first invoice.</p>` : ""}
+          <p><strong>Important:</strong> You need to create your account using your Application ID. Once registered, the admin will start your billing.</p>
+          
+          ${adminNotes ? `<div style="margin-top: 20px; padding: 10px; background-color: #e7f3ff; border-left: 4px solid #007bff;"><strong>Admin Notes:</strong><br>${adminNotes}</div>` : ""}
           
           <hr>
           <p style="color: #666; font-size: 12px;">Mister Fyber - Your trusted internet provider</p>
@@ -1052,105 +580,267 @@ export const createManualCustomer = async (
       </html>
     `;
 
-    try {
-      await emailService.sendEmail(
-        email,
-        "Welcome to Mister Fyber - Your Account Details",
-        emailHtml,
-      );
-    } catch (emailError) {
-      console.error("Failed to send welcome email:", emailError);
-    }
+    await emailService.sendEmail(
+      application.email,
+      `Application Approved - Create Your Account`,
+      emailHtml,
+    );
 
-    dashboardCache = null;
+    console.log(`✅ Application approved: ${application.applicationId}`);
+    console.log(`📧 Approval email sent to: ${application.email}`);
 
-    res.status(201).json({
+    res.status(200).json({
       success: true,
-      message: startBillingImmediately
-        ? "Customer created successfully and billing has been started!"
-        : "Customer created successfully! An email with login credentials has been sent.",
+      message:
+        "Application approved. Customer can now register using their Application ID.",
       data: {
-        application: {
-          id: appDoc._id,
-          applicationId: appDoc.applicationId,
-        },
-        user: {
-          id: userDoc._id,
-          username: finalUsername,
-          email: userDoc.email,
-          firstName: userDoc.firstName,
-          lastName: userDoc.lastName,
-        },
-        billing: billingResult?.data || null,
-        credentials: {
-          username: finalUsername,
-          password: generatedPassword,
-        },
+        applicationId: application.applicationId,
+        status: "approved",
       },
     });
-  } catch (error: any) {
+  } catch (error) {
     await session.abortTransaction();
-    console.error("Manual customer creation error:", error);
+    console.error("Error in approveApplication:", error);
     next(error);
   } finally {
     session.endSession();
   }
 };
 
-// ==================== GET CUSTOMERS WITHOUT ACCOUNTS ====================
-export const getCustomersWithoutAccounts = async (
+export const rejectApplication = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ) => {
   try {
-    console.log("🔍 [ADMIN] Fetching customers without accounts...");
+    const { adminNotes } = req.body;
 
-    const applications = await Application.find({
-      status: "approved",
-      $or: [
-        { registeredUserId: { $exists: false } },
-        { registeredUserId: null },
-      ],
-      billingStarted: { $ne: true },
-    })
-      .populate("planId", "name price speed")
-      .sort({ createdAt: -1 })
-      .lean();
-
-    console.log(
-      `✅ [ADMIN] Found ${applications.length} approved applications without user accounts`,
+    const application = await Application.findById(req.params.id).populate(
+      "planId",
     );
 
-    applications.forEach((app, index) => {
-      console.log(
-        `  ${index + 1}. ${app.firstName} ${app.lastName} - ${app.applicationId}`,
-      );
-    });
+    if (!application) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Application not found" });
+    }
+    if (application.status !== "pending") {
+      return res.status(400).json({
+        success: false,
+        message: `Application already ${application.status}`,
+      });
+    }
+
+    await Application.updateOne(
+      { _id: req.params.id },
+      {
+        $set: {
+          status: "rejected",
+          adminNotes: adminNotes || "",
+          reviewedBy: req.user?._id || null,
+          reviewedAt: new Date(),
+        },
+      },
+    );
+
+    console.log(`📧 Sending rejection email to ${application.email}...`);
+    await emailService.sendApplicationRejected(
+      application,
+      adminNotes || "No specific reason provided",
+    );
 
     res.status(200).json({
       success: true,
-      data: applications,
-      count: applications.length,
+      message: "Application rejected. Email sent to client.",
+      data: {
+        applicationId: application.applicationId,
+        status: "rejected",
+      },
     });
   } catch (error) {
-    console.error("Error in getCustomersWithoutAccounts:", error);
+    console.error("Error in rejectApplication:", error);
     next(error);
   }
 };
 
+// ==================== START BILLING FOR APPLICATION - CREATES USER ACCOUNT ====================
+export const startBillingForApplication = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { applicationId } = req.params;
+    const { installationDate, notes } = req.body;
+
+    const application = await Application.findOne({ applicationId })
+      .populate("planId")
+      .lean();
+
+    if (!application) {
+      return res.status(404).json({
+        success: false,
+        message: "Application not found",
+      });
+    }
+
+    if (application.status !== "approved") {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot start billing for application with status: ${application.status}. Only approved applications can start billing.`,
+      });
+    }
+
+    if (application.billingStarted) {
+      return res.status(400).json({
+        success: false,
+        message: "Billing has already been started for this application",
+      });
+    }
+
+    let userId = application.registeredUserId;
+    let userExists = false;
+    let createdUsername = null;
+    let createdPassword = null;
+
+    if (userId) {
+      const existingUser = await User.findById(userId);
+      if (existingUser) {
+        userExists = true;
+      }
+    }
+
+    if (!userExists) {
+      const plan = application.planId as any;
+      createdPassword = Math.random().toString(36).slice(-8);
+
+      let username =
+        `${application.firstName.toLowerCase()}.${application.lastName.toLowerCase()}`.replace(
+          /[^a-z0-9.]/g,
+          "",
+        );
+      createdUsername = username;
+      let counter = 1;
+      while (await User.findOne({ username: createdUsername })) {
+        createdUsername = `${username}${counter}`;
+        counter++;
+      }
+
+      const userData: any = {
+        username: createdUsername,
+        email: application.email,
+        password: createdPassword,
+        firstName: application.firstName,
+        lastName: application.lastName,
+        phoneNumber: application.phoneNumber,
+        planId: application.planId,
+        status: "pending_activation",
+        mikrotik: {
+          username: createdUsername,
+          password: createdPassword,
+          profile: plan?.mikrotikProfile || "default",
+          ipAddress: "",
+          macAddress: "",
+        },
+        billingInfo: {
+          currentBill: 0,
+          autoPay: false,
+        },
+      };
+
+      if (application.buildingId) userData.buildingId = application.buildingId;
+      if (application.buildingName)
+        userData.buildingName = application.buildingName;
+      if (application.floor) userData.floor = application.floor;
+      if (application.unitNumber) userData.unitNumber = application.unitNumber;
+      if (application.idType) userData.idType = application.idType;
+      if (application.idNumber) userData.idNumber = application.idNumber;
+      if (application.idImage) userData.idImage = application.idImage;
+
+      const user = await User.create([userData], { session });
+      userId = user[0]._id;
+
+      await Application.updateOne(
+        { _id: application._id },
+        { $set: { registeredUserId: userId } },
+        { session },
+      );
+    }
+
+    const billingReq = {
+      body: {
+        userId: userId.toString(),
+        startDate: installationDate,
+        notes:
+          notes ||
+          `Billing started for application ${application.applicationId}`,
+      },
+      user: req.user,
+    } as any;
+
+    const billingRes = {
+      status: (code: number) => ({
+        json: (data: any) => data,
+      }),
+    } as any;
+
+    const result = await startBillingService(billingReq, billingRes, next);
+
+    await Application.updateOne(
+      { _id: application._id },
+      { $set: { billingStarted: true } },
+      { session },
+    );
+
+    await session.commitTransaction();
+
+    if (!userExists && createdUsername && createdPassword) {
+      const loginUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/login`;
+      await emailService.sendEmail(
+        application.email,
+        "Your Mister Fyber Account Credentials",
+        `
+          <h2>Your Account Has Been Created!</h2>
+          <p>Dear ${application.firstName},</p>
+          <p>Your account has been created. Here are your login credentials:</p>
+          <p><strong>Username:</strong> ${createdUsername}</p>
+          <p><strong>Password:</strong> ${createdPassword}</p>
+          <p><strong>Application ID:</strong> ${application.applicationId}</p>
+          <a href="${loginUrl}">Click here to login</a>
+          <p>Please change your password after first login.</p>
+        `,
+      );
+    }
+
+    res.status(200).json({
+      success: true,
+      message: userExists
+        ? "Billing started successfully! User already had an account."
+        : "User account created and billing started successfully! Credentials sent via email.",
+      data: result,
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    console.error("Error in startBillingForApplication:", error);
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
 export default {
-  getDashboardStats,
-  getAllUsers,
-  getUser,
-  updateUser,
-  deleteUser,
-  approveUser,
-  suspendUser,
-  getAllPayments,
-  getAllBills,
-  generateReport,
-  getRecentActivities,
-  createManualCustomer,
-  getCustomersWithoutAccounts,
+  getRegions,
+  getProvincesByRegion,
+  getCitiesByProvince,
+  getBarangaysByCity,
+  submitApplication,
+  checkApplicationStatus,
+  getAllApplications,
+  getApplication,
+  approveApplication,
+  rejectApplication,
+  startBillingForApplication,
 };
