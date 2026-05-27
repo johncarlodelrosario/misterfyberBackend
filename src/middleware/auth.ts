@@ -38,12 +38,18 @@ export const optionalAuth = async (
       role?: string;
     };
 
+    console.log("[Auth] Optional auth decoded:", {
+      id: decoded.id,
+      role: decoded.role,
+    });
+
     if (decoded.role) {
       const admin = await Admin.findById(decoded.id);
       if (admin) {
         req.user = admin;
-        console.log(`✅ Authenticated Admin: ${admin.email}`);
+        console.log(`✅ Authenticated Admin: ${admin.email} (${admin.role})`);
       } else {
+        console.log("[Auth] Admin not found for id:", decoded.id);
         req.user = null;
       }
     } else {
@@ -52,12 +58,16 @@ export const optionalAuth = async (
         req.user = user;
         console.log(`✅ Authenticated User: ${user.email}`);
       } else {
+        console.log("[Auth] User not found for id:", decoded.id);
         req.user = null;
       }
     }
     next();
   } catch (error: any) {
-    console.log("[Auth] Invalid token - continuing as public user");
+    console.log(
+      "[Auth] Invalid token - continuing as public user:",
+      error.message,
+    );
     req.user = null;
     next();
   }
@@ -79,7 +89,7 @@ export const authMiddleware = async (
   }
 
   if (!token) {
-    console.log("[Auth] No token found");
+    console.log("[Auth] No token found - returning 401");
     return res.status(401).json({
       success: false,
       message: "Not authorized to access this route. Please login.",
@@ -97,23 +107,48 @@ export const authMiddleware = async (
       role: decoded.role,
     });
 
+    // CHECK KUNG MAY ROLE - ADMIN
     if (decoded.role) {
       const admin = await Admin.findById(decoded.id);
       if (!admin) {
+        console.log("[Auth] Admin not found for id:", decoded.id);
         return res
           .status(401)
-          .json({ success: false, message: "Admin not found" });
+          .json({ success: false, message: "Admin account not found" });
       }
-      req.user = admin;
+
+      // I-set ang user object na may role property
+      req.user = {
+        _id: admin._id,
+        id: admin._id,
+        email: admin.email,
+        username: admin.username,
+        firstName: admin.firstName,
+        lastName: admin.lastName,
+        role: admin.role, // IMPORTANTE: ito ang role!
+        status: admin.status,
+      };
       console.log(`✅ Authenticated Admin: ${admin.email} (${admin.role})`);
     } else {
+      // REGULAR USER
       const user = await User.findById(decoded.id);
       if (!user) {
+        console.log("[Auth] User not found for id:", decoded.id);
         return res
           .status(401)
-          .json({ success: false, message: "User not found" });
+          .json({ success: false, message: "User account not found" });
       }
-      req.user = user;
+
+      req.user = {
+        _id: user._id,
+        id: user._id,
+        email: user.email,
+        username: user.username,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        role: "user", // Regular user role
+        status: user.status,
+      };
       console.log(`✅ Authenticated User: ${user.email}`);
     }
 
@@ -127,7 +162,51 @@ export const authMiddleware = async (
   }
 };
 
+// ==================== ADMIN MIDDLEWARE - FIXED ====================
 export const adminMiddleware = (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  console.log("[AdminMiddleware] Checking user:", req.user);
+
+  if (!req.user) {
+    console.log("[AdminMiddleware] No user found in request");
+    return res.status(401).json({
+      success: false,
+      message: "Not authorized. Please login first.",
+    });
+  }
+
+  const userRole = req.user.role;
+  console.log("[AdminMiddleware] User role:", userRole);
+
+  // Allow super_admin, admin, and staff
+  if (!userRole) {
+    console.log("[AdminMiddleware] No role assigned to user");
+    return res.status(403).json({
+      success: false,
+      message: "No role assigned. Admin access required.",
+    });
+  }
+
+  const allowedRoles = ["super_admin", "admin", "staff"];
+  if (!allowedRoles.includes(userRole)) {
+    console.log(
+      `[AdminMiddleware] Role ${userRole} not allowed. Allowed: ${allowedRoles.join(", ")}`,
+    );
+    return res.status(403).json({
+      success: false,
+      message: `Admin access required. Your role "${userRole}" is not authorized.`,
+    });
+  }
+
+  console.log(`[AdminMiddleware] ✅ Authorized: ${userRole}`);
+  next();
+};
+
+// ==================== SUPER ADMIN ONLY ====================
+export const superAdminOnly = (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
@@ -136,20 +215,21 @@ export const adminMiddleware = (
     return res.status(401).json({ success: false, message: "Not authorized" });
   }
 
-  if (
-    !req.user.role ||
-    (req.user.role !== "super_admin" && req.user.role !== "admin")
-  ) {
-    return res
-      .status(403)
-      .json({ success: false, message: "Admin access required" });
+  if (req.user.role !== "super_admin") {
+    return res.status(403).json({
+      success: false,
+      message: "Super admin access required",
+    });
   }
 
   next();
 };
 
+// ==================== ALIASES FOR BACKWARD COMPATIBILITY ====================
 export const protect = authMiddleware;
+export const adminOnly = adminMiddleware;
 
+// ==================== AUTHORIZE MIDDLEWARE ====================
 export const authorize = (...roles: string[]) => {
   return (req: AuthRequest, res: Response, next: NextFunction) => {
     const userRole = req.user?.role;
@@ -177,8 +257,7 @@ export const authorize = (...roles: string[]) => {
   };
 };
 
-export const adminOnly = adminMiddleware;
-
+// ==================== STAFF OR ADMIN ====================
 export const staffOrAdmin = (
   req: AuthRequest,
   res: Response,
