@@ -1,10 +1,11 @@
-// controllers/authController.ts - COMPLETE UPDATED FILE
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { randomBytes, createHash } from "crypto";
 import User from "../models/User";
 import Admin from "../models/Admin";
 import Application from "../models/Application";
+import Billing from "../models/Billing";
+import BillingCycle from "../models/BillingCycle";
 import emailService from "../services/emailService";
 import { validationResult } from "express-validator";
 
@@ -64,7 +65,6 @@ const sendTokenResponse = (
 };
 
 // ==================== CHECK APPLICATION STATUS ====================
-
 export const checkApplication = async (
   req: Request,
   res: Response,
@@ -82,10 +82,9 @@ export const checkApplication = async (
       });
     }
 
-    const application = await Application.findOne({ applicationId }).populate(
-      "planId",
-      "name price speed description",
-    );
+    const application = await Application.findOne({ applicationId })
+      .populate("planId", "name price speed description")
+      .lean();
 
     if (!application) {
       return res.status(404).json({
@@ -102,6 +101,27 @@ export const checkApplication = async (
       }
     }
 
+    // Check if billing has been started
+    let hasBill = false;
+    let billInfo = null;
+
+    if (application.billingStarted && application.billingCycleId) {
+      const bill = await Billing.findOne({
+        applicationId: application._id,
+        status: { $in: ["sent", "overdue"] },
+      }).lean();
+
+      if (bill) {
+        hasBill = true;
+        billInfo = {
+          invoiceNumber: bill.invoiceNumber,
+          total: bill.total,
+          dueDate: bill.dueDate,
+          isProRated: bill.isProRated,
+        };
+      }
+    }
+
     const responseData: any = {
       success: true,
       data: {
@@ -113,6 +133,9 @@ export const checkApplication = async (
         phoneNumber: application.phoneNumber,
         planName: application.planId ? (application.planId as any).name : null,
         alreadyRegistered,
+        billingStarted: application.billingStarted || false,
+        hasBill,
+        billInfo,
         createdAt: application.createdAt,
       },
     };
@@ -129,6 +152,7 @@ export const checkApplication = async (
       applicationId,
       status: application.status,
       alreadyRegistered,
+      billingStarted: application.billingStarted,
     });
 
     res.status(200).json(responseData);
@@ -139,12 +163,14 @@ export const checkApplication = async (
 };
 
 // ==================== REGISTER WITH APPLICATION - CREATES USER ACCOUNT ====================
-
 export const registerWithApplication = async (
   req: Request,
   res: Response,
   next: NextFunction,
 ) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -159,9 +185,9 @@ export const registerWithApplication = async (
       applicationId,
     });
 
-    const application = await Application.findOne({ applicationId }).populate(
-      "planId",
-    );
+    const application = await Application.findOne({ applicationId })
+      .populate("planId")
+      .lean();
 
     if (!application) {
       return res.status(404).json({
@@ -204,91 +230,116 @@ export const registerWithApplication = async (
       });
     }
 
+    // Check if billing has been started for this application
+    const existingBill = await Billing.findOne({
+      applicationId: application._id,
+      status: { $in: ["sent", "overdue"] },
+    }).lean();
+
     // CREATE USER ACCOUNT
-    let user = await User.findOne({ email: application.email });
-
-    if (user) {
-      // Update existing user (if somehow exists but not linked)
-      user.username = username;
-      user.password = password;
-      user.firstName = application.firstName;
-      user.lastName = application.lastName;
-      user.phoneNumber = application.phoneNumber;
-      user.buildingId = application.buildingId;
-      user.buildingName = application.buildingName;
-      user.floor = application.floor;
-      user.unitNumber = application.unitNumber;
-      user.idType = application.idType;
-      user.idNumber = application.idNumber;
-      if (application.idImage) user.idImage = application.idImage;
-      user.planId = application.planId;
-      user.status = "active"; // User account is active, but billing not started yet
-
-      await user.save();
-    } else {
-      user = await User.create({
-        username,
-        email: application.email,
-        password,
-        firstName: application.firstName,
-        lastName: application.lastName,
-        phoneNumber: application.phoneNumber,
-        buildingId: application.buildingId,
-        buildingName: application.buildingName,
-        floor: application.floor,
-        unitNumber: application.unitNumber,
-        idType: application.idType,
-        idNumber: application.idNumber,
-        idImage: application.idImage || "",
-        planId: application.planId,
-        status: "active", // Account active
-        mikrotik: {
-          username: "",
-          password: "",
-          profile: "",
-          ipAddress: "",
-          macAddress: "",
-        },
-        billingInfo: {
-          currentBill: 0,
-          autoPay: false,
-        },
-      });
-    }
-
-    // Link application to user
-    application.registeredUserId = user._id;
-    await application.save();
-
-    // Set Mikrotik credentials if not set
-    if (!user.mikrotik) {
-      user.mikrotik = {
-        username: "",
-        password: "",
-        profile: "",
+    const userData: any = {
+      username,
+      email: application.email,
+      password,
+      firstName: application.firstName,
+      lastName: application.lastName,
+      phoneNumber: application.phoneNumber,
+      buildingId: application.buildingId,
+      buildingName: application.buildingName,
+      floor: application.floor,
+      unitNumber: application.unitNumber,
+      idType: application.idType,
+      idNumber: application.idNumber,
+      idImage: application.idImage || "",
+      planId: application.planId,
+      status: "active",
+      applicationId: application.applicationId,
+      mikrotik: {
+        username: username,
+        password: Math.random().toString(36).slice(-8),
+        profile: (application.planId as any)?.mikrotikProfile || "default",
         ipAddress: "",
         macAddress: "",
-      };
+      },
+      billingInfo: {
+        currentBill: existingBill?.total || 0,
+        autoPay: false,
+      },
+    };
+
+    const user = await User.create([userData], { session });
+    const userDoc = user[0];
+
+    // Link application to user
+    await Application.updateOne(
+      { _id: application._id },
+      { $set: { registeredUserId: userDoc._id } },
+      { session },
+    );
+
+    // If billing was already started, link bills and billing cycles to the new user
+    if (application.billingStarted && application.billingCycleId) {
+      // Update billing cycle with user ID
+      await BillingCycle.updateOne(
+        { _id: application.billingCycleId },
+        { $set: { userId: userDoc._id } },
+        { session },
+      );
+
+      // Update all bills for this application with user ID
+      await Billing.updateMany(
+        { applicationId: application._id },
+        { $set: { userId: userDoc._id } },
+        { session },
+      );
     }
 
-    if (!user.mikrotik.username) {
-      user.mikrotik.username = user.username;
-      user.mikrotik.password = Math.random().toString(36).slice(-8);
-      user.mikrotik.profile =
-        (application.planId as any)?.mikrotikProfile || "default";
-      await user.save();
-    }
+    await session.commitTransaction();
 
     try {
-      await emailService.sendWelcomeEmail(user);
-    } catch (error) {
-      console.error("Failed to send welcome email:", error);
+      // Send welcome email with credentials
+      const loginUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/login`;
+      const emailHtml = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8">
+          <title>Your Mister Fyber Account</title>
+        </head>
+        <body style="font-family: Arial, sans-serif; line-height: 1.6;">
+          <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+            <h2 style="color: #28a745;">Welcome to Mister Fyber!</h2>
+            <p>Dear ${application.firstName} ${application.lastName},</p>
+            <p>Your account has been successfully created. Here are your login credentials:</p>
+            <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+              <p><strong>Username:</strong> ${username}</p>
+              <p><strong>Password:</strong> ${password}</p>
+              <p><strong>Application ID:</strong> ${application.applicationId}</p>
+            </div>
+            ${existingBill ? `<p><strong>Note:</strong> You have an existing bill of ₱${existingBill.total.toFixed(2)} due on ${new Date(existingBill.dueDate).toLocaleDateString()}. Please pay to activate your service.</p>` : ""}
+            <div style="text-align: center; margin: 30px 0;">
+              <a href="${loginUrl}" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px;">Login to Your Account</a>
+            </div>
+            <hr>
+            <p style="color: #666; font-size: 12px;">Mister Fyber</p>
+          </div>
+        </body>
+        </html>
+      `;
+      await emailService.sendEmail(
+        application.email,
+        "Your Mister Fyber Account",
+        emailHtml,
+      );
+    } catch (emailError) {
+      console.error("Failed to send welcome email:", emailError);
     }
 
-    console.log("[Auth] Registration successful for:", user.email);
+    console.log("[Auth] Registration successful for:", userDoc.email);
 
-    sendTokenResponse(user, 201, res, false);
+    sendTokenResponse(userDoc, 201, res, false);
   } catch (error: any) {
+    await session.abortTransaction();
     console.error("Registration with application error:", error);
 
     if (error.code === 11000) {
@@ -308,11 +359,12 @@ export const registerWithApplication = async (
     }
 
     next(error);
+  } finally {
+    session.endSession();
   }
 };
 
 // ==================== ADMIN REGISTRATION ====================
-
 export const registerAdmin = async (
   req: Request,
   res: Response,
@@ -363,7 +415,6 @@ export const registerAdmin = async (
 };
 
 // ==================== REGULAR USER REGISTRATION (DIRECT) ====================
-
 export const register = async (
   req: Request,
   res: Response,
@@ -408,7 +459,6 @@ export const register = async (
 };
 
 // ==================== CREATE INITIAL ADMIN ====================
-
 export const createInitialAdmin = async (
   req: Request,
   res: Response,
@@ -462,7 +512,6 @@ export const createInitialAdmin = async (
 };
 
 // ==================== LOGIN ====================
-
 export const login = async (
   req: Request,
   res: Response,
@@ -558,7 +607,6 @@ export const login = async (
 };
 
 // ==================== LOGOUT ====================
-
 export const logout = async (
   req: Request,
   res: Response,
@@ -576,7 +624,6 @@ export const logout = async (
 };
 
 // ==================== GET CURRENT USER ====================
-
 export const getMe = async (
   req: AuthRequest,
   res: Response,
@@ -624,7 +671,6 @@ export const getMe = async (
 };
 
 // ==================== UPDATE PASSWORD ====================
-
 export const updatePassword = async (
   req: AuthRequest,
   res: Response,
@@ -680,7 +726,6 @@ export const updatePassword = async (
 };
 
 // ==================== FORGOT PASSWORD ====================
-
 export const forgotPassword = async (
   req: Request,
   res: Response,
@@ -718,7 +763,6 @@ export const forgotPassword = async (
 };
 
 // ==================== RESET PASSWORD ====================
-
 export const resetPassword = async (
   req: Request,
   res: Response,
@@ -751,6 +795,9 @@ export const resetPassword = async (
     next(error);
   }
 };
+
+// Import mongoose for session
+import mongoose from "mongoose";
 
 export default {
   register,

@@ -3,11 +3,12 @@ import Application from "../models/Application";
 import Plan from "../models/Plan";
 import Building from "../models/Building";
 import User from "../models/User";
+import Billing from "../models/Billing";
+import BillingCycle from "../models/BillingCycle";
 import emailService from "../services/emailService";
 import { validationResult } from "express-validator";
 import axios from "axios";
 import mongoose from "mongoose";
-import { startBilling as startBillingService } from "./billingController";
 
 interface AuthRequest extends Request {
   user?: any;
@@ -304,12 +305,6 @@ export const submitApplication = async (
     const fullImageUrl = getImageUrl(application.idImage);
     const populatedPlan = populatedApplication?.planId as any;
 
-    console.log("📊 Plan details for email:", {
-      planId: application.planId,
-      populatedPlanName: populatedPlan?.name,
-      populatedPlanPrice: populatedPlan?.price,
-    });
-
     try {
       console.log("📧 Sending application received email to client...");
       await emailService.sendApplicationReceived(application, populatedPlan);
@@ -377,7 +372,7 @@ export const checkApplicationStatus = async (
     const { applicationId } = req.params;
     const application = await Application.findOne({ applicationId })
       .select(
-        "applicationId status idImage floor unitNumber notes createdAt adminNotes billingStarted",
+        "applicationId status idImage floor unitNumber notes createdAt adminNotes billingStarted billingCycleId registeredUserId",
       )
       .populate("planId", "name price speed")
       .populate(
@@ -407,6 +402,7 @@ export const checkApplicationStatus = async (
         createdAt: application.createdAt,
         adminNotes: application.adminNotes,
         billingStarted: application.billingStarted || false,
+        hasAccount: !!application.registeredUserId,
       },
     });
   } catch (error) {
@@ -435,7 +431,7 @@ export const getAllApplications = async (
       Application.countDocuments(query),
       Application.find(query)
         .select(
-          "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId",
+          "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId",
         )
         .populate("planId", "name price")
         .populate("buildingId", "buildingName streetAddress city")
@@ -499,7 +495,7 @@ export const getApplication = async (
   }
 };
 
-// ==================== APPROVE APPLICATION - NO USER ACCOUNT CREATED ====================
+// ==================== APPROVE APPLICATION - BILLING CAN START BEFORE USER CREATES ACCOUNT ====================
 export const approveApplication = async (
   req: AuthRequest,
   res: Response,
@@ -509,7 +505,7 @@ export const approveApplication = async (
   session.startTransaction();
 
   try {
-    const { adminNotes } = req.body;
+    const { adminNotes, startBillingNow } = req.body;
 
     const application = await Application.findById(req.params.id).populate(
       "planId",
@@ -527,7 +523,7 @@ export const approveApplication = async (
       });
     }
 
-    // UPDATE APPLICATION STATUS ONLY - NO USER CREATION
+    // Update application status
     await Application.updateOne(
       { _id: req.params.id },
       {
@@ -536,7 +532,6 @@ export const approveApplication = async (
           adminNotes: adminNotes || "",
           reviewedBy: req.user?._id || null,
           reviewedAt: new Date(),
-          // DO NOT set registeredUserId yet - user will register later
         },
       },
       { session },
@@ -544,7 +539,7 @@ export const approveApplication = async (
 
     await session.commitTransaction();
 
-    // Send approval email WITHOUT credentials - just instructions to register
+    // Send approval email WITH application ID for registration
     const registerUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/register`;
 
     const emailHtml = `
@@ -572,7 +567,7 @@ export const approveApplication = async (
             </a>
           </div>
           
-          <p><strong>Important:</strong> You need to create your account using your Application ID. Once registered, the admin will start your billing.</p>
+          <p><strong>Important:</strong> You need to create your account using your Application ID.</p>
           
           ${adminNotes ? `<div style="margin-top: 20px; padding: 10px; background-color: #e7f3ff; border-left: 4px solid #007bff;"><strong>Admin Notes:</strong><br>${adminNotes}</div>` : ""}
           
@@ -646,7 +641,6 @@ export const rejectApplication = async (
       },
     );
 
-    console.log(`📧 Sending rejection email to ${application.email}...`);
     await emailService.sendApplicationRejected(
       application,
       adminNotes || "No specific reason provided",
@@ -666,7 +660,7 @@ export const rejectApplication = async (
   }
 };
 
-// ==================== START BILLING FOR APPLICATION - CREATES USER ACCOUNT ====================
+// ==================== START BILLING FOR APPLICATION - BILLING BEFORE USER ACCOUNT ====================
 export const startBillingForApplication = async (
   req: AuthRequest,
   res: Response,
@@ -704,132 +698,223 @@ export const startBillingForApplication = async (
       });
     }
 
-    // CHECK IF USER ALREADY EXISTS
-    let userId = application.registeredUserId;
-    let userExists = false;
-    let createdUsername = null;
-    let createdPassword = null;
+    const plan = application.planId as any;
+    const monthlyRate = plan.price;
+    const annualRate = monthlyRate * 12;
+    const dailyRate = annualRate / 365;
 
-    if (userId) {
-      const existingUser = await User.findById(userId);
-      if (existingUser) {
-        userExists = true;
-      }
-    }
+    const billingCutoffDay = 24;
+    let installationDateObj = installationDate
+      ? new Date(installationDate)
+      : new Date();
+    installationDateObj.setHours(0, 0, 0, 0);
 
-    // CREATE USER ACCOUNT ONLY IF IT DOESN'T EXIST YET
-    if (!userExists) {
-      const plan = application.planId as any;
-      createdPassword = Math.random().toString(36).slice(-8);
+    const installationDay = installationDateObj.getDate();
+    const currentMonthEnd = new Date(
+      installationDateObj.getFullYear(),
+      installationDateObj.getMonth() + 1,
+      0,
+    );
+    currentMonthEnd.setHours(23, 59, 59, 999);
 
-      // Generate username from name
-      let username =
-        `${application.firstName.toLowerCase()}.${application.lastName.toLowerCase()}`.replace(
-          /[^a-z0-9.]/g,
-          "",
-        );
-      createdUsername = username;
-      let counter = 1;
-      while (await User.findOne({ username: createdUsername })) {
-        createdUsername = `${username}${counter}`;
-        counter++;
-      }
+    const daysInMonth = currentMonthEnd.getDate();
+    const actualBillableDays = daysInMonth - installationDay + 1;
+    const isAfterCutoff = installationDay > billingCutoffDay;
 
-      const userData: any = {
-        username: createdUsername,
-        email: application.email,
-        password: createdPassword,
-        firstName: application.firstName,
-        lastName: application.lastName,
-        phoneNumber: application.phoneNumber,
-        planId: application.planId,
-        status: "pending_activation",
-        mikrotik: {
-          username: createdUsername,
-          password: createdPassword,
-          profile: plan?.mikrotikProfile || "default",
-          ipAddress: "",
-          macAddress: "",
-        },
-        billingInfo: {
-          currentBill: 0,
-          autoPay: false,
-        },
-      };
+    let proRatedAmount = Math.round(dailyRate * actualBillableDays * 100) / 100;
+    let billingStartDateForCycle: Date;
+    let billingEndDateForCycle: Date;
+    let nextBillingDate: Date;
+    let dueDate: Date;
+    let billItems: any[] = [];
+    let totalAmount: number;
+    let isCombinedBill = false;
 
-      if (application.buildingId) userData.buildingId = application.buildingId;
-      if (application.buildingName)
-        userData.buildingName = application.buildingName;
-      if (application.floor) userData.floor = application.floor;
-      if (application.unitNumber) userData.unitNumber = application.unitNumber;
-      if (application.idType) userData.idType = application.idType;
-      if (application.idNumber) userData.idNumber = application.idNumber;
-      if (application.idImage) userData.idImage = application.idImage;
+    const settings = {
+      proRatedDueDay: 25,
+      monthlyDueDay: 5,
+    };
 
-      const user = await User.create([userData], { session });
-      userId = user[0]._id;
-
-      await Application.updateOne(
-        { _id: application._id },
-        { $set: { registeredUserId: userId } },
-        { session },
+    if (isAfterCutoff) {
+      // Combined bill: pro-rated + next month
+      isCombinedBill = true;
+      billingStartDateForCycle = new Date(
+        installationDateObj.getFullYear(),
+        installationDateObj.getMonth() + 1,
+        1,
       );
+      billingStartDateForCycle.setHours(0, 0, 0, 0);
+      billingEndDateForCycle = new Date(
+        billingStartDateForCycle.getFullYear(),
+        billingStartDateForCycle.getMonth() + 1,
+        0,
+      );
+      billingEndDateForCycle.setHours(23, 59, 59, 999);
+      nextBillingDate = new Date(
+        billingStartDateForCycle.getFullYear(),
+        billingStartDateForCycle.getMonth() + 1,
+        1,
+      );
+
+      dueDate = new Date(billingStartDateForCycle);
+      dueDate.setMonth(dueDate.getMonth() + 1);
+      let targetDay = settings.monthlyDueDay;
+      const lastDayOfMonth = new Date(
+        dueDate.getFullYear(),
+        dueDate.getMonth() + 1,
+        0,
+      ).getDate();
+      if (targetDay > lastDayOfMonth) targetDay = lastDayOfMonth;
+      dueDate.setDate(targetDay);
+      dueDate.setHours(23, 59, 59, 999);
+
+      totalAmount = monthlyRate + proRatedAmount;
+
+      billItems = [
+        {
+          description: `Pro-rated payment from ${installationDateObj.toLocaleDateString()} to ${currentMonthEnd.toLocaleDateString()} (${actualBillableDays} days)`,
+          quantity: actualBillableDays,
+          rate: dailyRate,
+          amount: proRatedAmount,
+        },
+        {
+          description: `Monthly Subscription - ${billingStartDateForCycle.toLocaleDateString()} to ${billingEndDateForCycle.toLocaleDateString()}`,
+          quantity: 1,
+          rate: monthlyRate,
+          amount: monthlyRate,
+        },
+      ];
+    } else {
+      // Pro-rated only bill
+      billingStartDateForCycle = installationDateObj;
+      billingEndDateForCycle = currentMonthEnd;
+      nextBillingDate = new Date(
+        installationDateObj.getFullYear(),
+        installationDateObj.getMonth() + 1,
+        1,
+      );
+
+      dueDate = new Date(installationDateObj);
+      let targetDay = settings.proRatedDueDay;
+      const lastDayOfMonth = new Date(
+        dueDate.getFullYear(),
+        dueDate.getMonth() + 1,
+        0,
+      ).getDate();
+      if (targetDay > lastDayOfMonth) targetDay = lastDayOfMonth;
+      dueDate.setDate(targetDay);
+      dueDate.setHours(23, 59, 59, 999);
+
+      if (dueDate < installationDateObj) {
+        dueDate = currentMonthEnd;
+      }
+
+      totalAmount = proRatedAmount;
+
+      billItems = [
+        {
+          description: `Pro-rated payment from ${installationDateObj.toLocaleDateString()} to ${currentMonthEnd.toLocaleDateString()} (${actualBillableDays} days)`,
+          quantity: actualBillableDays,
+          rate: dailyRate,
+          amount: proRatedAmount,
+        },
+      ];
     }
 
-    // Start billing
-    const billingReq = {
-      body: {
-        userId: userId.toString(),
-        startDate: installationDate,
-        notes:
-          notes ||
-          `Billing started for application ${application.applicationId}`,
-      },
-      user: req.user,
-    } as any;
+    // Create billing cycle
+    const billingCycle = await BillingCycle.create(
+      [
+        {
+          userId: null, // No user yet - will be linked when user registers
+          planId: plan._id,
+          billingStartDate: billingStartDateForCycle,
+          billingEndDate: billingEndDateForCycle,
+          nextBillingDate: nextBillingDate,
+          status: "pending_activation",
+          monthlyRate: monthlyRate,
+          currentProRatedAmount: proRatedAmount,
+          proRatedPaid: false,
+          actualBillableDays: actualBillableDays,
+          isAfterCutoff: isAfterCutoff,
+          cutoffDayUsed: billingCutoffDay,
+          applicationId: application._id,
+        },
+      ],
+      { session },
+    );
 
-    const billingRes = {
-      status: (code: number) => ({
-        json: (data: any) => data,
-      }),
-    } as any;
+    // Create bill
+    const invoiceNumber = `INV-${new Date().getFullYear()}${(new Date().getMonth() + 1).toString().padStart(2, "0")}-${Date.now().toString().slice(-6)}${Math.floor(
+      Math.random() * 1000,
+    )
+      .toString()
+      .padStart(3, "0")}`;
 
-    const result = await startBillingService(billingReq, billingRes, next);
+    const bill = await Billing.create(
+      [
+        {
+          userId: null, // No user yet - will be linked when user registers
+          billingCycleId: billingCycle[0]._id,
+          invoiceNumber: invoiceNumber,
+          billingPeriod: {
+            start: installationDateObj,
+            end: billingEndDateForCycle,
+          },
+          dueDate: dueDate,
+          items: billItems,
+          subtotal: totalAmount,
+          tax: 0,
+          discount: 0,
+          total: totalAmount,
+          status: "sent",
+          isProRated: true,
+          proRatedDays: actualBillableDays,
+          notes:
+            notes ||
+            (isCombinedBill
+              ? `Combined bill due on ${dueDate.toLocaleDateString()}`
+              : `Pro-rated bill due on ${dueDate.toLocaleDateString()}`),
+          applicationId: application._id,
+        },
+      ],
+      { session },
+    );
 
-    // Mark application as billing started
+    // Update application with billing info
     await Application.updateOne(
       { _id: application._id },
-      { $set: { billingStarted: true } },
+      {
+        $set: {
+          billingStarted: true,
+          billingCycleId: billingCycle[0]._id,
+        },
+      },
       { session },
     );
 
     await session.commitTransaction();
 
-    // SEND CREDENTIALS EMAIL ONLY IF USER WAS JUST CREATED
-    if (!userExists && createdUsername && createdPassword) {
-      const loginUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/login`;
-      await emailService.sendEmail(
-        application.email,
-        "Your Mister Fyber Account Credentials",
-        `
-          <h2>Your Account Has Been Created!</h2>
-          <p>Dear ${application.firstName},</p>
-          <p>Your account has been created. Here are your login credentials:</p>
-          <p><strong>Username:</strong> ${createdUsername}</p>
-          <p><strong>Password:</strong> ${createdPassword}</p>
-          <p><strong>Application ID:</strong> ${application.applicationId}</p>
-          <a href="${loginUrl}">Click here to login</a>
-          <p>Please change your password after first login.</p>
-        `,
-      );
-    }
+    // Send email with bill information (no account credentials yet)
+    await emailService.sendBillWithoutAccount(application, bill[0], plan);
+
+    clearAllCache();
 
     res.status(200).json({
       success: true,
-      message: userExists
-        ? "Billing started successfully! User already had an account."
-        : "User account created and billing started successfully! Credentials sent via email.",
-      data: result,
+      message: isCombinedBill
+        ? `Billing started! Combined bill (pro-rated + next month) of ₱${totalAmount.toFixed(2)} due on ${dueDate.toLocaleDateString()}. Customer can register using their Application ID.`
+        : `Billing started! Pro-rated bill of ₱${totalAmount.toFixed(2)} due on ${dueDate.toLocaleDateString()}. Customer can register using their Application ID.`,
+      data: {
+        billingCycle: billingCycle[0],
+        bill: bill[0],
+        proRatedAmount: proRatedAmount,
+        monthlyRate: monthlyRate,
+        actualBillableDays: actualBillableDays,
+        isAfterCutoff: isAfterCutoff,
+        dueDate: dueDate,
+        nextBillingDate: nextBillingDate,
+        isCombinedBill: isCombinedBill,
+      },
     });
   } catch (error) {
     await session.abortTransaction();
@@ -839,6 +924,22 @@ export const startBillingForApplication = async (
     session.endSession();
   }
 };
+
+// Clear cache helper
+let billingSettingsCache: any = null;
+let billingSettingsCacheTime = 0;
+let billingCyclesCache: Map<string, { data: any; timestamp: number }> =
+  new Map();
+let billsCache: Map<string, { data: any; timestamp: number }> = new Map();
+let summaryCache: { data: any; timestamp: number } | null = null;
+
+function clearAllCache(): void {
+  billingSettingsCache = null;
+  billingCyclesCache.clear();
+  billsCache.clear();
+  summaryCache = null;
+  console.log("🗑️ Billing cache cleared");
+}
 
 export default {
   getRegions,

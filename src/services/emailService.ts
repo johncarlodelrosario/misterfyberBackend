@@ -149,6 +149,85 @@ class EmailService {
     return await this.sendEmail(this.adminEmail, `[ADMIN] ${subject}`, html);
   }
 
+  // ==================== SEND BILL WITHOUT ACCOUNT (NEW METHOD) ====================
+  async sendBillWithoutAccount(
+    application: any,
+    bill: any,
+    plan: any,
+  ): Promise<void> {
+    const registerUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/register`;
+    const dueDate = bill.dueDate
+      ? new Date(bill.dueDate).toLocaleDateString()
+      : "N/A";
+    const amount = bill.total || 0;
+
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <meta charset="UTF-8">
+          <title>Your Mister Fyber Bill is Ready</title>
+          <style>
+              body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+              .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
+              .header { text-align: center; border-bottom: 2px solid #007bff; padding-bottom: 20px; }
+              .header h1 { color: #007bff; margin: 0; }
+              .content { padding: 20px 0; }
+              .bill-details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
+              .button { display: inline-block; background-color: #28a745; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; }
+              .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
+              .warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }
+          </style>
+      </head>
+      <body>
+          <div class="container">
+              <div class="header">
+                  <h1>🧾 Your Bill is Ready</h1>
+              </div>
+              
+              <div class="content">
+                  <p>Hello ${application.firstName} ${application.lastName},</p>
+                  <p>Your Mister Fyber bill is now ready. Since you haven't created your account yet, please register first using your Application ID.</p>
+                  
+                  <div class="bill-details">
+                      <h3 style="margin-top: 0;">📋 Bill Details</h3>
+                      <p><strong>Invoice Number:</strong> ${bill.invoiceNumber}</p>
+                      <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
+                      <p><strong>Due Date:</strong> ${dueDate}</p>
+                      <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
+                      ${bill.isProRated ? `<p><strong>Bill Type:</strong> Pro-rated (First Bill)</p>` : ""}
+                  </div>
+                  
+                  <div class="warning">
+                      <strong>📌 Important:</strong> You need to create your account before you can pay your bill.
+                  </div>
+                  
+                  <div style="text-align: center; margin: 30px 0;">
+                      <a href="${registerUrl}" class="button">🎯 Create Your Account First</a>
+                  </div>
+                  
+                  <p><strong>Your Application ID:</strong> ${application.applicationId}</p>
+                  <p>Once you create your account, you will be able to view and pay this bill.</p>
+                  
+                  <hr>
+                  <p style="color: #666; font-size: 12px;">Mister Fyber - Your trusted internet provider</p>
+              </div>
+              
+              <div class="footer">
+                  <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
+              </div>
+          </div>
+      </body>
+      </html>
+    `;
+
+    await this.sendEmail(
+      application.email,
+      `🧾 Your Bill is Ready - ${bill.invoiceNumber}`,
+      html,
+    );
+  }
+
   // ==================== REGISTRATION EMAIL (When user creates account) ====================
 
   async sendWelcomeEmail(user: IUser): Promise<void> {

@@ -1,4 +1,3 @@
-// models/Application.ts - COMPLETE FILE (FIXED for manual creation)
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IApplication extends Document {
@@ -7,21 +6,22 @@ export interface IApplication extends Document {
   lastName: string;
   email: string;
   phoneNumber: string;
-  buildingId?: mongoose.Types.ObjectId; // CHANGED: Optional for manual creation
-  buildingName?: string; // CHANGED: Optional for manual creation
-  floor?: string; // CHANGED: Optional for manual creation
-  unitNumber?: string; // CHANGED: Optional for manual creation
+  buildingId?: mongoose.Types.ObjectId;
+  buildingName?: string;
+  floor?: string;
+  unitNumber?: string;
   notes?: string;
   planId: mongoose.Types.ObjectId;
-  idType?: string; // CHANGED: Optional for manual creation
-  idNumber?: string; // CHANGED: Optional for manual creation
-  idImage?: string; // CHANGED: Optional for manual creation
+  idType?: string;
+  idNumber?: string;
+  idImage?: string;
   status: "pending" | "approved" | "rejected";
   adminNotes: string;
   reviewedBy?: mongoose.Types.ObjectId;
   reviewedAt?: Date;
   registeredUserId?: mongoose.Types.ObjectId;
   billingStarted: boolean;
+  billingCycleId?: mongoose.Types.ObjectId;
   approvalEmailSent: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -67,28 +67,28 @@ const ApplicationSchema: Schema = new Schema(
     buildingId: {
       type: Schema.Types.ObjectId,
       ref: "Building",
-      required: false, // NOT required for manual creation
+      required: false,
     },
-    buildingName: { type: String, required: false }, // NOT required for manual creation
-    floor: { type: String, required: false }, // NOT required for manual creation
-    unitNumber: { type: String, required: false }, // NOT required for manual creation
+    buildingName: { type: String, required: false },
+    floor: { type: String, required: false },
+    unitNumber: { type: String, required: false },
     notes: { type: String, default: "" },
     planId: { type: Schema.Types.ObjectId, ref: "Plan", required: true },
     idType: {
       type: String,
-      required: false, // NOT required for manual creation
+      required: false,
       default: "Manual Entry",
     },
     idNumber: {
       type: String,
-      required: false, // NOT required for manual creation
+      required: false,
       default: function () {
         return `MANUAL-${Date.now()}`;
       },
     },
     idImage: {
       type: String,
-      required: false, // NOT required for manual creation
+      required: false,
       default: "",
     },
     status: {
@@ -101,6 +101,7 @@ const ApplicationSchema: Schema = new Schema(
     reviewedAt: { type: Date },
     registeredUserId: { type: Schema.Types.ObjectId, ref: "User" },
     billingStarted: { type: Boolean, default: false },
+    billingCycleId: { type: Schema.Types.ObjectId, ref: "BillingCycle" },
     approvalEmailSent: { type: Boolean, default: false },
   },
   {
@@ -108,7 +109,6 @@ const ApplicationSchema: Schema = new Schema(
   },
 );
 
-// OPTIMIZED: Comprehensive indexes for fast queries
 ApplicationSchema.index({ applicationId: 1 });
 ApplicationSchema.index({ email: 1 });
 ApplicationSchema.index({ status: 1 });
@@ -118,5 +118,6 @@ ApplicationSchema.index({ status: 1, createdAt: -1 });
 ApplicationSchema.index({ email: 1, status: 1 });
 ApplicationSchema.index({ buildingId: 1, status: 1 });
 ApplicationSchema.index({ registeredUserId: 1 });
+ApplicationSchema.index({ billingCycleId: 1 });
 
 export default mongoose.model<IApplication>("Application", ApplicationSchema);
