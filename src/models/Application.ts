@@ -29,9 +29,7 @@ export interface IApplication extends Document {
 
 function getBuildingAbbreviation(buildingName?: string): string {
   if (!buildingName) return "MAN";
-  if (buildingName && buildingName.toUpperCase() === "SILK") {
-    return "SLK";
-  }
+  if (buildingName && buildingName.toUpperCase() === "SILK") return "SLK";
   if (buildingName && buildingName.trim().length >= 3) {
     return buildingName.trim().toUpperCase().substring(0, 3);
   }
@@ -74,11 +72,7 @@ const ApplicationSchema: Schema = new Schema(
     unitNumber: { type: String, required: false },
     notes: { type: String, default: "" },
     planId: { type: Schema.Types.ObjectId, ref: "Plan", required: true },
-    idType: {
-      type: String,
-      required: false,
-      default: "Manual Entry",
-    },
+    idType: { type: String, required: false, default: "Manual Entry" },
     idNumber: {
       type: String,
       required: false,
@@ -86,11 +80,7 @@ const ApplicationSchema: Schema = new Schema(
         return `MANUAL-${Date.now()}`;
       },
     },
-    idImage: {
-      type: String,
-      required: false,
-      default: "",
-    },
+    idImage: { type: String, required: false, default: "" },
     status: {
       type: String,
       enum: ["pending", "approved", "rejected"],
@@ -104,19 +94,12 @@ const ApplicationSchema: Schema = new Schema(
     billingCycleId: { type: Schema.Types.ObjectId, ref: "BillingCycle" },
     approvalEmailSent: { type: Boolean, default: false },
   },
-  {
-    timestamps: true,
-  },
+  { timestamps: true },
 );
 
 ApplicationSchema.index({ applicationId: 1 });
 ApplicationSchema.index({ email: 1 });
 ApplicationSchema.index({ status: 1 });
-ApplicationSchema.index({ buildingId: 1 });
-ApplicationSchema.index({ createdAt: -1 });
-ApplicationSchema.index({ status: 1, createdAt: -1 });
-ApplicationSchema.index({ email: 1, status: 1 });
-ApplicationSchema.index({ buildingId: 1, status: 1 });
 ApplicationSchema.index({ registeredUserId: 1 });
 ApplicationSchema.index({ billingCycleId: 1 });
 

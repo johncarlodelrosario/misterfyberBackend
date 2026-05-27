@@ -28,6 +28,7 @@ export interface IBillingCycle extends Document {
   disconnectReason?: string;
   isAfterCutoff?: boolean;
   cutoffDayUsed?: number;
+  applicationId?: mongoose.Types.ObjectId;
   pendingPlanChange?: {
     newPlanId: mongoose.Types.ObjectId;
     requestedAt: Date;
@@ -40,7 +41,7 @@ export interface IBillingCycle extends Document {
 
 const BillingCycleSchema = new Schema<IBillingCycle>(
   {
-    userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    userId: { type: Schema.Types.ObjectId, ref: "User", required: false },
     planId: { type: Schema.Types.ObjectId, ref: "Plan", required: true },
     billingStartDate: { type: Date, required: true },
     billingEndDate: { type: Date, required: true },
@@ -73,6 +74,7 @@ const BillingCycleSchema = new Schema<IBillingCycle>(
     disconnectReason: { type: String },
     isAfterCutoff: { type: Boolean, default: false },
     cutoffDayUsed: { type: Number },
+    applicationId: { type: Schema.Types.ObjectId, ref: "Application" },
     pendingPlanChange: {
       newPlanId: { type: Schema.Types.ObjectId, ref: "Plan" },
       requestedAt: Date,
@@ -86,6 +88,10 @@ const BillingCycleSchema = new Schema<IBillingCycle>(
   },
   { timestamps: true },
 );
+
+BillingCycleSchema.index({ userId: 1 });
+BillingCycleSchema.index({ status: 1 });
+BillingCycleSchema.index({ applicationId: 1 });
 
 export default mongoose.model<IBillingCycle>(
   "BillingCycle",

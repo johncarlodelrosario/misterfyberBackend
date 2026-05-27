@@ -30,6 +30,7 @@ export interface IBilling extends Document {
   isProRated: boolean;
   proRatedDays: number;
   billingCycleId: mongoose.Types.ObjectId;
+  applicationId?: mongoose.Types.ObjectId;
   reminder7DaySent: boolean;
   reminder3DaySent: boolean;
   reminder1DaySent: boolean;
@@ -52,7 +53,7 @@ function generateInvoiceNumber(): string {
 
 const BillingSchema: Schema = new Schema(
   {
-    userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    userId: { type: Schema.Types.ObjectId, ref: "User", required: false },
     invoiceNumber: {
       type: String,
       required: true,
@@ -93,6 +94,7 @@ const BillingSchema: Schema = new Schema(
     isProRated: { type: Boolean, default: false },
     proRatedDays: { type: Number, default: 0 },
     billingCycleId: { type: Schema.Types.ObjectId, ref: "BillingCycle" },
+    applicationId: { type: Schema.Types.ObjectId, ref: "Application" },
     reminder7DaySent: { type: Boolean, default: false },
     reminder3DaySent: { type: Boolean, default: false },
     reminder1DaySent: { type: Boolean, default: false },
@@ -113,5 +115,6 @@ BillingSchema.index({ invoiceNumber: 1 });
 BillingSchema.index({ userId: 1, status: 1 });
 BillingSchema.index({ dueDate: 1 });
 BillingSchema.index({ isProRated: 1, status: 1 });
+BillingSchema.index({ applicationId: 1 });
 
 export default mongoose.model<IBilling>("Billing", BillingSchema);
