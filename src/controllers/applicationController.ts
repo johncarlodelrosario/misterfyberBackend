@@ -495,7 +495,6 @@ export const getApplication = async (
   }
 };
 
-// ==================== APPROVE APPLICATION - BILLING CAN START BEFORE USER CREATES ACCOUNT ====================
 export const approveApplication = async (
   req: AuthRequest,
   res: Response,
@@ -523,7 +522,6 @@ export const approveApplication = async (
       });
     }
 
-    // Update application status
     await Application.updateOne(
       { _id: req.params.id },
       {
@@ -539,7 +537,6 @@ export const approveApplication = async (
 
     await session.commitTransaction();
 
-    // Send approval email WITH application ID for registration
     const registerUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/register`;
 
     const emailHtml = `
@@ -660,7 +657,7 @@ export const rejectApplication = async (
   }
 };
 
-// ==================== START BILLING FOR APPLICATION - BILLING BEFORE USER ACCOUNT ====================
+// ==================== START BILLING FOR APPLICATION - FIXED VERSION ====================
 export const startBillingForApplication = async (
   req: AuthRequest,
   res: Response,
@@ -673,7 +670,8 @@ export const startBillingForApplication = async (
     const { applicationId } = req.params;
     const { installationDate, notes } = req.body;
 
-    const application = await Application.findOne({ applicationId })
+    // FIX: Use findById for MongoDB _id instead of findOne by applicationId field
+    const application = await Application.findById(applicationId)
       .populate("planId")
       .lean();
 
@@ -736,7 +734,6 @@ export const startBillingForApplication = async (
     };
 
     if (isAfterCutoff) {
-      // Combined bill: pro-rated + next month
       isCombinedBill = true;
       billingStartDateForCycle = new Date(
         installationDateObj.getFullYear(),
@@ -785,7 +782,6 @@ export const startBillingForApplication = async (
         },
       ];
     } else {
-      // Pro-rated only bill
       billingStartDateForCycle = installationDateObj;
       billingEndDateForCycle = currentMonthEnd;
       nextBillingDate = new Date(
@@ -821,11 +817,10 @@ export const startBillingForApplication = async (
       ];
     }
 
-    // Create billing cycle
     const billingCycle = await BillingCycle.create(
       [
         {
-          userId: null, // No user yet - will be linked when user registers
+          userId: null,
           planId: plan._id,
           billingStartDate: billingStartDateForCycle,
           billingEndDate: billingEndDateForCycle,
@@ -843,7 +838,6 @@ export const startBillingForApplication = async (
       { session },
     );
 
-    // Create bill
     const invoiceNumber = `INV-${new Date().getFullYear()}${(new Date().getMonth() + 1).toString().padStart(2, "0")}-${Date.now().toString().slice(-6)}${Math.floor(
       Math.random() * 1000,
     )
@@ -853,7 +847,7 @@ export const startBillingForApplication = async (
     const bill = await Billing.create(
       [
         {
-          userId: null, // No user yet - will be linked when user registers
+          userId: null,
           billingCycleId: billingCycle[0]._id,
           invoiceNumber: invoiceNumber,
           billingPeriod: {
@@ -880,7 +874,6 @@ export const startBillingForApplication = async (
       { session },
     );
 
-    // Update application with billing info
     await Application.updateOne(
       { _id: application._id },
       {
@@ -894,7 +887,6 @@ export const startBillingForApplication = async (
 
     await session.commitTransaction();
 
-    // Send email with bill information (no account credentials yet)
     await emailService.sendBillWithoutAccount(application, bill[0], plan);
 
     clearAllCache();
@@ -925,7 +917,6 @@ export const startBillingForApplication = async (
   }
 };
 
-// Clear cache helper
 let billingSettingsCache: any = null;
 let billingSettingsCacheTime = 0;
 let billingCyclesCache: Map<string, { data: any; timestamp: number }> =
