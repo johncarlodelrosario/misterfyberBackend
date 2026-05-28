@@ -68,17 +68,15 @@ const ApplicationSchema: Schema = new Schema(
       required: false,
     },
     buildingName: { type: String, required: false },
-    floor: { type: String, required: false },
-    unitNumber: { type: String, required: false },
+    floor: { type: String, required: false, default: "Not Provided" },
+    unitNumber: { type: String, required: false, default: "Not Provided" },
     notes: { type: String, default: "" },
     planId: { type: Schema.Types.ObjectId, ref: "Plan", required: true },
-    idType: { type: String, required: false, default: "Manual Entry" },
+    idType: { type: String, required: false, default: "Not Provided" },
     idNumber: {
       type: String,
       required: false,
-      default: function () {
-        return `MANUAL-${Date.now()}`;
-      },
+      default: "Not Provided",
     },
     idImage: { type: String, required: false, default: "" },
     status: {

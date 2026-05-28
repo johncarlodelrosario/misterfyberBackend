@@ -190,6 +190,8 @@ export const submitApplication = async (
       floor,
       unitNumber,
       planId,
+      idType,
+      idNumber,
     });
 
     if (!buildingId || buildingId === "undefined" || buildingId === "null") {
@@ -289,8 +291,8 @@ export const submitApplication = async (
       unitNumber: unitNumber?.toString().trim(),
       notes: notes || "",
       planId,
-      idType: idType?.trim(),
-      idNumber: idNumber?.trim(),
+      idType: idType?.trim() || "Not Provided",
+      idNumber: idNumber?.trim() || "Not Provided",
       idImage: idImagePath,
       status: "pending",
     };
@@ -373,7 +375,7 @@ export const checkApplicationStatus = async (
     const { applicationId } = req.params;
     const application = await Application.findOne({ applicationId })
       .select(
-        "applicationId status idImage floor unitNumber notes createdAt adminNotes billingStarted billingCycleId registeredUserId",
+        "applicationId status idImage floor unitNumber notes createdAt adminNotes billingStarted billingCycleId registeredUserId firstName lastName email phoneNumber idType idNumber buildingId",
       )
       .populate("planId", "name price speed")
       .populate(
@@ -395,6 +397,12 @@ export const checkApplicationStatus = async (
         applicationId: application.applicationId,
         status: application.status,
         idImageUrl: idImageUrl,
+        firstName: application.firstName,
+        lastName: application.lastName,
+        email: application.email,
+        phoneNumber: application.phoneNumber,
+        idType: application.idType,
+        idNumber: application.idNumber,
         plan: application.planId,
         building: application.buildingId,
         floor: application.floor,
@@ -407,6 +415,7 @@ export const checkApplicationStatus = async (
       },
     });
   } catch (error) {
+    console.error("Error in checkApplicationStatus:", error);
     next(error);
   }
 };
@@ -432,9 +441,9 @@ export const getAllApplications = async (
       Application.countDocuments(query),
       Application.find(query)
         .select(
-          "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId",
+          "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber floor unitNumber",
         )
-        .populate("planId", "name price")
+        .populate("planId", "name price speed")
         .populate("buildingId", "buildingName streetAddress city")
         .sort({ createdAt: -1 })
         .skip(skip)
@@ -658,7 +667,6 @@ export const rejectApplication = async (
   }
 };
 
-// ==================== COMPLETELY FIXED: START BILLING FOR APPLICATION ====================
 export const startBillingForApplication = async (
   req: AuthRequest,
   res: Response,
@@ -675,7 +683,6 @@ export const startBillingForApplication = async (
 
     let application = null;
 
-    // METHOD 1: Try to find by MongoDB _id first (since frontend is sending ObjectId)
     if (mongoose.Types.ObjectId.isValid(applicationId)) {
       console.log(`📌 Attempt 1: Find by MongoDB _id: ${applicationId}`);
       application = await Application.findById(applicationId)
@@ -683,7 +690,6 @@ export const startBillingForApplication = async (
         .lean();
     }
 
-    // METHOD 2: If not found, try by string applicationId field
     if (!application) {
       console.log(
         `📌 Attempt 2: Find by string applicationId field: ${applicationId}`,
@@ -695,7 +701,6 @@ export const startBillingForApplication = async (
         .lean();
     }
 
-    // METHOD 3: If still not found, try to find any application with matching ID in any field
     if (!application) {
       console.log(`📌 Attempt 3: Find by any matching field`);
       application = await Application.findOne({
