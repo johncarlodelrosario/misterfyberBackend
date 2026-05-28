@@ -7,6 +7,7 @@ import {
   resumeBilling,
   disconnectClient,
   reconnectClient,
+  deleteBillingCycle,
   getBillingSettings,
   updateBillingSettings,
   getBillingSettingsAdmin,
@@ -54,6 +55,7 @@ router.post("/pause", adminMiddleware, pauseBilling);
 router.post("/resume", adminMiddleware, resumeBilling);
 router.post("/disconnect", adminMiddleware, disconnectClient);
 router.post("/reconnect", adminMiddleware, reconnectClient);
+router.delete("/delete-cycle", adminMiddleware, deleteBillingCycle);
 router.post("/auto-generate", adminMiddleware, autoGenerateMonthlyBills);
 router.post("/auto-reminders", adminMiddleware, autoSendReminders);
 router.post("/auto-suspend", adminMiddleware, autoSuspendOverdue);

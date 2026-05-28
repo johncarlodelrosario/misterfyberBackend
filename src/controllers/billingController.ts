@@ -1829,12 +1829,10 @@ export const stopBilling = async (
         status: { $in: ["active", "paused"] },
       }).lean();
     } else {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "userId or applicationId is required",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "userId or applicationId is required",
+      });
     }
 
     if (!billingCycle) {
@@ -1941,12 +1939,10 @@ export const disconnectClient = async (
         }
       }
     } else {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "userId or applicationId is required",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "userId or applicationId is required",
+      });
     }
 
     await session.commitTransaction();
@@ -2016,12 +2012,10 @@ export const reconnectClient = async (
         }
       }
     } else {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "userId or applicationId is required",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "userId or applicationId is required",
+      });
     }
 
     await session.commitTransaction();
@@ -2034,6 +2028,84 @@ export const reconnectClient = async (
     });
   } catch (error) {
     await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
+// ==================== DELETE BILLING CYCLE ====================
+export const deleteBillingCycle = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { billingCycleId, customerId, customerType } = req.body;
+
+    if (!billingCycleId) {
+      return res.status(400).json({
+        success: false,
+        message: "Billing cycle ID is required",
+      });
+    }
+
+    // Find the billing cycle
+    const billingCycle =
+      await BillingCycle.findById(billingCycleId).session(session);
+
+    if (!billingCycle) {
+      return res.status(404).json({
+        success: false,
+        message: "Billing cycle not found",
+      });
+    }
+
+    // Delete all associated bills
+    await Billing.deleteMany({ billingCycleId: billingCycle._id }, { session });
+
+    // Delete the billing cycle
+    await BillingCycle.deleteOne({ _id: billingCycle._id }, { session });
+
+    // Clear billing info from user or application
+    if (customerType === "user" && customerId) {
+      await User.updateOne(
+        { _id: customerId },
+        {
+          $unset: {
+            "billingInfo.currentBill": "",
+            "billingInfo.nextBillingDate": "",
+            "billingInfo.billingCycleId": "",
+          },
+        },
+        { session },
+      );
+    } else if (customerType === "application" && customerId) {
+      await Application.updateOne(
+        { _id: customerId },
+        {
+          $set: { billingStarted: false },
+          $unset: { billingCycleId: "" },
+        },
+        { session },
+      );
+    }
+
+    await session.commitTransaction();
+    clearAllCache();
+
+    res.status(200).json({
+      success: true,
+      message: "Billing cycle and associated records deleted successfully",
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    console.error("Delete billing cycle error:", error);
     next(error);
   } finally {
     session.endSession();
@@ -2510,6 +2582,7 @@ export default {
   resumeBilling,
   disconnectClient,
   reconnectClient,
+  deleteBillingCycle,
   getBillingSettings,
   updateBillingSettings,
   getBillingSettingsAdmin,
