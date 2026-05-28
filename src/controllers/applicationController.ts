@@ -1,3 +1,4 @@
+// controllers/applicationController.ts - COMPLETE FIXED FILE
 import { Request, Response, NextFunction } from "express";
 import Application from "../models/Application";
 import Plan from "../models/Plan";
@@ -658,6 +659,7 @@ export const rejectApplication = async (
 };
 
 // ==================== FIXED: START BILLING FOR APPLICATION ====================
+// This function accepts applicationId as a string (like "SIL26051540128") in the URL params
 export const startBillingForApplication = async (
   req: AuthRequest,
   res: Response,
@@ -667,20 +669,29 @@ export const startBillingForApplication = async (
   session.startTransaction();
 
   try {
+    // FIX: Get applicationId from params (the string ID like "SIL26051540128")
     const { applicationId } = req.params;
     const { installationDate, notes } = req.body;
 
-    // FIX: Use findById for MongoDB _id (not findOne by applicationId field)
-    const application = await Application.findById(applicationId)
+    console.log(`🔍 Looking for application with ID: ${applicationId}`);
+
+    // FIX: Use findOne with applicationId field (the custom string), not MongoDB _id
+    const application = await Application.findOne({
+      applicationId: applicationId,
+    })
       .populate("planId")
       .lean();
 
     if (!application) {
       return res.status(404).json({
         success: false,
-        message: "Application not found",
+        message: `Application not found with ID: ${applicationId}`,
       });
     }
+
+    console.log(
+      `✅ Found application: ${application.applicationId} - ${application.firstName} ${application.lastName}`,
+    );
 
     if (application.status !== "approved") {
       return res.status(400).json({
@@ -817,10 +828,12 @@ export const startBillingForApplication = async (
       ];
     }
 
+    // Create billing cycle linked to applicationId (MongoDB _id)
     const billingCycle = await BillingCycle.create(
       [
         {
           userId: null,
+          applicationId: application._id, // Store the MongoDB ObjectId reference
           planId: plan._id,
           billingStartDate: billingStartDateForCycle,
           billingEndDate: billingEndDateForCycle,
@@ -832,7 +845,6 @@ export const startBillingForApplication = async (
           actualBillableDays: actualBillableDays,
           isAfterCutoff: isAfterCutoff,
           cutoffDayUsed: billingCutoffDay,
-          applicationId: application._id,
         },
       ],
       { session },
@@ -844,10 +856,12 @@ export const startBillingForApplication = async (
       .toString()
       .padStart(3, "0")}`;
 
+    // Create bill linked to applicationId (MongoDB _id)
     const bill = await Billing.create(
       [
         {
           userId: null,
+          applicationId: application._id, // Store the MongoDB ObjectId reference
           billingCycleId: billingCycle[0]._id,
           invoiceNumber: invoiceNumber,
           billingPeriod: {
@@ -861,14 +875,13 @@ export const startBillingForApplication = async (
           discount: 0,
           total: totalAmount,
           status: "sent",
-          isProRated: true,
+          isProRated: !isCombinedBill,
           proRatedDays: actualBillableDays,
           notes:
             notes ||
             (isCombinedBill
               ? `Combined bill due on ${dueDate.toLocaleDateString()}`
               : `Pro-rated bill due on ${dueDate.toLocaleDateString()}`),
-          applicationId: application._id,
         },
       ],
       { session },
@@ -887,6 +900,7 @@ export const startBillingForApplication = async (
 
     await session.commitTransaction();
 
+    // Send email using the application object
     await emailService.sendBillWithoutAccount(application, bill[0], plan);
 
     clearAllCache();
@@ -894,9 +908,10 @@ export const startBillingForApplication = async (
     res.status(200).json({
       success: true,
       message: isCombinedBill
-        ? `Billing started! Combined bill (pro-rated + next month) of ₱${totalAmount.toFixed(2)} due on ${dueDate.toLocaleDateString()}. Customer can register using their Application ID.`
-        : `Billing started! Pro-rated bill of ₱${totalAmount.toFixed(2)} due on ${dueDate.toLocaleDateString()}. Customer can register using their Application ID.`,
+        ? `Billing started! Combined bill (pro-rated + next month) of ₱${totalAmount.toFixed(2)} due on ${dueDate.toLocaleDateString()}. Application ID: ${application.applicationId}`
+        : `Billing started! Pro-rated bill of ₱${totalAmount.toFixed(2)} due on ${dueDate.toLocaleDateString()}. Application ID: ${application.applicationId}`,
       data: {
+        applicationId: application.applicationId,
         billingCycle: billingCycle[0],
         bill: bill[0],
         proRatedAmount: proRatedAmount,

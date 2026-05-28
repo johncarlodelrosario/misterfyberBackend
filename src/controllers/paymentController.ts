@@ -16,6 +16,15 @@ interface AuthRequest extends Request {
   body: any;
 }
 
+// Helper function to convert document to plain object safely
+function toPlainObject(doc: any): any {
+  if (!doc) return doc;
+  if (typeof doc.toObject === "function") {
+    return doc.toObject();
+  }
+  return doc;
+}
+
 // @desc    Create payment (manual - pending status only)
 // @route   POST /api/payments
 // @access  Private
@@ -35,13 +44,11 @@ export const createPayment = async (
     } = req.body;
     const userId = req.user._id;
 
-    // Get the billing record
     const billing = await Billing.findById(billingId);
     if (!billing) {
       return res.status(404).json({ message: "Billing record not found" });
     }
 
-    // Create payment record with pending status
     const payment = await Payment.create({
       userId,
       amount,
@@ -109,7 +116,6 @@ export const getPayment = async (
       return res.status(404).json({ message: "Payment not found" });
     }
 
-    // Check authorization
     const isOwner =
       payment.userId &&
       payment.userId._id.toString() === req.user._id.toString();
@@ -120,9 +126,22 @@ export const getPayment = async (
       return res.status(403).json({ message: "Not authorized" });
     }
 
+    const paymentObj = toPlainObject(payment);
+
+    let readableApplicationId = null;
+    if (payment.applicationId) {
+      const app = payment.applicationId as any;
+      readableApplicationId = app.applicationId || null;
+    } else if (payment.paymentDetails?.gatewayResponse?.applicationId) {
+      readableApplicationId =
+        payment.paymentDetails.gatewayResponse.applicationId;
+    }
+
+    paymentObj.readableApplicationId = readableApplicationId;
+
     res.status(200).json({
       success: true,
-      data: payment,
+      data: paymentObj,
     });
   } catch (error) {
     next(error);
@@ -139,7 +158,6 @@ export const verifyPayment = async (
 ) => {
   try {
     const payment = await paymentService.verifyPayment(req.params.reference);
-
     res.status(200).json({
       success: true,
       data: payment,
@@ -250,7 +268,6 @@ export const refundPayment = async (
   try {
     const { reason } = req.body;
     const payment = await paymentService.refundPayment(req.params.id, reason);
-
     res.status(200).json({
       success: true,
       data: payment,
@@ -292,7 +309,12 @@ export const confirmPayment = async (
       return res.status(400).json({ message: "Payment already confirmed" });
     }
 
-    // Update payment status
+    let readableApplicationId = "";
+    if (payment.applicationId) {
+      const app = payment.applicationId as any;
+      readableApplicationId = app.applicationId || app._id.toString();
+    }
+
     payment.status = "completed";
     payment.paidAt = new Date();
     payment.paymentDetails = {
@@ -302,18 +324,17 @@ export const confirmPayment = async (
         confirmedBy: adminId,
         confirmedAt: new Date(),
         confirmationNotes: notes,
+        applicationId: readableApplicationId,
       },
     };
     await payment.save({ session });
 
-    // Update billing status
     const billing = await Billing.findById(payment.billingId).session(session);
     if (billing) {
       billing.status = "paid";
       billing.paymentId = payment._id;
       await billing.save({ session });
 
-      // Update billing cycle payment history
       const billingCycle = await BillingCycle.findById(
         billing.billingCycleId,
       ).session(session);
@@ -339,8 +360,8 @@ export const confirmPayment = async (
     let customer: any = null;
     let customerEmail = "";
     let customerName = "";
+    let displayAppId = readableApplicationId;
 
-    // Handle User or Application
     if (payment.userId) {
       customer = payment.userId as any;
       customerEmail = customer.email;
@@ -352,8 +373,6 @@ export const confirmPayment = async (
 
       if (customer.status === "suspended") {
         customer.status = "active";
-
-        // Reconnect MikroTik if available
         if (customer.mikrotik?.username && customer.planId) {
           try {
             await mikrotikService.applyPlanToUser(customer, customer.planId);
@@ -367,15 +386,13 @@ export const confirmPayment = async (
       customer = payment.applicationId as any;
       customerEmail = customer.email;
       customerName = `${customer.firstName} ${customer.lastName}`;
-
-      // Update application billing status
+      displayAppId = customer.applicationId || customer._id.toString();
       customer.billingStarted = true;
       await customer.save({ session });
     }
 
     await session.commitTransaction();
 
-    // Send confirmation email
     if (customerEmail && billing) {
       await emailService.sendEmail(
         customerEmail,
@@ -386,6 +403,7 @@ export const confirmPayment = async (
           <p>Your payment of <strong>₱${payment.amount.toLocaleString()}</strong> has been confirmed.</p>
           <div style="background: #f8f9fa; padding: 15px; border-radius: 5px;">
             <p><strong>Invoice:</strong> ${billing.invoiceNumber}</p>
+            ${displayAppId ? `<p><strong>Application ID:</strong> ${displayAppId}</p>` : ""}
             <p><strong>Amount:</strong> ₱${payment.amount.toLocaleString()}</p>
             <p><strong>Reference:</strong> ${payment.referenceNumber}</p>
           </div>
@@ -394,10 +412,31 @@ export const confirmPayment = async (
       );
     }
 
+    // Create response object safely
+    const responsePayment = {
+      _id: payment._id,
+      userId: payment.userId,
+      applicationId: payment.applicationId,
+      amount: payment.amount,
+      currency: payment.currency,
+      paymentMethod: payment.paymentMethod,
+      paymentType: payment.paymentType,
+      status: payment.status,
+      transactionId: payment.transactionId,
+      referenceNumber: payment.referenceNumber,
+      paymentDetails: payment.paymentDetails,
+      billingId: payment.billingId,
+      metadata: payment.metadata,
+      paidAt: payment.paidAt,
+      createdAt: payment.createdAt,
+      updatedAt: payment.updatedAt,
+      displayApplicationId: displayAppId,
+    };
+
     res.status(200).json({
       success: true,
       message: "Payment confirmed successfully.",
-      data: payment,
+      data: responsePayment,
     });
   } catch (error) {
     await session.abortTransaction();
@@ -425,9 +464,44 @@ export const getPendingPayments = async (
       .populate("billingId", "invoiceNumber total dueDate")
       .sort({ createdAt: -1 });
 
+    const enrichedPayments = payments.map((payment) => {
+      // Create a plain object safely
+      const p: any = {
+        _id: payment._id,
+        userId: payment.userId,
+        applicationId: payment.applicationId,
+        amount: payment.amount,
+        currency: payment.currency,
+        paymentMethod: payment.paymentMethod,
+        paymentType: payment.paymentType,
+        status: payment.status,
+        transactionId: payment.transactionId,
+        referenceNumber: payment.referenceNumber,
+        paymentDetails: payment.paymentDetails,
+        billingId: payment.billingId,
+        metadata: payment.metadata,
+        paidAt: payment.paidAt,
+        createdAt: payment.createdAt,
+        updatedAt: payment.updatedAt,
+      };
+
+      // Add readable application ID
+      if (p.applicationId) {
+        const app = p.applicationId as any;
+        p.readableApplicationId = app.applicationId || null;
+      } else if (p.paymentDetails?.gatewayResponse?.applicationId) {
+        p.readableApplicationId =
+          p.paymentDetails.gatewayResponse.applicationId;
+      } else {
+        p.readableApplicationId = null;
+      }
+
+      return p;
+    });
+
     res.status(200).json({
       success: true,
-      data: payments,
+      data: enrichedPayments,
     });
   } catch (error) {
     next(error);
@@ -476,7 +550,6 @@ export const rejectPayment = async (
     };
     await payment.save();
 
-    // Send rejection email
     if (customerEmail) {
       await emailService.sendEmail(
         customerEmail,
@@ -488,10 +561,21 @@ export const rejectPayment = async (
       );
     }
 
+    const responsePayment = {
+      _id: payment._id,
+      userId: payment.userId,
+      applicationId: payment.applicationId,
+      amount: payment.amount,
+      status: payment.status,
+      referenceNumber: payment.referenceNumber,
+      paymentDetails: payment.paymentDetails,
+      createdAt: payment.createdAt,
+    };
+
     res.status(200).json({
       success: true,
       message: "Payment rejected",
-      data: payment,
+      data: responsePayment,
     });
   } catch (error) {
     next(error);
