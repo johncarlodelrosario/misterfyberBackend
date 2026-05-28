@@ -1,4 +1,4 @@
-// controllers/applicationController.ts - COMPLETE FIXED FILE
+// controllers/applicationController.ts - COMPLETE WORKING FIX
 import { Request, Response, NextFunction } from "express";
 import Application from "../models/Application";
 import Plan from "../models/Plan";
@@ -658,8 +658,7 @@ export const rejectApplication = async (
   }
 };
 
-// ==================== FIXED: START BILLING FOR APPLICATION ====================
-// This function accepts applicationId as a string (like "SIL26051540128") in the URL params
+// ==================== COMPLETELY FIXED: START BILLING FOR APPLICATION ====================
 export const startBillingForApplication = async (
   req: AuthRequest,
   res: Response,
@@ -669,23 +668,57 @@ export const startBillingForApplication = async (
   session.startTransaction();
 
   try {
-    // FIX: Get applicationId from params (the string ID like "SIL26051540128")
-    const { applicationId } = req.params;
+    let { applicationId } = req.params;
     const { installationDate, notes } = req.body;
 
     console.log(`🔍 Looking for application with ID: ${applicationId}`);
 
-    // FIX: Use findOne with applicationId field (the custom string), not MongoDB _id
-    const application = await Application.findOne({
-      applicationId: applicationId,
-    })
-      .populate("planId")
-      .lean();
+    let application = null;
+
+    // METHOD 1: Try to find by MongoDB _id first (since frontend is sending ObjectId)
+    if (mongoose.Types.ObjectId.isValid(applicationId)) {
+      console.log(`📌 Attempt 1: Find by MongoDB _id: ${applicationId}`);
+      application = await Application.findById(applicationId)
+        .populate("planId")
+        .lean();
+    }
+
+    // METHOD 2: If not found, try by string applicationId field
+    if (!application) {
+      console.log(
+        `📌 Attempt 2: Find by string applicationId field: ${applicationId}`,
+      );
+      application = await Application.findOne({
+        applicationId: applicationId,
+      })
+        .populate("planId")
+        .lean();
+    }
+
+    // METHOD 3: If still not found, try to find any application with matching ID in any field
+    if (!application) {
+      console.log(`📌 Attempt 3: Find by any matching field`);
+      application = await Application.findOne({
+        $or: [
+          {
+            _id: mongoose.Types.ObjectId.isValid(applicationId)
+              ? new mongoose.Types.ObjectId(applicationId)
+              : null,
+          },
+          { applicationId: applicationId },
+          { email: applicationId },
+          { phoneNumber: applicationId },
+        ].filter(Boolean),
+      })
+        .populate("planId")
+        .lean();
+    }
 
     if (!application) {
+      console.error(`❌ Application NOT FOUND for ID: ${applicationId}`);
       return res.status(404).json({
         success: false,
-        message: `Application not found with ID: ${applicationId}`,
+        message: `Application not found with ID: ${applicationId}. Please check the ID and try again.`,
       });
     }
 
@@ -828,12 +861,11 @@ export const startBillingForApplication = async (
       ];
     }
 
-    // Create billing cycle linked to applicationId (MongoDB _id)
     const billingCycle = await BillingCycle.create(
       [
         {
           userId: null,
-          applicationId: application._id, // Store the MongoDB ObjectId reference
+          applicationId: application._id,
           planId: plan._id,
           billingStartDate: billingStartDateForCycle,
           billingEndDate: billingEndDateForCycle,
@@ -856,12 +888,11 @@ export const startBillingForApplication = async (
       .toString()
       .padStart(3, "0")}`;
 
-    // Create bill linked to applicationId (MongoDB _id)
     const bill = await Billing.create(
       [
         {
           userId: null,
-          applicationId: application._id, // Store the MongoDB ObjectId reference
+          applicationId: application._id,
           billingCycleId: billingCycle[0]._id,
           invoiceNumber: invoiceNumber,
           billingPeriod: {
@@ -900,7 +931,6 @@ export const startBillingForApplication = async (
 
     await session.commitTransaction();
 
-    // Send email using the application object
     await emailService.sendBillWithoutAccount(application, bill[0], plan);
 
     clearAllCache();
