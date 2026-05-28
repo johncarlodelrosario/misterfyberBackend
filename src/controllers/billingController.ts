@@ -181,20 +181,18 @@ export const startBilling = async (
     let customerId = null;
     let customerType = "";
 
-    // FIX: Check if billing for application or user
     if (applicationId) {
-      // Find by string applicationId like "SIL26051540128"
       application = await Application.findOne({ applicationId: applicationId })
         .populate("planId")
         .lean();
-
       if (!application) {
-        return res.status(404).json({
-          success: false,
-          message: `Application not found with ID: ${applicationId}`,
-        });
+        return res
+          .status(404)
+          .json({
+            success: false,
+            message: `Application not found with ID: ${applicationId}`,
+          });
       }
-
       plan = application.planId as any;
       customerId = application._id;
       customerType = "application";
@@ -204,27 +202,27 @@ export const startBilling = async (
     } else if (userId) {
       user = await User.findById(userId).populate("planId").lean();
       if (!user) {
-        return res.status(404).json({
-          success: false,
-          message: "User not found",
-        });
+        return res
+          .status(404)
+          .json({ success: false, message: "User not found" });
       }
       plan = user.planId as any;
       customerId = user._id;
       customerType = "user";
       console.log(`🚀 Starting billing for user: ${user.email}`);
     } else {
-      return res.status(400).json({
-        success: false,
-        message: "Either userId or applicationId is required",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Either userId or applicationId is required",
+        });
     }
 
     if (!plan) {
-      return res.status(400).json({
-        success: false,
-        message: "No plan assigned to this customer",
-      });
+      return res
+        .status(400)
+        .json({ success: false, message: "No plan assigned to this customer" });
     }
 
     const settings = await getOrCreateSettings();
@@ -235,7 +233,6 @@ export const startBilling = async (
     let installationDate = startDate ? new Date(startDate) : new Date();
     installationDate.setHours(0, 0, 0, 0);
 
-    // Check for existing cycle
     const existingQuery: any = {};
     if (user) existingQuery.userId = userId;
     if (application) existingQuery.applicationId = application._id;
@@ -266,7 +263,6 @@ export const startBilling = async (
     let createdBill: any = null;
     let billingStatus = "pending_activation";
 
-    // Create cycle data based on customer type
     const cycleData: any = {
       planId: plan._id,
       monthlyRate: monthlyRate,
@@ -314,10 +310,7 @@ export const startBilling = async (
       const billData: any = {
         billingCycleId: billingCycle[0]._id,
         invoiceNumber: generateInvoiceNumber(),
-        billingPeriod: {
-          start: installationDate,
-          end: billingEndDateForCycle,
-        },
+        billingPeriod: { start: installationDate, end: billingEndDateForCycle },
         dueDate: dueDate,
         items: [
           {
@@ -437,10 +430,7 @@ export const startBilling = async (
       const billData: any = {
         billingCycleId: billingCycle[0]._id,
         invoiceNumber: generateInvoiceNumber(),
-        billingPeriod: {
-          start: billingPeriodStart,
-          end: billingPeriodEnd,
-        },
+        billingPeriod: { start: billingPeriodStart, end: billingPeriodEnd },
         dueDate: dueDate,
         items: [
           {
@@ -535,7 +525,7 @@ export const startBilling = async (
   }
 };
 
-// ==================== GET BILLING SETTINGS (PUBLIC - NO AUTH NEEDED) ====================
+// ==================== GET BILLING SETTINGS ====================
 export const getBillingSettings = async (
   req: AuthRequest,
   res: Response,
@@ -798,7 +788,6 @@ export const getAllBillingCycles = async (
       .sort({ createdAt: -1 })
       .lean();
 
-    // Add readable application ID to each cycle
     const enrichedCycles = cycles.map((cycle) => {
       const c = { ...cycle };
       if (c.applicationId && (c.applicationId as any).applicationId) {
@@ -849,7 +838,6 @@ export const getAllBills = async (
       .sort({ dueDate: -1 })
       .lean();
 
-    // Add readable application ID to each bill
     const enrichedBills = bills.map((bill) => {
       const b = { ...bill };
       if (b.applicationId && (b.applicationId as any).applicationId) {
@@ -867,7 +855,7 @@ export const getAllBills = async (
   }
 };
 
-// ==================== PAUSE BILLING ====================
+// ==================== PAUSE BILLING (FIXED) ====================
 export const pauseBilling = async (
   req: AuthRequest,
   res: Response,
@@ -887,62 +875,93 @@ export const pauseBilling = async (
     let customerEmail = "";
     let customerName = "";
 
+    console.log(
+      `📋 Pause billing request: userId=${userId}, applicationId=${applicationId}`,
+    );
+
     if (applicationId) {
       application = await Application.findOne({ applicationId }).lean();
       if (!application) {
+        await session.abortTransaction();
         return res
           .status(404)
           .json({ success: false, message: "Application not found" });
       }
       billingCycle = await BillingCycle.findOne({
         applicationId: application._id,
-        status: "active",
+        status: { $in: ["active", "pending_activation"] },
       }).lean();
       customerEmail = application.email;
       customerName = `${application.firstName} ${application.lastName}`;
+      console.log(
+        `🔍 Found application: ${customerName}, Billing cycle: ${billingCycle?._id || "none"}`,
+      );
     } else if (userId) {
       user = await User.findById(userId).lean();
       if (!user) {
+        await session.abortTransaction();
         return res
           .status(404)
           .json({ success: false, message: "User not found" });
       }
       billingCycle = await BillingCycle.findOne({
         userId,
-        status: "active",
+        status: { $in: ["active", "pending_activation"] },
       }).lean();
       customerEmail = user.email;
       customerName = `${user.firstName} ${user.lastName}`;
+      console.log(
+        `🔍 Found user: ${customerName}, Billing cycle: ${billingCycle?._id || "none"}`,
+      );
     } else {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "userId or applicationId is required",
-        });
-    }
-
-    if (!billingCycle) {
-      return res.status(404).json({
+      await session.abortTransaction();
+      return res.status(400).json({
         success: false,
-        message: "No active billing cycle found to pause",
+        message: "userId or applicationId is required",
       });
     }
 
-    const unpaidBills = await Billing.findOne({
+    if (!billingCycle) {
+      await session.abortTransaction();
+      return res.status(404).json({
+        success: false,
+        message:
+          "No active billing cycle found to pause. Customer may not have started billing yet.",
+      });
+    }
+
+    // Check for unpaid bills
+    const unpaidBills = await Billing.find({
       ...(user ? { userId } : { applicationId: application?._id }),
       status: { $in: ["sent", "overdue", "pending_confirmation"] },
     }).lean();
 
-    if (unpaidBills) {
+    console.log(`💰 Unpaid bills found: ${unpaidBills.length}`);
+
+    if (unpaidBills.length > 0) {
+      await session.abortTransaction();
+      const totalAmount = unpaidBills.reduce(
+        (sum, b) => sum + (b.total || 0),
+        0,
+      );
       return res.status(400).json({
         success: false,
-        message: "Customer has unpaid bills. Please settle before pausing.",
+        message: `Customer has ${unpaidBills.length} unpaid bill(s). Please settle balance of ₱${totalAmount.toFixed(2)} before pausing.`,
+        data: {
+          unpaidBills,
+          totalAmount,
+          bills: unpaidBills.map((b) => ({
+            invoiceNumber: b.invoiceNumber,
+            amount: b.total,
+            dueDate: b.dueDate,
+            status: b.status,
+          })),
+        },
       });
     }
 
     const pauseDate = new Date();
-    await BillingCycle.updateOne(
+    const updateResult = await BillingCycle.updateOne(
       { _id: billingCycle._id },
       {
         $set: {
@@ -955,6 +974,10 @@ export const pauseBilling = async (
       { session },
     );
 
+    console.log(
+      `✅ Billing cycle updated: ${updateResult.modifiedCount} document(s) modified`,
+    );
+
     if (user) {
       await User.updateOne(
         { _id: userId },
@@ -964,6 +987,7 @@ export const pauseBilling = async (
       if (user.mikrotik?.username) {
         try {
           await mikrotikService.disablePPPoEUser(user);
+          console.log(`🔌 Disabled MikroTik user: ${user.mikrotik.username}`);
         } catch (error) {
           console.error("Error disabling user in MikroTik:", error);
         }
@@ -978,16 +1002,39 @@ export const pauseBilling = async (
 
     await session.commitTransaction();
 
-    await emailService.sendEmail(
-      customerEmail,
-      "Your Service Has Been Paused - Mister Fyber",
-      `<p>Dear ${customerName},</p><p>Your internet service has been paused.</p>`,
-    );
+    // Send email notification
+    try {
+      await emailService.sendEmail(
+        customerEmail,
+        "Your Service Has Been Paused - Mister Fyber",
+        `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #e67e22;">⏸️ Service Paused</h2>
+          <p>Dear ${customerName},</p>
+          <p>Your internet service has been paused as requested.</p>
+          <p><strong>Reason:</strong> ${reason || "Customer requested pause"}</p>
+          ${pauseUntilDate ? `<p><strong>Auto-resume Date:</strong> ${new Date(pauseUntilDate).toLocaleDateString()}</p>` : ""}
+          <p>To resume your service, please contact our support team.</p>
+          <hr>
+          <p style="color: #666; font-size: 12px;">Mister Fyber - Your trusted internet provider</p>
+        </div>`,
+      );
+      console.log(`📧 Pause notification email sent to: ${customerEmail}`);
+    } catch (emailError) {
+      console.error("Failed to send pause notification email:", emailError);
+    }
 
     clearAllCache();
+
     res.status(200).json({
       success: true,
       message: `Service paused for ${customerName}`,
+      data: {
+        customerName,
+        customerEmail,
+        pausedAt: pauseDate,
+        pauseUntil: pauseUntilDate || null,
+        reason: reason || "Customer requested pause",
+      },
     });
   } catch (error) {
     await session.abortTransaction();
@@ -997,7 +1044,7 @@ export const pauseBilling = async (
   }
 };
 
-// ==================== RESUME BILLING ====================
+// ==================== RESUME BILLING (FIXED) ====================
 export const resumeBilling = async (
   req: AuthRequest,
   res: Response,
@@ -1014,12 +1061,19 @@ export const resumeBilling = async (
     let user = null;
     let application = null;
     let billingCycle = null;
+    let customerEmail = "";
+    let customerName = "";
+
+    console.log(
+      `📋 Resume billing request: userId=${userId}, applicationId=${applicationId}`,
+    );
 
     if (applicationId) {
       application = await Application.findOne({ applicationId })
         .populate("planId")
         .lean();
       if (!application) {
+        await session.abortTransaction();
         return res
           .status(404)
           .json({ success: false, message: "Application not found" });
@@ -1028,9 +1082,12 @@ export const resumeBilling = async (
         applicationId: application._id,
         status: "paused",
       }).lean();
+      customerEmail = application.email;
+      customerName = `${application.firstName} ${application.lastName}`;
     } else if (userId) {
       user = await User.findById(userId).populate("planId").lean();
       if (!user) {
+        await session.abortTransaction();
         return res
           .status(404)
           .json({ success: false, message: "User not found" });
@@ -1039,19 +1096,40 @@ export const resumeBilling = async (
         userId,
         status: "paused",
       }).lean();
+      customerEmail = user.email;
+      customerName = `${user.firstName} ${user.lastName}`;
     } else {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "userId or applicationId is required",
-        });
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: "userId or applicationId is required",
+      });
     }
 
     if (!billingCycle) {
+      await session.abortTransaction();
       return res.status(404).json({
         success: false,
-        message: "No paused billing cycle found",
+        message: "No paused billing cycle found for this customer.",
+      });
+    }
+
+    // Check for any pending bills before resuming
+    const pendingBills = await Billing.find({
+      ...(user ? { userId } : { applicationId: application?._id }),
+      status: { $in: ["sent", "overdue", "pending_confirmation"] },
+    }).lean();
+
+    if (pendingBills.length > 0) {
+      await session.abortTransaction();
+      const totalAmount = pendingBills.reduce(
+        (sum, b) => sum + (b.total || 0),
+        0,
+      );
+      return res.status(400).json({
+        success: false,
+        message: `Cannot resume service. Customer has ${pendingBills.length} unpaid bill(s) totaling ₱${totalAmount.toFixed(2)}. Please settle outstanding balance first.`,
+        data: { pendingBills, totalAmount },
       });
     }
 
@@ -1082,6 +1160,7 @@ export const resumeBilling = async (
       if (user.mikrotik?.username && user.planId) {
         try {
           await mikrotikService.applyPlanToUser(user, user.planId);
+          console.log(`🔌 Re-enabled MikroTik user: ${user.mikrotik.username}`);
         } catch (error) {
           console.error("Error enabling user in MikroTik:", error);
         }
@@ -1096,21 +1175,37 @@ export const resumeBilling = async (
 
     await session.commitTransaction();
 
-    const email = user?.email || application?.email;
-    const name = user?.firstName || application?.firstName;
-
-    if (email) {
+    // Send email notification
+    try {
       await emailService.sendEmail(
-        email,
-        "Your Service Has Been Resumed",
-        `<p>Dear ${name},</p><p>Your service has been resumed.</p>`,
+        customerEmail,
+        "Your Service Has Been Resumed - Mister Fyber",
+        `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #27ae60;">✅ Service Resumed</h2>
+          <p>Dear ${customerName},</p>
+          <p>Your internet service has been resumed.</p>
+          <p><strong>Next Billing Date:</strong> ${nextBillingDate.toLocaleDateString()}</p>
+          <p>Thank you for being a valued customer!</p>
+          <hr>
+          <p style="color: #666; font-size: 12px;">Mister Fyber - Your trusted internet provider</p>
+        </div>`,
       );
+      console.log(`📧 Resume notification email sent to: ${customerEmail}`);
+    } catch (emailError) {
+      console.error("Failed to send resume notification email:", emailError);
     }
 
     clearAllCache();
+
     res.status(200).json({
       success: true,
-      message: `Service resumed for ${name}`,
+      message: `Service resumed for ${customerName}`,
+      data: {
+        customerName,
+        customerEmail,
+        resumedAt: resumeDate,
+        nextBillingDate,
+      },
     });
   } catch (error) {
     await session.abortTransaction();
@@ -1120,7 +1215,7 @@ export const resumeBilling = async (
   }
 };
 
-// ==================== MARK BILL AS PAID (FIXED - HANDLES BOTH USERS AND APPLICATIONS) ====================
+// ==================== MARK BILL AS PAID ====================
 export const markBillAsPaid = async (
   req: AuthRequest,
   res: Response,
