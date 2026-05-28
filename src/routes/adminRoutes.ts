@@ -41,6 +41,7 @@ router.post(
 );
 
 // Get customers without accounts - need admin role
+// FIXED: Keep the route as customers-without-accounts (with hyphens)
 router.get(
   "/customers-without-accounts",
   adminMiddleware,
