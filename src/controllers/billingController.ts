@@ -1047,31 +1047,33 @@ export const markBillAsPaid = async (
       });
     }
 
-    // Create payment record
-    const payment = await Payment.create(
-      [
-        {
-          userId: user?._id || null,
-          applicationId: application?._id || null,
-          amount: bill.total,
-          paymentMethod: "manual",
-          paymentType: "subscription",
-          status: "completed",
-          referenceNumber: referenceNumber || `ADMIN-${Date.now()}`,
-          billingId: bill._id,
-          paymentDetails: {
-            gateway: "manual",
-            gatewayResponse: {
-              confirmedBy: adminId,
-              confirmedAt: new Date(),
-              notes: notes || "Manually marked as paid",
-            },
-          },
-          paidAt: new Date(),
+    // Create payment record - use applicationId if available, otherwise userId
+    const paymentData: any = {
+      amount: bill.total,
+      paymentMethod: "manual",
+      paymentType: "subscription",
+      status: "completed",
+      referenceNumber: referenceNumber || `ADMIN-${Date.now()}`,
+      billingId: bill._id,
+      paymentDetails: {
+        gateway: "manual",
+        gatewayResponse: {
+          confirmedBy: adminId,
+          confirmedAt: new Date(),
+          notes: notes || "Manually marked as paid",
         },
-      ],
-      { session },
-    );
+      },
+      paidAt: new Date(),
+    };
+
+    // Add either userId OR applicationId, but not both
+    if (user && user._id) {
+      paymentData.userId = user._id;
+    } else if (application && application._id) {
+      paymentData.applicationId = application._id;
+    }
+
+    const payment = await Payment.create([paymentData], { session });
 
     console.log(`✅ Payment created: ${payment[0]._id}`);
 
@@ -1119,13 +1121,11 @@ export const markBillAsPaid = async (
 
     // Update application if this is an application bill
     if (application && application._id) {
-      // Mark application as having billing started and update status
       await Application.updateOne(
         { _id: application._id },
         {
           $set: {
             billingStarted: true,
-            status: "approved", // Keep as approved, billing is now active
           },
         },
         { session },
@@ -1140,7 +1140,6 @@ export const markBillAsPaid = async (
     // Send email notification based on customer type
     try {
       if (application && application.email) {
-        // Send email to application customer
         await emailService.sendEmail(
           application.email,
           `Payment Confirmation - ${bill.invoiceNumber}`,
@@ -1285,12 +1284,10 @@ export const confirmProRatedPayment = async (
     }
 
     if ((!user && !application) || !billingCycle) {
-      return res
-        .status(404)
-        .json({
-          success: false,
-          message: "User/Application or billing cycle not found",
-        });
+      return res.status(404).json({
+        success: false,
+        message: "User/Application or billing cycle not found",
+      });
     }
 
     const proRatedBill = await Billing.findOne({
@@ -1312,27 +1309,28 @@ export const confirmProRatedPayment = async (
       { session },
     );
 
-    const payment = await Payment.create(
-      [
-        {
-          userId: user?._id || null,
-          applicationId: application?._id || null,
-          amount: proRatedBill.total,
-          paymentMethod: "manual",
-          paymentType: "subscription",
-          status: "completed",
-          referenceNumber: `PRO-${Date.now()}`,
-          billingId: proRatedBill._id,
-          paymentDetails: {
-            gateway: "manual",
-            gatewayResponse: paymentDetails,
-            notes: "Pro-rated payment confirmed",
-          },
-          paidAt: new Date(),
-        },
-      ],
-      { session },
-    );
+    const paymentData: any = {
+      amount: proRatedBill.total,
+      paymentMethod: "manual",
+      paymentType: "subscription",
+      status: "completed",
+      referenceNumber: `PRO-${Date.now()}`,
+      billingId: proRatedBill._id,
+      paymentDetails: {
+        gateway: "manual",
+        gatewayResponse: paymentDetails,
+        notes: "Pro-rated payment confirmed",
+      },
+      paidAt: new Date(),
+    };
+
+    if (user && user._id) {
+      paymentData.userId = user._id;
+    } else if (application && application._id) {
+      paymentData.applicationId = application._id;
+    }
+
+    const payment = await Payment.create([paymentData], { session });
 
     await Billing.updateOne(
       { _id: proRatedBill._id },
@@ -1432,12 +1430,10 @@ export const startMonthlyBilling = async (
     }
 
     if ((!user && !application) || !billingCycle) {
-      return res
-        .status(404)
-        .json({
-          success: false,
-          message: "User/Application or billing cycle not found",
-        });
+      return res.status(404).json({
+        success: false,
+        message: "User/Application or billing cycle not found",
+      });
     }
 
     const settings = await getOrCreateSettings();
@@ -1465,34 +1461,36 @@ export const startMonthlyBilling = async (
     const plan = billingCycle.planId as any;
     const monthlyRate = plan.price;
 
-    const firstMonthlyBill = await Billing.create(
-      [
+    const billData: any = {
+      billingCycleId: billingCycle._id,
+      invoiceNumber: generateInvoiceNumber(),
+      billingPeriod: { start: billingStart, end: billingEnd },
+      dueDate,
+      items: [
         {
-          ...(userId ? { userId } : { applicationId }),
-          billingCycleId: billingCycle._id,
-          invoiceNumber: generateInvoiceNumber(),
-          billingPeriod: { start: billingStart, end: billingEnd },
-          dueDate,
-          items: [
-            {
-              description: `Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}`,
-              quantity: 1,
-              rate: monthlyRate,
-              amount: monthlyRate,
-            },
-          ],
-          subtotal: monthlyRate,
-          tax: 0,
-          discount: 0,
-          total: monthlyRate,
-          status: "sent",
-          isProRated: false,
-          proRatedDays: 0,
-          notes: "First monthly bill",
+          description: `Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}`,
+          quantity: 1,
+          rate: monthlyRate,
+          amount: monthlyRate,
         },
       ],
-      { session },
-    );
+      subtotal: monthlyRate,
+      tax: 0,
+      discount: 0,
+      total: monthlyRate,
+      status: "sent",
+      isProRated: false,
+      proRatedDays: 0,
+      notes: "First monthly bill",
+    };
+
+    if (userId) {
+      billData.userId = userId;
+    } else if (applicationId) {
+      billData.applicationId = applicationId;
+    }
+
+    const firstMonthlyBill = await Billing.create([billData], { session });
 
     const nextDate = getStartOfNextMonth(billingStart);
 
@@ -1744,8 +1742,7 @@ export const autoGenerateMonthlyBills = async (
 
       if (existingBill) continue;
 
-      const bill = await Billing.create({
-        ...(user ? { userId: user._id } : { applicationId: application._id }),
+      const billData: any = {
         billingCycleId: cycle._id,
         invoiceNumber: generateInvoiceNumber(),
         billingPeriod: { start: billingStart, end: billingEnd },
@@ -1762,7 +1759,15 @@ export const autoGenerateMonthlyBills = async (
         total: plan.price,
         status: "sent",
         isProRated: false,
-      });
+      };
+
+      if (user) {
+        billData.userId = user._id;
+      } else if (application) {
+        billData.applicationId = application._id;
+      }
+
+      const bill = await Billing.create(billData);
 
       const nextDate = getStartOfNextMonth(billingStart);
       await BillingCycle.updateOne(

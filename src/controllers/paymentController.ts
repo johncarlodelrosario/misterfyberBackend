@@ -1,8 +1,8 @@
-// controllers/paymentController.ts - COMPLETE FIXED FILE
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import Payment from "../models/Payment";
 import User from "../models/User";
+import Application from "../models/Application";
 import Billing from "../models/Billing";
 import BillingCycle from "../models/BillingCycle";
 import emailService from "../services/emailService";
@@ -102,17 +102,21 @@ export const getPayment = async (
   try {
     const payment = await Payment.findById(req.params.id)
       .populate("userId", "firstName lastName email")
+      .populate("applicationId", "firstName lastName email applicationId")
       .populate("billingId");
 
     if (!payment) {
       return res.status(404).json({ message: "Payment not found" });
     }
 
-    // Check if user owns payment or is admin
-    if (
-      payment.userId._id.toString() !== req.user._id.toString() &&
-      req.user.role !== "admin"
-    ) {
+    // Check authorization
+    const isOwner =
+      payment.userId &&
+      payment.userId._id.toString() === req.user._id.toString();
+    const isAdmin =
+      req.user.role === "super_admin" || req.user.role === "admin";
+
+    if (!isOwner && !isAdmin) {
       return res.status(403).json({ message: "Not authorized" });
     }
 
@@ -154,14 +158,7 @@ export const payMongoWebhook = async (
   next: NextFunction,
 ) => {
   try {
-    const signature = req.headers["paymongo-signature"];
-
-    // Verify webhook signature (implement based on PayMongo docs)
-    const payment = await paymentService.processPaymentWebhook(
-      req.body,
-      "paymongo",
-    );
-
+    await paymentService.processPaymentWebhook(req.body, "paymongo");
     res.status(200).json({ received: true });
   } catch (error) {
     next(error);
@@ -177,11 +174,7 @@ export const dragonPayWebhook = async (
   next: NextFunction,
 ) => {
   try {
-    const payment = await paymentService.processPaymentWebhook(
-      req.body,
-      "dragonpay",
-    );
-
+    await paymentService.processPaymentWebhook(req.body, "dragonpay");
     res.status(200).json({ status: "success" });
   } catch (error) {
     next(error);
@@ -256,7 +249,6 @@ export const refundPayment = async (
 ) => {
   try {
     const { reason } = req.body;
-
     const payment = await paymentService.refundPayment(req.params.id, reason);
 
     res.status(200).json({
@@ -284,13 +276,19 @@ export const confirmPayment = async (
     const { notes } = req.body;
     const adminId = req.user._id;
 
-    const payment = await Payment.findById(id).populate("userId billingId");
+    const payment = await Payment.findById(id)
+      .populate("userId")
+      .populate("applicationId")
+      .populate("billingId")
+      .session(session);
 
     if (!payment) {
+      await session.abortTransaction();
       return res.status(404).json({ message: "Payment not found" });
     }
 
     if (payment.status === "completed") {
+      await session.abortTransaction();
       return res.status(400).json({ message: "Payment already confirmed" });
     }
 
@@ -309,17 +307,16 @@ export const confirmPayment = async (
     await payment.save({ session });
 
     // Update billing status
-    const billing = await Billing.findById(payment.billingId);
+    const billing = await Billing.findById(payment.billingId).session(session);
     if (billing) {
       billing.status = "paid";
       billing.paymentId = payment._id;
       await billing.save({ session });
 
       // Update billing cycle payment history
-      const billingCycle = await BillingCycle.findOne({
-        userId: payment.userId,
-        status: "active",
-      });
+      const billingCycle = await BillingCycle.findById(
+        billing.billingCycleId,
+      ).session(session);
       if (billingCycle) {
         billingCycle.paymentHistory = billingCycle.paymentHistory || [];
         billingCycle.paymentHistory.push({
@@ -327,46 +324,79 @@ export const confirmPayment = async (
           amount: payment.amount,
           paidAt: new Date(),
         });
+
+        if (billing.isProRated && !billingCycle.proRatedPaid) {
+          billingCycle.proRatedPaid = true;
+          billingCycle.proRatedPaidAt = new Date();
+          if (billingCycle.status === "pending_activation") {
+            billingCycle.status = "active";
+          }
+        }
         await billingCycle.save({ session });
       }
     }
 
-    // Update user's current bill to 0
-    const user = await User.findById(payment.userId);
-    if (user) {
-      if (!user.billingInfo) {
-        user.billingInfo = {
-          currentBill: 0,
-          autoPay: false,
-        } as any;
-      }
-      user.billingInfo.currentBill = 0;
+    let customer: any = null;
+    let customerEmail = "";
+    let customerName = "";
 
-      if (user.status === "suspended") {
-        user.status = "active";
+    // Handle User or Application
+    if (payment.userId) {
+      customer = payment.userId as any;
+      customerEmail = customer.email;
+      customerName = `${customer.firstName} ${customer.lastName}`;
+
+      if (customer.billingInfo) {
+        customer.billingInfo.currentBill = 0;
+      }
+
+      if (customer.status === "suspended") {
+        customer.status = "active";
 
         // Reconnect MikroTik if available
-        if (user.mikrotik?.username && user.planId) {
+        if (customer.mikrotik?.username && customer.planId) {
           try {
-            await mikrotikService.applyPlanToUser(user, user.planId);
+            await mikrotikService.applyPlanToUser(customer, customer.planId);
           } catch (error) {
             console.error("Error reconnecting MikroTik:", error);
           }
         }
       }
-      await user.save({ session });
+      await customer.save({ session });
+    } else if (payment.applicationId) {
+      customer = payment.applicationId as any;
+      customerEmail = customer.email;
+      customerName = `${customer.firstName} ${customer.lastName}`;
+
+      // Update application billing status
+      customer.billingStarted = true;
+      await customer.save({ session });
     }
 
     await session.commitTransaction();
 
-    // Send confirmation email to user
-    if (user && billing) {
-      await emailService.sendPaymentConfirmation(user, payment, billing);
+    // Send confirmation email
+    if (customerEmail && billing) {
+      await emailService.sendEmail(
+        customerEmail,
+        `Payment Confirmed - ${billing.invoiceNumber}`,
+        `<div style="font-family: Arial, sans-serif; max-width: 600px;">
+          <h2 style="color: #28a745;">✅ Payment Confirmed!</h2>
+          <p>Dear ${customerName},</p>
+          <p>Your payment of <strong>₱${payment.amount.toLocaleString()}</strong> has been confirmed.</p>
+          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px;">
+            <p><strong>Invoice:</strong> ${billing.invoiceNumber}</p>
+            <p><strong>Amount:</strong> ₱${payment.amount.toLocaleString()}</p>
+            <p><strong>Reference:</strong> ${payment.referenceNumber}</p>
+          </div>
+          <p>Thank you for your payment!</p>
+        </div>`,
+      );
     }
 
     res.status(200).json({
       success: true,
-      message: "Payment confirmed successfully. User has been notified.",
+      message: "Payment confirmed successfully.",
       data: payment,
     });
   } catch (error) {
@@ -388,6 +418,10 @@ export const getPendingPayments = async (
   try {
     const payments = await Payment.find({ status: "pending" })
       .populate("userId", "firstName lastName email username phoneNumber")
+      .populate(
+        "applicationId",
+        "firstName lastName email applicationId phoneNumber",
+      )
       .populate("billingId", "invoiceNumber total dueDate")
       .sort({ createdAt: -1 });
 
@@ -412,7 +446,9 @@ export const rejectPayment = async (
     const { id } = req.params;
     const { reason } = req.body;
 
-    const payment = await Payment.findById(id).populate("userId");
+    const payment = await Payment.findById(id)
+      .populate("userId")
+      .populate("applicationId");
 
     if (!payment) {
       return res.status(404).json({ message: "Payment not found" });
@@ -422,7 +458,11 @@ export const rejectPayment = async (
       return res.status(400).json({ message: "Payment already confirmed" });
     }
 
-    const user = payment.userId as any;
+    const customer = (payment.userId as any) || (payment.applicationId as any);
+    const customerEmail = customer?.email;
+    const customerName = customer
+      ? `${customer.firstName} ${customer.lastName}`
+      : "Customer";
 
     payment.status = "failed";
     payment.paymentDetails = {
@@ -436,16 +476,15 @@ export const rejectPayment = async (
     };
     await payment.save();
 
-    // Send rejection email to user
-    if (user && user.email) {
+    // Send rejection email
+    if (customerEmail) {
       await emailService.sendEmail(
-        user.email,
+        customerEmail,
         "Payment Verification Failed",
-        `<p>Dear ${user.firstName || user.username},</p>
+        `<p>Dear ${customerName},</p>
          <p>Your payment of ₱${payment.amount.toFixed(2)} could not be verified.</p>
          <p>Reason: ${reason || "Please contact support for more information"}</p>
-         <p>Please submit your payment again or contact our support team.</p>
-         <a href="${process.env.FRONTEND_URL}/user/billing">Pay Again</a>`,
+         <p>Please submit your payment again or contact our support team.</p>`,
       );
     }
 

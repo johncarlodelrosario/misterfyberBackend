@@ -1,8 +1,8 @@
-// models/Payment.ts - UPDATED WITH "manual" PAYMENT METHOD
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IPayment extends Document {
-  userId: mongoose.Types.ObjectId;
+  userId?: mongoose.Types.ObjectId;
+  applicationId?: mongoose.Types.ObjectId;
   amount: number;
   currency: string;
   paymentMethod:
@@ -35,7 +35,12 @@ export interface IPayment extends Document {
 
 const PaymentSchema: Schema = new Schema(
   {
-    userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    userId: { type: Schema.Types.ObjectId, ref: "User", required: false },
+    applicationId: {
+      type: Schema.Types.ObjectId,
+      ref: "Application",
+      required: false,
+    },
     amount: { type: Number, required: true },
     currency: { type: String, default: "PHP" },
     paymentMethod: {
@@ -88,6 +93,14 @@ PaymentSchema.pre("save", function (next) {
     const timestamp = Date.now().toString(36).toUpperCase();
     const random = Math.random().toString(36).substring(2, 8).toUpperCase();
     this.referenceNumber = `PAY-${timestamp}-${random}`;
+  }
+  next();
+});
+
+// Validate that either userId or applicationId is provided
+PaymentSchema.pre("validate", function (next) {
+  if (!this.userId && !this.applicationId) {
+    next(new Error("Either userId or applicationId must be provided"));
   }
   next();
 });

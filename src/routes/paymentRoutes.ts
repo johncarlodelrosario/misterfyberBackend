@@ -1,4 +1,3 @@
-// routes/paymentRoutes.ts - COMPLETE FIXED FILE
 import express from "express";
 import { body } from "express-validator";
 import {
@@ -46,7 +45,7 @@ router.get(
 );
 
 router.get(
-  "/stats",
+  "/admin/stats",
   protect,
   authorize("super_admin", "admin", "staff"),
   getPaymentStats,
