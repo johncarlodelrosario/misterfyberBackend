@@ -657,7 +657,7 @@ export const rejectApplication = async (
   }
 };
 
-// ==================== START BILLING FOR APPLICATION - FIXED VERSION ====================
+// ==================== FIXED: START BILLING FOR APPLICATION ====================
 export const startBillingForApplication = async (
   req: AuthRequest,
   res: Response,
@@ -670,7 +670,7 @@ export const startBillingForApplication = async (
     const { applicationId } = req.params;
     const { installationDate, notes } = req.body;
 
-    // FIX: Use findById for MongoDB _id instead of findOne by applicationId field
+    // FIX: Use findById for MongoDB _id (not findOne by applicationId field)
     const application = await Application.findById(applicationId)
       .populate("planId")
       .lean();
