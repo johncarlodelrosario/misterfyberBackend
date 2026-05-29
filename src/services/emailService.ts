@@ -1,4 +1,4 @@
-// services/emailService.ts - COMPLETE UPDATED FILE FOR NEW FLOW
+// services/emailService.ts - COMPLETE UPDATED FILE WITH TOGGLE
 import { IUser } from "../models/User";
 import dotenv from "dotenv";
 import path from "path";
@@ -33,6 +33,7 @@ console.log(
   process.env.BREVO_API_KEY ? "✅ EXISTS" : "❌ MISSING",
 );
 console.log("   FRONTEND_URL:", process.env.FRONTEND_URL || "❌ MISSING");
+console.log("   EMAIL_ENABLED:", process.env.EMAIL_ENABLED || "true (default)");
 
 // SAFE NUMBER FORMATTING FUNCTION - FIXED
 const safeToFixed = (value: any, decimals: number = 2): string => {
@@ -41,6 +42,9 @@ const safeToFixed = (value: any, decimals: number = 2): string => {
   }
   return Number(value).toFixed(decimals);
 };
+
+// Email enabled flag - can be toggled at runtime
+let emailEnabled: boolean = process.env.EMAIL_ENABLED !== "false";
 
 class EmailService {
   private apiKey: string;
@@ -61,6 +65,7 @@ class EmailService {
     console.log("   SUPPORT_EMAIL:", this.supportEmail || "❌ MISSING");
     console.log("   EMAIL_FROM:", this.emailFrom || "❌ MISSING");
     console.log("   BREVO_API_KEY:", this.apiKey ? "✅ SET" : "❌ MISSING");
+    console.log("   EMAIL_ENABLED:", emailEnabled ? "✅ ON" : "❌ OFF");
 
     // Check if all required configs are present
     if (!this.adminEmail || !this.supportEmail || !this.emailFrom) {
@@ -80,11 +85,42 @@ class EmailService {
     }
   }
 
+  // Public method to check if email is enabled
+  isEmailEnabled(): boolean {
+    return emailEnabled && this.initialized && !!this.apiKey;
+  }
+
+  // Public method to toggle email sending
+  setEmailEnabled(enabled: boolean): void {
+    emailEnabled = enabled;
+    console.log(`📧 Email sending ${enabled ? "ENABLED" : "DISABLED"}`);
+  }
+
+  // Public method to get email status
+  getEmailStatus(): {
+    enabled: boolean;
+    configured: boolean;
+    apiKeyPresent: boolean;
+  } {
+    return {
+      enabled: emailEnabled,
+      configured: !!(this.adminEmail && this.supportEmail && this.emailFrom),
+      apiKeyPresent: !!this.apiKey,
+    };
+  }
+
   async sendEmail(
     to: string,
     subject: string,
     htmlContent: string,
   ): Promise<boolean> {
+    // Check if email sending is enabled globally
+    if (!emailEnabled) {
+      console.log(`📧 Email sending is DISABLED - skipping email to ${to}`);
+      console.log(`   Would have sent: ${subject}`);
+      return true; // Return true to not break the flow
+    }
+
     try {
       if (!this.initialized || !this.apiKey) {
         console.log(
