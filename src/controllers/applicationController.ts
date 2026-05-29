@@ -1,4 +1,4 @@
-// controllers/applicationController.ts - COMPLETE WORKING FIX
+// controllers/applicationController.ts - COMPLETE WORKING FIX WITH DUPLICATE PREVENTION
 import { Request, Response, NextFunction } from "express";
 import Application from "../models/Application";
 import Plan from "../models/Plan";
@@ -152,6 +152,7 @@ const getImageUrl = (imagePath?: string): string => {
   return `${PRODUCTION_URL}/uploads/id-cards/${filename}`;
 };
 
+// ==================== SUBMIT APPLICATION WITH DUPLICATE EMAIL CHECK ====================
 export const submitApplication = async (
   req: AuthRequest,
   res: Response,
@@ -217,6 +218,22 @@ export const submitApplication = async (
 
     const normalizedEmail = email?.trim().toLowerCase();
 
+    // CHECK FOR EXISTING USER WITH SAME EMAIL (REGISTERED ACCOUNT)
+    const existingUser = await User.findOne({
+      email: normalizedEmail,
+    }).lean();
+
+    if (existingUser) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "This email address is already registered as a user. Please login to your account instead of submitting a new application.",
+        alreadyRegistered: true,
+        email: normalizedEmail,
+      });
+    }
+
+    // CHECK FOR EXISTING APPLICATION WITH SAME EMAIL
     const existingApplication = await Application.findOne({
       email: normalizedEmail,
       status: { $in: ["pending", "approved", "rejected"] },
@@ -229,7 +246,7 @@ export const submitApplication = async (
           "You already have a pending application. Please wait for approval.";
       } else if (existingApplication.status === "approved") {
         message =
-          "You already have an approved application. Please create your account using your application ID.";
+          "You already have an approved application. Please create your account using your Application ID.";
       } else if (existingApplication.status === "rejected") {
         message =
           "Your previous application was rejected. Please contact support for assistance.";
@@ -738,10 +755,42 @@ export const startBillingForApplication = async (
       });
     }
 
-    if (application.billingStarted) {
+    // CHECK FOR EXISTING BILLING CYCLE - PREVENT DUPLICATE
+    const existingBillingCycle = await BillingCycle.findOne({
+      applicationId: application._id,
+    }).lean();
+
+    if (existingBillingCycle) {
+      const statusMessages: Record<string, string> = {
+        active: "active and running",
+        paused: "paused",
+        pending_activation: "pending payment confirmation",
+        cancelled: "cancelled",
+      };
+
       return res.status(400).json({
         success: false,
-        message: "Billing has already been started for this application",
+        message: `Billing has already been started for this application. Current status: ${statusMessages[existingBillingCycle.status] || existingBillingCycle.status}`,
+        data: {
+          billingCycle: existingBillingCycle,
+          status: existingBillingCycle.status,
+          startDate: existingBillingCycle.billingStartDate,
+          nextBillingDate: existingBillingCycle.nextBillingDate,
+        },
+      });
+    }
+
+    // CHECK FOR EXISTING BILLS
+    const existingBills = await Billing.findOne({
+      applicationId: application._id,
+    }).lean();
+
+    if (existingBills) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "This application already has billing records. Please check the billing history.",
+        data: { hasBills: true },
       });
     }
 

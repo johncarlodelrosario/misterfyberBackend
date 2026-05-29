@@ -1,3 +1,4 @@
+// controllers/billingController.ts - COMPLETE WITH DUPLICATE PREVENTION
 import { Request, Response, NextFunction } from "express";
 import Billing from "../models/Billing";
 import BillingCycle from "../models/BillingCycle";
@@ -161,7 +162,7 @@ function checkAdmin(req: AuthRequest, res: Response): boolean {
   return true;
 }
 
-// ==================== START BILLING FOR USER/APPLICATION (FIXED - WITH EXISTING BILLING CHECK) ====================
+// ==================== START BILLING FOR USER/APPLICATION (WITH DUPLICATE CHECK) ====================
 export const startBilling = async (
   req: AuthRequest,
   res: Response,
@@ -193,7 +194,7 @@ export const startBilling = async (
         });
       }
 
-      // CHECK IF BILLING ALREADY EXISTS FOR THIS APPLICATION
+      // CHECK IF BILLING ALREADY EXISTS FOR THIS APPLICATION - PREVENT DUPLICATE
       const existingBillingCycle = await BillingCycle.findOne({
         applicationId: application._id,
       }).lean();
@@ -245,7 +246,7 @@ export const startBilling = async (
           .json({ success: false, message: "User not found" });
       }
 
-      // CHECK IF BILLING ALREADY EXISTS FOR THIS USER
+      // CHECK IF BILLING ALREADY EXISTS FOR THIS USER - PREVENT DUPLICATE
       const existingBillingCycle = await BillingCycle.findOne({
         userId,
       }).lean();
@@ -898,7 +899,7 @@ export const getAllBills = async (
   }
 };
 
-// ==================== PAUSE BILLING (FIXED - WITH PROPER ERROR HANDLING) ====================
+// ==================== PAUSE BILLING (WITH UNPAID BILLS CHECK) ====================
 export const pauseBilling = async (
   req: AuthRequest,
   res: Response,
@@ -1082,7 +1083,7 @@ export const pauseBilling = async (
   }
 };
 
-// ==================== RESUME BILLING (FIXED) ====================
+// ==================== RESUME BILLING (WITH UNPAID BILLS CHECK) ====================
 export const resumeBilling = async (
   req: AuthRequest,
   res: Response,
@@ -1247,7 +1248,7 @@ export const resumeBilling = async (
   }
 };
 
-// ==================== MARK BILL AS PAID ====================
+// ==================== MARK BILL AS PAID (WITH DUPLICATE CHECK) ====================
 export const markBillAsPaid = async (
   req: AuthRequest,
   res: Response,
@@ -1263,24 +1264,48 @@ export const markBillAsPaid = async (
     const { referenceNumber, notes } = req.body;
     const adminId = req.user?._id;
 
-    const bill = await Billing.findById(billId)
-      .populate("userId")
-      .populate("applicationId")
-      .session(session);
+    // CHECK IF BILL IS ALREADY PAID
+    const existingBill = await Billing.findById(billId).session(session);
 
-    if (!bill) {
+    if (!existingBill) {
       await session.abortTransaction();
       return res
         .status(404)
         .json({ success: false, message: "Bill not found" });
     }
 
-    if (bill.status === "paid") {
+    if (existingBill.status === "paid") {
       await session.abortTransaction();
-      return res
-        .status(400)
-        .json({ success: false, message: "Bill is already paid" });
+      return res.status(400).json({
+        success: false,
+        message: `Bill ${existingBill.invoiceNumber} is already paid`,
+        data: {
+          invoiceNumber: existingBill.invoiceNumber,
+          paidAt: existingBill.updatedAt,
+        },
+      });
     }
+
+    // CHECK FOR EXISTING PAYMENT FOR THIS BILL
+    const existingPayment = await Payment.findOne({
+      billingId: billId,
+    }).session(session);
+    if (existingPayment && existingPayment.status === "completed") {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: "A payment has already been recorded for this bill",
+        data: {
+          paymentId: existingPayment._id,
+          status: existingPayment.status,
+        },
+      });
+    }
+
+    const bill = await Billing.findById(billId)
+      .populate("userId")
+      .populate("applicationId")
+      .session(session);
 
     let user = null;
     let application = null;
