@@ -1,3 +1,4 @@
+// routes/paymentRoutes.ts
 import express from "express";
 import { body } from "express-validator";
 import {
@@ -12,6 +13,7 @@ import {
   confirmPayment,
   rejectPayment,
   getPendingPayments,
+  getAllPaymentsAdmin,
 } from "../controllers/paymentController";
 import { protect, authorize } from "../middleware/auth";
 
@@ -37,6 +39,13 @@ router.get("/verify/:reference", protect, verifyPayment);
 router.get("/:id", protect, getPayment);
 
 // ==================== ADMIN ROUTES ====================
+router.get(
+  "/admin/all",
+  protect,
+  authorize("super_admin", "admin", "staff"),
+  getAllPaymentsAdmin,
+);
+
 router.get(
   "/admin/pending",
   protect,

@@ -1,3 +1,4 @@
+// controllers/paymentController.ts
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import Payment from "../models/Payment";
@@ -16,13 +17,57 @@ interface AuthRequest extends Request {
   body: any;
 }
 
-// Helper function to convert document to plain object safely
-function toPlainObject(doc: any): any {
-  if (!doc) return doc;
-  if (typeof doc.toObject === "function") {
-    return doc.toObject();
+// Helper function to get populated customer data
+async function getPopulatedPayment(paymentId: string) {
+  const payment = await Payment.findById(paymentId)
+    .populate(
+      "userId",
+      "firstName lastName email username phoneNumber status mikrotik planId",
+    )
+    .populate(
+      "applicationId",
+      "firstName lastName email applicationId phoneNumber status billingStarted",
+    )
+    .populate("billingId", "invoiceNumber total dueDate isProRated")
+    .lean();
+
+  if (!payment) return null;
+
+  // Create a plain object with application data for frontend
+  const result: any = { ...payment };
+
+  // If applicationId is populated, create an 'application' field for frontend
+  if (payment.applicationId && typeof payment.applicationId === "object") {
+    const app = payment.applicationId as any;
+    result.application = {
+      _id: app._id,
+      applicationId: app.applicationId,
+      firstName: app.firstName,
+      lastName: app.lastName,
+      email: app.email,
+      phoneNumber: app.phoneNumber,
+      status: app.status,
+      billingStarted: app.billingStarted,
+      applicantName: `${app.firstName || ""} ${app.lastName || ""}`.trim(),
+      address: app.address,
+    };
   }
-  return doc;
+
+  // If userId is populated, also add user data
+  if (payment.userId && typeof payment.userId === "object") {
+    const user = payment.userId as any;
+    result.user = {
+      _id: user._id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      phoneNumber: user.phoneNumber,
+      username: user.username,
+      status: user.status,
+    };
+  }
+
+  return result;
 }
 
 // @desc    Create payment (manual - pending status only)
@@ -86,7 +131,8 @@ export const getPayments = async (
     const userId = req.user._id;
     const payments = await Payment.find({ userId })
       .sort({ createdAt: -1 })
-      .populate("billingId");
+      .populate("billingId")
+      .lean();
 
     res.status(200).json({
       success: true,
@@ -107,10 +153,7 @@ export const getPayment = async (
   next: NextFunction,
 ) => {
   try {
-    const payment = await Payment.findById(req.params.id)
-      .populate("userId", "firstName lastName email")
-      .populate("applicationId", "firstName lastName email applicationId")
-      .populate("billingId");
+    const payment = await getPopulatedPayment(req.params.id);
 
     if (!payment) {
       return res.status(404).json({ message: "Payment not found" });
@@ -118,7 +161,7 @@ export const getPayment = async (
 
     const isOwner =
       payment.userId &&
-      payment.userId._id.toString() === req.user._id.toString();
+      payment.userId._id?.toString() === req.user._id.toString();
     const isAdmin =
       req.user.role === "super_admin" || req.user.role === "admin";
 
@@ -126,22 +169,9 @@ export const getPayment = async (
       return res.status(403).json({ message: "Not authorized" });
     }
 
-    const paymentObj = toPlainObject(payment);
-
-    let readableApplicationId = null;
-    if (payment.applicationId) {
-      const app = payment.applicationId as any;
-      readableApplicationId = app.applicationId || null;
-    } else if (payment.paymentDetails?.gatewayResponse?.applicationId) {
-      readableApplicationId =
-        payment.paymentDetails.gatewayResponse.applicationId;
-    }
-
-    paymentObj.readableApplicationId = readableApplicationId;
-
     res.status(200).json({
       success: true,
-      data: paymentObj,
+      data: payment,
     });
   } catch (error) {
     next(error);
@@ -293,6 +323,7 @@ export const confirmPayment = async (
     const { notes } = req.body;
     const adminId = req.user._id;
 
+    // Get payment with populated data
     const payment = await Payment.findById(id)
       .populate("userId")
       .populate("applicationId")
@@ -309,12 +340,26 @@ export const confirmPayment = async (
       return res.status(400).json({ message: "Payment already confirmed" });
     }
 
+    // Get readable application ID
     let readableApplicationId = "";
+    let customerEmail = "";
+    let customerName = "";
+    let customer: any = null;
+
     if (payment.applicationId) {
-      const app = payment.applicationId as any;
-      readableApplicationId = app.applicationId || app._id.toString();
+      customer = payment.applicationId as any;
+      readableApplicationId = customer.applicationId || customer._id.toString();
+      customerEmail = customer.email;
+      customerName =
+        `${customer.firstName || ""} ${customer.lastName || ""}`.trim();
+    } else if (payment.userId) {
+      customer = payment.userId as any;
+      customerEmail = customer.email;
+      customerName =
+        `${customer.firstName || ""} ${customer.lastName || ""}`.trim();
     }
 
+    // Update payment status
     payment.status = "completed";
     payment.paidAt = new Date();
     payment.paymentDetails = {
@@ -326,15 +371,18 @@ export const confirmPayment = async (
         confirmationNotes: notes,
         applicationId: readableApplicationId,
       },
+      notes: payment.paymentDetails?.notes,
     };
     await payment.save({ session });
 
+    // Update billing record
     const billing = await Billing.findById(payment.billingId).session(session);
     if (billing) {
       billing.status = "paid";
       billing.paymentId = payment._id;
       await billing.save({ session });
 
+      // Update billing cycle
       const billingCycle = await BillingCycle.findById(
         billing.billingCycleId,
       ).session(session);
@@ -357,42 +405,38 @@ export const confirmPayment = async (
       }
     }
 
-    let customer: any = null;
-    let customerEmail = "";
-    let customerName = "";
-    let displayAppId = readableApplicationId;
-
+    // Update customer status
     if (payment.userId) {
-      customer = payment.userId as any;
-      customerEmail = customer.email;
-      customerName = `${customer.firstName} ${customer.lastName}`;
-
-      if (customer.billingInfo) {
-        customer.billingInfo.currentBill = 0;
-      }
-
-      if (customer.status === "suspended") {
-        customer.status = "active";
-        if (customer.mikrotik?.username && customer.planId) {
-          try {
-            await mikrotikService.applyPlanToUser(customer, customer.planId);
-          } catch (error) {
-            console.error("Error reconnecting MikroTik:", error);
+      const user = await User.findById(payment.userId).session(session);
+      if (user) {
+        if (user.billingInfo) {
+          user.billingInfo.currentBill = 0;
+        }
+        if (user.status === "suspended") {
+          user.status = "active";
+          if (user.mikrotik?.username && user.planId) {
+            try {
+              await mikrotikService.applyPlanToUser(user, user.planId);
+            } catch (error) {
+              console.error("Error reconnecting MikroTik:", error);
+            }
           }
         }
+        await user.save({ session });
       }
-      await customer.save({ session });
     } else if (payment.applicationId) {
-      customer = payment.applicationId as any;
-      customerEmail = customer.email;
-      customerName = `${customer.firstName} ${customer.lastName}`;
-      displayAppId = customer.applicationId || customer._id.toString();
-      customer.billingStarted = true;
-      await customer.save({ session });
+      const app = await Application.findById(payment.applicationId).session(
+        session,
+      );
+      if (app) {
+        app.billingStarted = true;
+        await app.save({ session });
+      }
     }
 
     await session.commitTransaction();
 
+    // Send confirmation email
     if (customerEmail && billing) {
       await emailService.sendEmail(
         customerEmail,
@@ -403,40 +447,24 @@ export const confirmPayment = async (
           <p>Your payment of <strong>₱${payment.amount.toLocaleString()}</strong> has been confirmed.</p>
           <div style="background: #f8f9fa; padding: 15px; border-radius: 5px;">
             <p><strong>Invoice:</strong> ${billing.invoiceNumber}</p>
-            ${displayAppId ? `<p><strong>Application ID:</strong> ${displayAppId}</p>` : ""}
+            ${readableApplicationId ? `<p><strong>Application ID:</strong> ${readableApplicationId}</p>` : ""}
             <p><strong>Amount:</strong> ₱${payment.amount.toLocaleString()}</p>
             <p><strong>Reference:</strong> ${payment.referenceNumber}</p>
           </div>
           <p>Thank you for your payment!</p>
+          <hr>
+          <p style="color: #666; font-size: 12px;">Mister Fyber - Your trusted internet provider</p>
         </div>`,
       );
     }
 
-    // Create response object safely
-    const responsePayment = {
-      _id: payment._id,
-      userId: payment.userId,
-      applicationId: payment.applicationId,
-      amount: payment.amount,
-      currency: payment.currency,
-      paymentMethod: payment.paymentMethod,
-      paymentType: payment.paymentType,
-      status: payment.status,
-      transactionId: payment.transactionId,
-      referenceNumber: payment.referenceNumber,
-      paymentDetails: payment.paymentDetails,
-      billingId: payment.billingId,
-      metadata: payment.metadata,
-      paidAt: payment.paidAt,
-      createdAt: payment.createdAt,
-      updatedAt: payment.updatedAt,
-      displayApplicationId: displayAppId,
-    };
+    // Get populated payment for response
+    const populatedPayment = await getPopulatedPayment(payment._id.toString());
 
     res.status(200).json({
       success: true,
       message: "Payment confirmed successfully.",
-      data: responsePayment,
+      data: populatedPayment,
     });
   } catch (error) {
     await session.abortTransaction();
@@ -456,52 +484,185 @@ export const getPendingPayments = async (
 ) => {
   try {
     const payments = await Payment.find({ status: "pending" })
-      .populate("userId", "firstName lastName email username phoneNumber")
+      .populate(
+        "userId",
+        "firstName lastName email username phoneNumber status",
+      )
       .populate(
         "applicationId",
-        "firstName lastName email applicationId phoneNumber",
+        "firstName lastName email applicationId phoneNumber status billingStarted",
       )
       .populate("billingId", "invoiceNumber total dueDate")
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
 
+    // Enrich payments with application data for frontend
     const enrichedPayments = payments.map((payment) => {
-      // Create a plain object safely
-      const p: any = {
-        _id: payment._id,
-        userId: payment.userId,
-        applicationId: payment.applicationId,
-        amount: payment.amount,
-        currency: payment.currency,
-        paymentMethod: payment.paymentMethod,
-        paymentType: payment.paymentType,
-        status: payment.status,
-        transactionId: payment.transactionId,
-        referenceNumber: payment.referenceNumber,
-        paymentDetails: payment.paymentDetails,
-        billingId: payment.billingId,
-        metadata: payment.metadata,
-        paidAt: payment.paidAt,
-        createdAt: payment.createdAt,
-        updatedAt: payment.updatedAt,
-      };
+      const enriched: any = { ...payment };
 
-      // Add readable application ID
-      if (p.applicationId) {
-        const app = p.applicationId as any;
-        p.readableApplicationId = app.applicationId || null;
-      } else if (p.paymentDetails?.gatewayResponse?.applicationId) {
-        p.readableApplicationId =
-          p.paymentDetails.gatewayResponse.applicationId;
-      } else {
-        p.readableApplicationId = null;
+      // Create application object for frontend if applicationId is populated
+      if (payment.applicationId && typeof payment.applicationId === "object") {
+        const app = payment.applicationId as any;
+        enriched.application = {
+          _id: app._id,
+          applicationId: app.applicationId,
+          firstName: app.firstName,
+          lastName: app.lastName,
+          email: app.email,
+          phoneNumber: app.phoneNumber,
+          status: app.status,
+          billingStarted: app.billingStarted,
+          applicantName: `${app.firstName || ""} ${app.lastName || ""}`.trim(),
+        };
+        enriched.applicationId = app.applicationId;
       }
 
-      return p;
+      // Add readable application ID from gateway response if available
+      if (
+        !enriched.application &&
+        payment.paymentDetails?.gatewayResponse?.applicationId
+      ) {
+        enriched.readableApplicationId =
+          payment.paymentDetails.gatewayResponse.applicationId;
+      }
+
+      // Create user object if userId is populated
+      if (payment.userId && typeof payment.userId === "object") {
+        const user = payment.userId as any;
+        enriched.user = {
+          _id: user._id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          phoneNumber: user.phoneNumber,
+          username: user.username,
+          status: user.status,
+        };
+      }
+
+      return enriched;
     });
 
     res.status(200).json({
       success: true,
       data: enrichedPayments,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get all payments with pagination (Admin)
+// @route   GET /api/payments/admin/all
+// @access  Private/Admin
+export const getAllPaymentsAdmin = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 10;
+    const skip = (page - 1) * limit;
+    const status = req.query.status as string;
+
+    let query: any = {};
+    if (status && status !== "all") {
+      query.status = status;
+    }
+
+    const [payments, total] = await Promise.all([
+      Payment.find(query)
+        .populate(
+          "userId",
+          "firstName lastName email username phoneNumber status",
+        )
+        .populate(
+          "applicationId",
+          "firstName lastName email applicationId phoneNumber status billingStarted",
+        )
+        .populate("billingId", "invoiceNumber total dueDate")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Payment.countDocuments(query),
+    ]);
+
+    // Calculate stats
+    const [totalStats, monthlyStats] = await Promise.all([
+      Payment.aggregate([
+        { $match: { status: "completed" } },
+        {
+          $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } },
+        },
+      ]),
+      Payment.aggregate([
+        {
+          $match: {
+            status: "completed",
+            createdAt: {
+              $gte: new Date(
+                new Date().getFullYear(),
+                new Date().getMonth(),
+                1,
+              ),
+            },
+          },
+        },
+        {
+          $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } },
+        },
+      ]),
+    ]);
+
+    // Enrich payments with application data
+    const enrichedPayments = payments.map((payment) => {
+      const enriched: any = { ...payment };
+
+      if (payment.applicationId && typeof payment.applicationId === "object") {
+        const app = payment.applicationId as any;
+        enriched.application = {
+          _id: app._id,
+          applicationId: app.applicationId,
+          firstName: app.firstName,
+          lastName: app.lastName,
+          email: app.email,
+          phoneNumber: app.phoneNumber,
+          status: app.status,
+          billingStarted: app.billingStarted,
+          applicantName: `${app.firstName || ""} ${app.lastName || ""}`.trim(),
+        };
+      }
+
+      if (payment.userId && typeof payment.userId === "object") {
+        const user = payment.userId as any;
+        enriched.user = {
+          _id: user._id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          phoneNumber: user.phoneNumber,
+          username: user.username,
+          status: user.status,
+        };
+      }
+
+      return enriched;
+    });
+
+    res.status(200).json({
+      success: true,
+      data: enrichedPayments,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+      stats: {
+        total: totalStats[0]?.total || 0,
+        totalCount: totalStats[0]?.count || 0,
+        monthly: monthlyStats[0]?.total || 0,
+        monthlyCount: monthlyStats[0]?.count || 0,
+      },
     });
   } catch (error) {
     next(error);
@@ -521,8 +682,8 @@ export const rejectPayment = async (
     const { reason } = req.body;
 
     const payment = await Payment.findById(id)
-      .populate("userId")
-      .populate("applicationId");
+      .populate("userId", "firstName lastName email")
+      .populate("applicationId", "firstName lastName email applicationId");
 
     if (!payment) {
       return res.status(404).json({ message: "Payment not found" });
@@ -535,7 +696,7 @@ export const rejectPayment = async (
     const customer = (payment.userId as any) || (payment.applicationId as any);
     const customerEmail = customer?.email;
     const customerName = customer
-      ? `${customer.firstName} ${customer.lastName}`
+      ? `${customer.firstName || ""} ${customer.lastName || ""}`.trim()
       : "Customer";
 
     payment.status = "failed";
@@ -547,17 +708,23 @@ export const rejectPayment = async (
         rejectedAt: new Date(),
         rejectedBy: req.user._id,
       },
+      notes: payment.paymentDetails?.notes,
     };
     await payment.save();
 
     if (customerEmail) {
       await emailService.sendEmail(
         customerEmail,
-        "Payment Verification Failed",
-        `<p>Dear ${customerName},</p>
-         <p>Your payment of ₱${payment.amount.toFixed(2)} could not be verified.</p>
-         <p>Reason: ${reason || "Please contact support for more information"}</p>
-         <p>Please submit your payment again or contact our support team.</p>`,
+        "Payment Verification Failed - Mister Fyber",
+        `<div style="font-family: Arial, sans-serif; max-width: 600px;">
+          <h2 style="color: #dc3545;">❌ Payment Verification Failed</h2>
+          <p>Dear ${customerName},</p>
+          <p>Your payment of <strong>₱${payment.amount.toLocaleString()}</strong> could not be verified.</p>
+          <p><strong>Reason:</strong> ${reason || "Please contact support for more information"}</p>
+          <p>Please submit your payment again or contact our support team.</p>
+          <hr>
+          <p style="color: #666; font-size: 12px;">Mister Fyber - Your trusted internet provider</p>
+        </div>`,
       );
     }
 
