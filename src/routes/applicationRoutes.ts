@@ -1,4 +1,4 @@
-// routes/applicationRoutes.ts - COMPLETE FILE
+// routes/applicationRoutes.ts - COMPLETE FILE WITH MAC ADDRESS
 import express from "express";
 import { body } from "express-validator";
 import {
@@ -25,7 +25,7 @@ router.get("/address/provinces/:regionCode", getProvincesByRegion);
 router.get("/address/cities/:provinceCode", getCitiesByProvince);
 router.get("/address/barangays/:cityCode", getBarangaysByCity);
 
-// Public - application submission
+// Public - application submission (MAC ADDRESS IS OPTIONAL)
 router.post(
   "/",
   uploadIdCard.single("idImage"),
@@ -40,6 +40,7 @@ router.post(
     body("planId").notEmpty().withMessage("Plan is required"),
     body("idType").notEmpty().withMessage("ID type is required"),
     body("idNumber").notEmpty().withMessage("ID number is required"),
+    // MAC ADDRESS IS NOT REQUIRED - NO VALIDATION
   ],
   submitApplication,
 );

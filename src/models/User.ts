@@ -1,4 +1,4 @@
-// models/User.ts - COMPLETE WITH CORRECT STATUS ENUM
+// models/User.ts - COMPLETE WITH MAC ADDRESS (OPTIONAL)
 import mongoose, { Schema, Document } from "mongoose";
 import bcrypt from "bcryptjs";
 
@@ -25,6 +25,7 @@ export interface IUser extends Document {
   profilePicture?: string;
   planId?: mongoose.Types.ObjectId;
   applicationId?: string;
+  macAddress?: string; // ADDED - OPTIONAL
   status:
     | "active"
     | "inactive"
@@ -95,6 +96,7 @@ const UserSchema: Schema = new Schema(
     profilePicture: { type: String },
     planId: { type: Schema.Types.ObjectId, ref: "Plan" },
     applicationId: { type: String, index: true },
+    macAddress: { type: String, required: false, default: "" }, // ADDED - OPTIONAL
     status: {
       type: String,
       enum: [

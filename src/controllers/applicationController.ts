@@ -1,4 +1,4 @@
-// controllers/applicationController.ts - COMPLETE WORKING FIX WITH DUPLICATE PREVENTION
+// controllers/applicationController.ts - COMPLETE WORKING FIX WITH DUPLICATE PREVENTION AND MAC ADDRESS
 import { Request, Response, NextFunction } from "express";
 import Application from "../models/Application";
 import Plan from "../models/Plan";
@@ -152,7 +152,7 @@ const getImageUrl = (imagePath?: string): string => {
   return `${PRODUCTION_URL}/uploads/id-cards/${filename}`;
 };
 
-// ==================== SUBMIT APPLICATION WITH DUPLICATE EMAIL CHECK ====================
+// ==================== SUBMIT APPLICATION WITH DUPLICATE EMAIL CHECK AND MAC ADDRESS ====================
 export const submitApplication = async (
   req: AuthRequest,
   res: Response,
@@ -180,6 +180,7 @@ export const submitApplication = async (
       planId,
       idType,
       idNumber,
+      macAddress, // ADDED - OPTIONAL
     } = req.body;
 
     console.log("Received application data:", {
@@ -193,6 +194,7 @@ export const submitApplication = async (
       planId,
       idType,
       idNumber,
+      macAddress, // ADDED - OPTIONAL
     });
 
     if (!buildingId || buildingId === "undefined" || buildingId === "null") {
@@ -311,6 +313,7 @@ export const submitApplication = async (
       idType: idType?.trim() || "Not Provided",
       idNumber: idNumber?.trim() || "Not Provided",
       idImage: idImagePath,
+      macAddress: macAddress?.trim() || "", // ADDED - OPTIONAL
       status: "pending",
     };
 
@@ -392,7 +395,7 @@ export const checkApplicationStatus = async (
     const { applicationId } = req.params;
     const application = await Application.findOne({ applicationId })
       .select(
-        "applicationId status idImage floor unitNumber notes createdAt adminNotes billingStarted billingCycleId registeredUserId firstName lastName email phoneNumber idType idNumber buildingId",
+        "applicationId status idImage floor unitNumber notes createdAt adminNotes billingStarted billingCycleId registeredUserId firstName lastName email phoneNumber idType idNumber macAddress buildingId",
       )
       .populate("planId", "name price speed")
       .populate(
@@ -420,6 +423,7 @@ export const checkApplicationStatus = async (
         phoneNumber: application.phoneNumber,
         idType: application.idType,
         idNumber: application.idNumber,
+        macAddress: application.macAddress || "", // ADDED - OPTIONAL
         plan: application.planId,
         building: application.buildingId,
         floor: application.floor,
@@ -458,7 +462,7 @@ export const getAllApplications = async (
       Application.countDocuments(query),
       Application.find(query)
         .select(
-          "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber floor unitNumber",
+          "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber floor unitNumber macAddress",
         )
         .populate("planId", "name price speed")
         .populate("buildingId", "buildingName streetAddress city")
@@ -473,6 +477,7 @@ export const getAllApplications = async (
       ...app,
       idImageUrl: getImageUrl(app.idImage),
       hasAccount: !!app.registeredUserId,
+      macAddress: app.macAddress || "", // ADDED - OPTIONAL
     }));
 
     res.status(200).json({
@@ -515,7 +520,14 @@ export const getApplication = async (
     const idImageUrl = getImageUrl(application.idImage);
     res
       .status(200)
-      .json({ success: true, data: { ...application, idImageUrl } });
+      .json({
+        success: true,
+        data: {
+          ...application,
+          idImageUrl,
+          macAddress: application.macAddress || "",
+        },
+      });
   } catch (error) {
     console.error("Error in getApplication:", error);
     next(error);

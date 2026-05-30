@@ -1,3 +1,4 @@
+// models/Application.ts - COMPLETE WITH MAC ADDRESS (OPTIONAL)
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IApplication extends Document {
@@ -15,6 +16,7 @@ export interface IApplication extends Document {
   idType?: string;
   idNumber?: string;
   idImage?: string;
+  macAddress?: string; // ADDED - OPTIONAL
   status: "pending" | "approved" | "rejected";
   adminNotes: string;
   reviewedBy?: mongoose.Types.ObjectId;
@@ -79,6 +81,7 @@ const ApplicationSchema: Schema = new Schema(
       default: "Not Provided",
     },
     idImage: { type: String, required: false, default: "" },
+    macAddress: { type: String, required: false, default: "", index: false }, // ADDED - OPTIONAL
     status: {
       type: String,
       enum: ["pending", "approved", "rejected"],
