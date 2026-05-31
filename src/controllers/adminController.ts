@@ -848,7 +848,7 @@ const getTimeAgo = (date: Date): string => {
   return `${diffDays} day${diffDays > 1 ? "s" : ""} ago`;
 };
 
-// ==================== MANUAL CUSTOMER CREATION ====================
+// ==================== MANUAL CUSTOMER CREATION (UPDATED) ====================
 export const createManualCustomer = async (
   req: AuthRequest,
   res: Response,
@@ -1005,90 +1005,14 @@ export const createManualCustomer = async (
         await startBillingService(billingReq, billingRes, next);
         billingResult = capturedData;
 
-        const loginUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/login`;
-        const emailHtml = `
-          <!DOCTYPE html>
-          <html>
-          <head>
-            <meta charset="UTF-8">
-            <title>Your Mister Fyber Account</title>
-          </head>
-          <body style="font-family: Arial, sans-serif; line-height: 1.6;">
-            <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
-              <h2 style="color: #28a745;">Welcome to Mister Fyber!</h2>
-              <p>Dear ${firstName} ${lastName},</p>
-              <p>Your account has been created. Here are your login credentials:</p>
-              <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                <p><strong>Application ID:</strong> ${appDoc.applicationId}</p>
-                <p><strong>Username:</strong> ${finalUsername}</p>
-                <p><strong>Password:</strong> ${generatedPassword}</p>
-                <p><strong>Plan:</strong> ${plan.name}</p>
-              </div>
-              <div style="text-align: center; margin: 30px 0;">
-                <a href="${loginUrl}" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px;">Login to Your Account</a>
-              </div>
-              <hr>
-              <p style="color: #666; font-size: 12px;">Mister Fyber</p>
-            </div>
-          </body>
-          </html>
-        `;
-        await emailService.sendEmail(
-          email,
-          "Your Mister Fyber Account",
-          emailHtml,
-        );
+        // UPDATED: Use sendWelcomeEmail instead of direct sendEmail
+        await emailService.sendWelcomeEmail(userDoc);
       } catch (billingError) {
         console.error("Error starting billing:", billingError);
       }
     } else {
-      const registerUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/register`;
-
-      const emailHtml = `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <meta charset="UTF-8">
-          <title>Application Approved - Mister Fyber</title>
-        </head>
-        <body style="font-family: Arial, sans-serif; line-height: 1.6;">
-          <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
-            <h2 style="color: #28a745;">✅ Application Approved!</h2>
-            <p>Dear ${firstName} ${lastName},</p>
-            <p>Great news! Your application to Mister Fyber has been approved.</p>
-            
-            <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-              <h3 style="margin-top: 0;">Your Application Details:</h3>
-              <p><strong>Application ID:</strong> ${appDoc.applicationId}</p>
-              <p><strong>Plan:</strong> ${plan.name}</p>
-            </div>
-            
-            <div style="text-align: center; margin: 30px 0;">
-              <a href="${registerUrl}" style="background-color: #28a745; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">
-                Create Your Account Now
-              </a>
-            </div>
-            
-            <p><strong>Important:</strong> You need to create your account using your Application ID. Once registered, the admin will start your billing.</p>
-            
-            ${notes ? `<div style="margin-top: 20px; padding: 10px; background-color: #e7f3ff; border-left: 4px solid #007bff;"><strong>Admin Notes:</strong><br>${notes}</div>` : ""}
-            
-            <hr>
-            <p style="color: #666; font-size: 12px;">Mister Fyber - Your trusted internet provider</p>
-          </div>
-        </body>
-        </html>
-      `;
-
-      try {
-        await emailService.sendEmail(
-          email,
-          "Application Approved - Create Your Account",
-          emailHtml,
-        );
-      } catch (emailError) {
-        console.error("Failed to send approval email:", emailError);
-      }
+      // UPDATED: Use sendApplicationApproved instead of direct sendEmail
+      await emailService.sendApplicationApproved(appDoc, plan);
     }
 
     await session.commitTransaction();

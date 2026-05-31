@@ -1,4 +1,3 @@
-// controllers/applicationController.ts - COMPLETE WORKING FIX WITH DUPLICATE PREVENTION AND MAC ADDRESS
 import { Request, Response, NextFunction } from "express";
 import Application from "../models/Application";
 import Plan from "../models/Plan";
@@ -152,7 +151,6 @@ const getImageUrl = (imagePath?: string): string => {
   return `${PRODUCTION_URL}/uploads/id-cards/${filename}`;
 };
 
-// ==================== SUBMIT APPLICATION WITH DUPLICATE EMAIL CHECK AND MAC ADDRESS ====================
 export const submitApplication = async (
   req: AuthRequest,
   res: Response,
@@ -180,7 +178,7 @@ export const submitApplication = async (
       planId,
       idType,
       idNumber,
-      macAddress, // ADDED - OPTIONAL
+      macAddress,
     } = req.body;
 
     console.log("Received application data:", {
@@ -194,7 +192,7 @@ export const submitApplication = async (
       planId,
       idType,
       idNumber,
-      macAddress, // ADDED - OPTIONAL
+      macAddress,
     });
 
     if (!buildingId || buildingId === "undefined" || buildingId === "null") {
@@ -220,7 +218,6 @@ export const submitApplication = async (
 
     const normalizedEmail = email?.trim().toLowerCase();
 
-    // CHECK FOR EXISTING USER WITH SAME EMAIL (REGISTERED ACCOUNT)
     const existingUser = await User.findOne({
       email: normalizedEmail,
     }).lean();
@@ -235,7 +232,6 @@ export const submitApplication = async (
       });
     }
 
-    // CHECK FOR EXISTING APPLICATION WITH SAME EMAIL
     const existingApplication = await Application.findOne({
       email: normalizedEmail,
       status: { $in: ["pending", "approved", "rejected"] },
@@ -313,7 +309,7 @@ export const submitApplication = async (
       idType: idType?.trim() || "Not Provided",
       idNumber: idNumber?.trim() || "Not Provided",
       idImage: idImagePath,
-      macAddress: macAddress?.trim() || "", // ADDED - OPTIONAL
+      macAddress: macAddress?.trim() || "",
       status: "pending",
     };
 
@@ -423,7 +419,7 @@ export const checkApplicationStatus = async (
         phoneNumber: application.phoneNumber,
         idType: application.idType,
         idNumber: application.idNumber,
-        macAddress: application.macAddress || "", // ADDED - OPTIONAL
+        macAddress: application.macAddress || "",
         plan: application.planId,
         building: application.buildingId,
         floor: application.floor,
@@ -477,7 +473,7 @@ export const getAllApplications = async (
       ...app,
       idImageUrl: getImageUrl(app.idImage),
       hasAccount: !!app.registeredUserId,
-      macAddress: app.macAddress || "", // ADDED - OPTIONAL
+      macAddress: app.macAddress || "",
     }));
 
     res.status(200).json({
@@ -518,22 +514,21 @@ export const getApplication = async (
     }
 
     const idImageUrl = getImageUrl(application.idImage);
-    res
-      .status(200)
-      .json({
-        success: true,
-        data: {
-          ...application,
-          idImageUrl,
-          macAddress: application.macAddress || "",
-        },
-      });
+    res.status(200).json({
+      success: true,
+      data: {
+        ...application,
+        idImageUrl,
+        macAddress: application.macAddress || "",
+      },
+    });
   } catch (error) {
     console.error("Error in getApplication:", error);
     next(error);
   }
 };
 
+// UPDATED approveApplication - USING sendApplicationApproved
 export const approveApplication = async (
   req: AuthRequest,
   res: Response,
@@ -576,49 +571,9 @@ export const approveApplication = async (
 
     await session.commitTransaction();
 
-    const registerUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/register`;
-
-    const emailHtml = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <title>Application Approved - Mister Fyber</title>
-      </head>
-      <body style="font-family: Arial, sans-serif; line-height: 1.6;">
-        <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
-          <h2 style="color: #28a745;">✅ Application Approved!</h2>
-          <p>Dear ${application.firstName} ${application.lastName},</p>
-          <p>Great news! Your application to Mister Fyber has been approved.</p>
-          
-          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-            <h3 style="margin-top: 0;">Your Application Details:</h3>
-            <p><strong>Application ID:</strong> ${application.applicationId}</p>
-            <p><strong>Plan:</strong> ${(application.planId as any)?.name || "N/A"}</p>
-          </div>
-          
-          <div style="text-align: center; margin: 30px 0;">
-            <a href="${registerUrl}" style="background-color: #28a745; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">
-              Create Your Account Now
-            </a>
-          </div>
-          
-          <p><strong>Important:</strong> You need to create your account using your Application ID.</p>
-          
-          ${adminNotes ? `<div style="margin-top: 20px; padding: 10px; background-color: #e7f3ff; border-left: 4px solid #007bff;"><strong>Admin Notes:</strong><br>${adminNotes}</div>` : ""}
-          
-          <hr>
-          <p style="color: #666; font-size: 12px;">Mister Fyber - Your trusted internet provider</p>
-        </div>
-      </body>
-      </html>
-    `;
-
-    await emailService.sendEmail(
-      application.email,
-      `Application Approved - Create Your Account`,
-      emailHtml,
-    );
+    // UPDATED: Use sendApplicationApproved method
+    const plan = application.planId as any;
+    await emailService.sendApplicationApproved(application, plan);
 
     console.log(`✅ Application approved: ${application.applicationId}`);
     console.log(`📧 Approval email sent to: ${application.email}`);
@@ -767,7 +722,6 @@ export const startBillingForApplication = async (
       });
     }
 
-    // CHECK FOR EXISTING BILLING CYCLE - PREVENT DUPLICATE
     const existingBillingCycle = await BillingCycle.findOne({
       applicationId: application._id,
     }).lean();
@@ -792,7 +746,6 @@ export const startBillingForApplication = async (
       });
     }
 
-    // CHECK FOR EXISTING BILLS
     const existingBills = await Billing.findOne({
       applicationId: application._id,
     }).lean();

@@ -8,6 +8,7 @@ import Billing from "../models/Billing";
 import BillingCycle from "../models/BillingCycle";
 import emailService from "../services/emailService";
 import { validationResult } from "express-validator";
+import mongoose from "mongoose";
 
 interface AuthRequest extends Request {
   user?: any;
@@ -101,7 +102,6 @@ export const checkApplication = async (
       }
     }
 
-    // Check if billing has been started
     let hasBill = false;
     let billInfo = null;
 
@@ -230,13 +230,11 @@ export const registerWithApplication = async (
       });
     }
 
-    // Check if billing has been started for this application
     const existingBill = await Billing.findOne({
       applicationId: application._id,
       status: { $in: ["sent", "overdue"] },
     }).lean();
 
-    // CREATE USER ACCOUNT
     const userData: any = {
       username,
       email: application.email,
@@ -270,23 +268,19 @@ export const registerWithApplication = async (
     const user = await User.create([userData], { session });
     const userDoc = user[0];
 
-    // Link application to user
     await Application.updateOne(
       { _id: application._id },
       { $set: { registeredUserId: userDoc._id } },
       { session },
     );
 
-    // If billing was already started, link bills and billing cycles to the new user
     if (application.billingStarted && application.billingCycleId) {
-      // Update billing cycle with user ID
       await BillingCycle.updateOne(
         { _id: application.billingCycleId },
         { $set: { userId: userDoc._id } },
         { session },
       );
 
-      // Update all bills for this application with user ID
       await Billing.updateMany(
         { applicationId: application._id },
         { $set: { userId: userDoc._id } },
@@ -296,41 +290,10 @@ export const registerWithApplication = async (
 
     await session.commitTransaction();
 
+    // UPDATED: Use sendWelcomeEmail
     try {
-      // Send welcome email with credentials
-      const loginUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/login`;
-      const emailHtml = `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <meta charset="UTF-8">
-          <title>Your Mister Fyber Account</title>
-        </head>
-        <body style="font-family: Arial, sans-serif; line-height: 1.6;">
-          <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
-            <h2 style="color: #28a745;">Welcome to Mister Fyber!</h2>
-            <p>Dear ${application.firstName} ${application.lastName},</p>
-            <p>Your account has been successfully created. Here are your login credentials:</p>
-            <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-              <p><strong>Username:</strong> ${username}</p>
-              <p><strong>Password:</strong> ${password}</p>
-              <p><strong>Application ID:</strong> ${application.applicationId}</p>
-            </div>
-            ${existingBill ? `<p><strong>Note:</strong> You have an existing bill of ₱${existingBill.total.toFixed(2)} due on ${new Date(existingBill.dueDate).toLocaleDateString()}. Please pay to activate your service.</p>` : ""}
-            <div style="text-align: center; margin: 30px 0;">
-              <a href="${loginUrl}" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px;">Login to Your Account</a>
-            </div>
-            <hr>
-            <p style="color: #666; font-size: 12px;">Mister Fyber</p>
-          </div>
-        </body>
-        </html>
-      `;
-      await emailService.sendEmail(
-        application.email,
-        "Your Mister Fyber Account",
-        emailHtml,
-      );
+      await emailService.sendWelcomeEmail(userDoc);
+      console.log("[Auth] Welcome email sent to:", userDoc.email);
     } catch (emailError) {
       console.error("Failed to send welcome email:", emailError);
     }
@@ -451,6 +414,13 @@ export const register = async (
 
     console.log("[Auth] Regular registration successful for:", user.email);
 
+    // UPDATED: Send welcome email
+    try {
+      await emailService.sendWelcomeEmail(user);
+    } catch (emailError) {
+      console.error("Failed to send welcome email:", emailError);
+    }
+
     sendTokenResponse(user, 201, res, false);
   } catch (error: any) {
     console.error("Registration error:", error);
@@ -529,7 +499,6 @@ export const login = async (
       });
     }
 
-    // Check if user exists in Admin collection
     let admin = await Admin.findOne({ email }).select("+password");
     if (admin) {
       const isMatch = await admin.comparePassword(password);
@@ -555,7 +524,6 @@ export const login = async (
       return sendTokenResponse(admin, 200, res, true);
     }
 
-    // Check if user exists in User collection
     const user = await User.findOne({ email }).select("+password");
     if (!user) {
       console.log("[Auth] User not found for email:", email);
@@ -572,7 +540,6 @@ export const login = async (
         .json({ success: false, message: "Invalid credentials" });
     }
 
-    // Check user status
     if (user.status === "suspended") {
       return res.status(403).json({
         success: false,
@@ -714,6 +681,16 @@ export const updatePassword = async (
 
       user.password = newPassword;
       await user.save();
+
+      try {
+        await emailService.sendEmail(
+          user.email,
+          "Password Changed Successfully",
+          `<p>Your password has been changed successfully. If you did not perform this action, please contact support immediately.</p>`,
+        );
+      } catch (emailError) {
+        console.error("Failed to send password change email:", emailError);
+      }
     }
 
     res.status(200).json({
@@ -751,6 +728,7 @@ export const forgotPassword = async (
 
     await user.save();
 
+    // UPDATED: Use sendPasswordReset method
     await emailService.sendPasswordReset(user, resetToken);
 
     res.status(200).json({
@@ -795,9 +773,6 @@ export const resetPassword = async (
     next(error);
   }
 };
-
-// Import mongoose for session
-import mongoose from "mongoose";
 
 export default {
   register,

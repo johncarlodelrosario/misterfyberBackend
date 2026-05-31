@@ -1,4 +1,3 @@
-// models/User.ts - COMPLETE WITH MAC ADDRESS (OPTIONAL)
 import mongoose, { Schema, Document } from "mongoose";
 import bcrypt from "bcryptjs";
 

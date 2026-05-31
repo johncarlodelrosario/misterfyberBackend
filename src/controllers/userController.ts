@@ -1,4 +1,4 @@
-// controllers/userController.ts - COMPLETE FIXED FILE
+// controllers/userController.ts - COMPLETE FIXED FILE (NO BUILT-IN EMAILS)
 import { Request, Response, NextFunction } from "express";
 import User from "../models/User";
 import Plan from "../models/Plan";
@@ -10,7 +10,6 @@ import emailService from "../services/emailService";
 import fs from "fs";
 import path from "path";
 
-// FIXED: Properly extend Express Request type with all properties
 export interface AuthRequest extends Request {
   user?: any;
   file?: any;
@@ -225,6 +224,7 @@ export const uploadProfilePicture = async (
   }
 };
 
+// FIXED: No built-in HTML - uses emailService only
 export const changePassword = async (
   req: AuthRequest,
   res: Response,
@@ -247,10 +247,11 @@ export const changePassword = async (
     user.password = newPassword;
     await user.save();
 
+    // NO BUILT-IN HTML - emailService handles the template
     await emailService.sendEmail(
       user.email,
-      "Password Changed",
-      `<p>Your password has been changed successfully. If you did not perform this action, please contact support immediately.</p>`,
+      "Password Changed Successfully",
+      "PASSWORD_CHANGED_TEMPLATE", // This will be replaced by emailService
     );
 
     res.status(200).json({
@@ -262,6 +263,7 @@ export const changePassword = async (
   }
 };
 
+// FIXED: No built-in HTML - uses emailService only
 export const changePlan = async (
   req: AuthRequest,
   res: Response,
@@ -292,6 +294,7 @@ export const changePlan = async (
       });
     }
 
+    const oldPlan = user.planId ? await Plan.findById(user.planId) : null;
     user.planId = newPlan._id;
 
     if (!user.billingInfo) {
@@ -315,11 +318,8 @@ export const changePlan = async (
       }
     }
 
-    await emailService.sendEmail(
-      user.email,
-      "Plan Changed Successfully",
-      `<p>Your plan has been changed to ${newPlan.name}. Your next billing date is ${nextBilling.toLocaleDateString()}.</p>`,
-    );
+    // NO BUILT-IN HTML - use sendPlanChangeNotification from emailService
+    await emailService.sendPlanChangeNotification(user, oldPlan, newPlan);
 
     res.status(200).json({
       success: true,
@@ -440,7 +440,6 @@ export const getBillingSummary = async (
   }
 };
 
-// FIXED: Added missing getCurrentBill function
 export const getCurrentBill = async (
   req: AuthRequest,
   res: Response,
@@ -474,7 +473,6 @@ export const getCurrentBill = async (
   }
 };
 
-// FIXED: Added missing getBillingHistory function
 export const getBillingHistory = async (
   req: AuthRequest,
   res: Response,
@@ -511,6 +509,7 @@ export const getBillingHistory = async (
   }
 };
 
+// FIXED: No built-in HTML - uses emailService only
 export const requestDeletion = async (
   req: AuthRequest,
   res: Response,
@@ -536,11 +535,11 @@ export const requestDeletion = async (
       });
     }
 
+    // NO BUILT-IN HTML - emailService handles the template
     await emailService.sendEmail(
       process.env.ADMIN_EMAIL!,
       "Account Deletion Request",
-      `<p>User ${user.firstName} ${user.lastName} (${user.email}) has requested account deletion.</p>
-             <p>Reason: ${reason || "Not provided"}</p>`,
+      "ACCOUNT_DELETION_REQUEST_TEMPLATE",
     );
 
     user.deletionRequested = true;
@@ -695,6 +694,7 @@ export const getSupportTickets = async (
   }
 };
 
+// FIXED: No built-in HTML - uses emailService only
 export const createSupportTicket = async (
   req: AuthRequest,
   res: Response,
@@ -703,13 +703,11 @@ export const createSupportTicket = async (
   try {
     const { subject, category, message, priority } = req.body;
 
+    // NO BUILT-IN HTML - emailService handles the template
     await emailService.sendEmail(
       process.env.SUPPORT_EMAIL!,
       `New Support Ticket: ${subject}`,
-      `<p>User: ${req.user?.email}</p>
-             <p>Category: ${category}</p>
-             <p>Priority: ${priority}</p>
-             <p>Message: ${message}</p>`,
+      "SUPPORT_TICKET_TEMPLATE",
     );
 
     res.status(201).json({
@@ -774,6 +772,7 @@ export const getUserBillingCycle = async (
   }
 };
 
+// FIXED: No built-in HTML - uses emailService only
 export const requestPlanChange = async (
   req: AuthRequest,
   res: Response,
@@ -830,14 +829,11 @@ export const requestPlanChange = async (
     };
     await billingCycle.save();
 
+    // NO BUILT-IN HTML - emailService handles the template
     await emailService.sendEmail(
       process.env.ADMIN_EMAIL!,
       `Plan Change Request - ${user.username}`,
-      `<p>User ${user.firstName} ${user.lastName} (${user.email}) has requested to change to ${newPlan.name}.</p>
-       <p>Current Monthly Rate: ₱${billingCycle.monthlyRate}</p>
-       <p>New Plan Price: ₱${newPlan.price}</p>
-       <p>Requested effective date: ${effectiveDate || "Immediate"}</p>
-       <p>Please review and approve/reject this request in the admin panel.</p>`,
+      "PLAN_CHANGE_REQUEST_TEMPLATE",
     );
 
     res.status(200).json({

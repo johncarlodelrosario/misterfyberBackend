@@ -1,4 +1,4 @@
-// controllers/billingController.ts - COMPLETE WITH DUPLICATE PREVENTION
+// controllers/billingController.ts - COMPLETE UPDATED WITH EMAIL SERVICE
 import { Request, Response, NextFunction } from "express";
 import Billing from "../models/Billing";
 import BillingCycle from "../models/BillingCycle";
@@ -183,7 +183,6 @@ export const startBilling = async (
     let customerType = "";
 
     if (applicationId) {
-      // Check if application exists
       application = await Application.findOne({ applicationId: applicationId })
         .populate("planId")
         .lean();
@@ -194,7 +193,6 @@ export const startBilling = async (
         });
       }
 
-      // CHECK IF BILLING ALREADY EXISTS FOR THIS APPLICATION - PREVENT DUPLICATE
       const existingBillingCycle = await BillingCycle.findOne({
         applicationId: application._id,
       }).lean();
@@ -219,7 +217,6 @@ export const startBilling = async (
         });
       }
 
-      // Check if there are any existing bills
       const existingBills = await Billing.findOne({
         applicationId: application._id,
       }).lean();
@@ -246,7 +243,6 @@ export const startBilling = async (
           .json({ success: false, message: "User not found" });
       }
 
-      // CHECK IF BILLING ALREADY EXISTS FOR THIS USER - PREVENT DUPLICATE
       const existingBillingCycle = await BillingCycle.findOne({
         userId,
       }).lean();
@@ -974,7 +970,6 @@ export const pauseBilling = async (
       });
     }
 
-    // Check for unpaid bills
     const unpaidBills = await Billing.find({
       ...(user ? { userId } : { applicationId: application?._id }),
       status: { $in: ["sent", "overdue", "pending_confirmation"] },
@@ -1041,7 +1036,6 @@ export const pauseBilling = async (
 
     await session.commitTransaction();
 
-    // Send email notification
     try {
       await emailService.sendEmail(
         customerEmail,
@@ -1149,7 +1143,6 @@ export const resumeBilling = async (
       });
     }
 
-    // Check for any pending bills before resuming
     const pendingBills = await Billing.find({
       ...(user ? { userId } : { applicationId: application?._id }),
       status: { $in: ["sent", "overdue", "pending_confirmation"] },
@@ -1209,7 +1202,6 @@ export const resumeBilling = async (
 
     await session.commitTransaction();
 
-    // Send email notification
     try {
       await emailService.sendEmail(
         customerEmail,
@@ -1264,7 +1256,6 @@ export const markBillAsPaid = async (
     const { referenceNumber, notes } = req.body;
     const adminId = req.user?._id;
 
-    // CHECK IF BILL IS ALREADY PAID
     const existingBill = await Billing.findById(billId).session(session);
 
     if (!existingBill) {
@@ -1286,7 +1277,6 @@ export const markBillAsPaid = async (
       });
     }
 
-    // CHECK FOR EXISTING PAYMENT FOR THIS BILL
     const existingPayment = await Payment.findOne({
       billingId: billId,
     }).session(session);
@@ -1441,7 +1431,15 @@ export const markBillAsPaid = async (
         await emailService.sendEmail(
           application.email,
           `Payment Confirmation - ${bill.invoiceNumber}`,
-          `<p>Your payment of ₱${bill.total.toLocaleString()} has been confirmed.</p>`,
+          `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #28a745;">✅ Payment Confirmed!</h2>
+            <p>Dear ${application.firstName} ${application.lastName},</p>
+            <p>Your payment of <strong>₱${bill.total.toLocaleString()}</strong> has been confirmed.</p>
+            <p><strong>Invoice Number:</strong> ${bill.invoiceNumber}</p>
+            <p><strong>Amount:</strong> ₱${bill.total.toLocaleString()}</p>
+            <hr>
+            <p style="color: #666; font-size: 12px;">Mister Fyber - Your trusted internet provider</p>
+          </div>`,
         );
       } else if (user && user.email) {
         await emailService.sendPaymentConfirmation(user, payment[0], bill);
@@ -1650,7 +1648,14 @@ export const confirmProRatedPayment = async (
       await emailService.sendEmail(
         email,
         "Pro-rated Payment Confirmed",
-        `<p>Your payment of ₱${proRatedBill.total} has been confirmed.</p>`,
+        `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #28a745;">✅ Pro-rated Payment Confirmed!</h2>
+          <p>Dear ${user?.firstName || application?.firstName},</p>
+          <p>Your pro-rated payment of <strong>₱${proRatedBill.total.toLocaleString()}</strong> has been confirmed.</p>
+          <p>Your service is now active. Thank you for choosing Mister Fyber!</p>
+          <hr>
+          <p style="color: #666; font-size: 12px;">Mister Fyber - Your trusted internet provider</p>
+        </div>`,
       );
     }
 
@@ -2080,7 +2085,6 @@ export const deleteBillingCycle = async (
       });
     }
 
-    // Find the billing cycle
     const billingCycle =
       await BillingCycle.findById(billingCycleId).session(session);
 
@@ -2091,13 +2095,10 @@ export const deleteBillingCycle = async (
       });
     }
 
-    // Delete all associated bills
     await Billing.deleteMany({ billingCycleId: billingCycle._id }, { session });
 
-    // Delete the billing cycle
     await BillingCycle.deleteOne({ _id: billingCycle._id }, { session });
 
-    // Clear billing info from user or application
     if (customerType === "user" && customerId) {
       await User.updateOne(
         { _id: customerId },
@@ -2287,9 +2288,14 @@ export const autoSendReminders = async (req?: AuthRequest, res?: Response) => {
           await emailService.sendEmail(
             customer.email,
             `Payment Reminder - Invoice ${bill.invoiceNumber}`,
-            `<p>Dear ${customer.firstName || customer.username},</p>
-             <p>Your bill of ₱${bill.total.toFixed(2)} is due on ${new Date(bill.dueDate).toLocaleDateString()}.</p>
-             <p>Please pay before the due date to avoid service interruption.</p>`,
+            `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+              <h2 style="color: #f39c12;">⚠️ Payment Reminder</h2>
+              <p>Dear ${customer.firstName || customer.username},</p>
+              <p>Your bill of <strong>₱${bill.total.toFixed(2)}</strong> is due on <strong>${new Date(bill.dueDate).toLocaleDateString()}</strong>.</p>
+              <p>Please pay before the due date to avoid service interruption.</p>
+              <hr>
+              <p style="color: #666; font-size: 12px;">Mister Fyber - Your trusted internet provider</p>
+            </div>`,
           );
           await Billing.updateOne(
             { _id: bill._id },
