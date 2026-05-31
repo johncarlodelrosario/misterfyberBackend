@@ -1,4 +1,4 @@
-// routes/adminRoutes.ts - COMPLETE UPDATED WITH EMAIL TOGGLE
+// routes/adminRoutes.ts - COMPLETE UPDATED (REMOVED EMAIL TOGGLE)
 import express from "express";
 import { body } from "express-validator";
 import {
@@ -17,7 +17,6 @@ import {
   getCustomersWithoutAccounts,
 } from "../controllers/adminController";
 import { optionalAuth, adminMiddleware } from "../middleware/auth";
-import emailService from "../services/emailService";
 
 const router = express.Router();
 
@@ -27,41 +26,6 @@ router.use(optionalAuth);
 // Dashboard routes (viewable kahit walang login)
 router.get("/dashboard", getDashboardStats);
 router.get("/recent-activities", getRecentActivities);
-
-// ==================== EMAIL TOGGLE ROUTES ====================
-// GET email status
-router.get("/email/status", async (req: any, res: any) => {
-  try {
-    const status = emailService.getEmailStatus();
-    res.json({ success: true, ...status });
-  } catch (error) {
-    res
-      .status(500)
-      .json({ success: false, message: "Failed to get email status" });
-  }
-});
-
-// Toggle email on/off (admin only)
-router.put("/email/toggle", adminMiddleware, async (req: any, res: any) => {
-  try {
-    const { enabled } = req.body;
-    if (typeof enabled !== "boolean") {
-      return res
-        .status(400)
-        .json({ success: false, message: "Enabled must be a boolean" });
-    }
-
-    emailService.setEmailEnabled(enabled);
-
-    res.json({
-      success: true,
-      enabled: enabled,
-      message: `Email sending ${enabled ? "enabled" : "disabled"} successfully`,
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: "Failed to toggle email" });
-  }
-});
 
 // Manual Customer Creation - need admin role
 router.post(
