@@ -1,9 +1,8 @@
-// services/emailService.ts - COMPLETE UPDATED FILE WITH ALL METHODS
 import { IUser } from "../models/User";
+import Admin from "../models/Admin";
 import dotenv from "dotenv";
 import path from "path";
 
-// Load .env from the correct path
 const envPath = path.resolve(process.cwd(), ".env");
 console.log("📁 Loading .env from:", envPath);
 const result = dotenv.config({ path: envPath });
@@ -14,7 +13,6 @@ if (result.error) {
   console.log("✅ .env file loaded successfully");
 }
 
-// Debug: Print all environment variables (without sensitive data)
 console.log("🔍 ENVIRONMENT VARIABLES CHECK:");
 console.log(
   "   ADMIN_EMAIL:",
@@ -34,7 +32,6 @@ console.log(
 );
 console.log("   FRONTEND_URL:", process.env.FRONTEND_URL || "❌ MISSING");
 
-// Safe number formatting function
 const safeToFixed = (value: any, decimals: number = 2): string => {
   if (value === undefined || value === null || isNaN(Number(value))) {
     return "0.00";
@@ -82,12 +79,40 @@ class EmailService {
     return this.initialized && !!this.apiKey;
   }
 
+  // Check if customer emails are enabled globally
+  private async areCustomerEmailsEnabled(): Promise<boolean> {
+    try {
+      const admin = await Admin.findOne({
+        role: { $in: ["super_admin", "admin"] },
+        status: "active",
+      }).sort({ role: 1 });
+
+      // Default to true if no admin found or setting is true
+      return admin ? admin.customerEmailAlertsEnabled !== false : true;
+    } catch (error) {
+      console.error("Error checking customer email setting:", error);
+      return true; // Default to enabled on error
+    }
+  }
+
   async sendEmail(
     to: string,
     subject: string,
     htmlContent: string,
+    isCustomerEmail: boolean = true,
   ): Promise<boolean> {
     try {
+      // Check if this is a customer email and if customer emails are disabled
+      if (isCustomerEmail) {
+        const customerEmailsEnabled = await this.areCustomerEmailsEnabled();
+        if (!customerEmailsEnabled) {
+          console.log(
+            `📧 CUSTOMER EMAILS ARE DISABLED. Skipping email to ${to}: ${subject}`,
+          );
+          return false;
+        }
+      }
+
       if (!this.initialized || !this.apiKey) {
         console.log(
           `⚠️ Email service not initialized - skipping email to ${to}`,
@@ -147,10 +172,16 @@ class EmailService {
       console.error("❌ Admin email not configured");
       return false;
     }
-    return await this.sendEmail(this.adminEmail, `[ADMIN] ${subject}`, html);
+    // Admin emails are ALWAYS sent (no toggle for these)
+    return await this.sendEmail(
+      this.adminEmail,
+      `[ADMIN] ${subject}`,
+      html,
+      false,
+    );
   }
 
-  // ==================== PASSWORD CHANGE NOTIFICATION ====================
+  // ==================== PASSWORD CHANGE NOTIFICATION (CUSTOMER) ====================
   async sendPasswordChangeNotification(user: IUser): Promise<void> {
     const html = `
       <!DOCTYPE html>
@@ -185,10 +216,15 @@ class EmailService {
       </body>
       </html>
     `;
-    await this.sendEmail(user.email, "Password Changed Successfully", html);
+    await this.sendEmail(
+      user.email,
+      "Password Changed Successfully",
+      html,
+      true,
+    );
   }
 
-  // ==================== ACCOUNT DELETION REQUEST NOTIFICATION ====================
+  // ==================== ACCOUNT DELETION REQUEST (ADMIN ONLY) ====================
   async sendAccountDeletionRequest(user: IUser, reason: string): Promise<void> {
     const html = `
       <!DOCTYPE html>
@@ -231,7 +267,7 @@ class EmailService {
     await this.sendToAdmin("Account Deletion Request", html);
   }
 
-  // ==================== SUPPORT TICKET NOTIFICATION ====================
+  // ==================== SUPPORT TICKET NOTIFICATION (ADMIN ONLY) ====================
   async sendSupportTicketNotification(
     userEmail: string,
     subject: string,
@@ -283,10 +319,11 @@ class EmailService {
       this.supportEmail,
       `New Support Ticket: ${subject}`,
       html,
+      false,
     );
   }
 
-  // ==================== PLAN CHANGE REQUEST NOTIFICATION ====================
+  // ==================== PLAN CHANGE REQUEST NOTIFICATION (ADMIN ONLY) ====================
   async sendPlanChangeRequestNotification(
     user: IUser,
     newPlan: any,
@@ -337,7 +374,7 @@ class EmailService {
     await this.sendToAdmin(`Plan Change Request - ${user.username}`, html);
   }
 
-  // ==================== BILL WITHOUT ACCOUNT ====================
+  // ==================== BILL WITHOUT ACCOUNT (CUSTOMER) ====================
   async sendBillWithoutAccount(
     application: any,
     bill: any,
@@ -404,10 +441,11 @@ class EmailService {
       application.email,
       `🧾 Your Bill is Ready - ${bill.invoiceNumber}`,
       html,
+      true,
     );
   }
 
-  // ==================== WELCOME EMAIL ====================
+  // ==================== WELCOME EMAIL (CUSTOMER) ====================
   async sendWelcomeEmail(user: IUser): Promise<void> {
     const loginUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/login`;
     const dashboardUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/dashboard`;
@@ -470,6 +508,7 @@ class EmailService {
       user.email,
       `🎉 Welcome to Mister Fyber, ${user.firstName || user.email}!`,
       html,
+      true,
     );
 
     const adminHtml = `
@@ -490,7 +529,7 @@ class EmailService {
     await this.sendToAdmin(`New User Registration: ${user.email}`, adminHtml);
   }
 
-  // ==================== APPLICATION RECEIVED ====================
+  // ==================== APPLICATION RECEIVED (CUSTOMER) ====================
   async sendApplicationReceived(application: any, plan: any): Promise<void> {
     const planPrice = plan?.price ?? 0;
     const html = `
@@ -524,6 +563,7 @@ class EmailService {
       application.email,
       `Application Received - ${application.applicationId}`,
       html,
+      true,
     );
 
     const adminHtml = `
@@ -543,7 +583,7 @@ class EmailService {
     );
   }
 
-  // ==================== NEW APPLICATION NOTIFICATION ====================
+  // ==================== NEW APPLICATION NOTIFICATION (ADMIN ONLY) ====================
   async sendNewApplicationNotification(
     application: any,
     plan: any,
@@ -583,7 +623,7 @@ class EmailService {
     );
   }
 
-  // ==================== APPLICATION APPROVED ====================
+  // ==================== APPLICATION APPROVED (CUSTOMER) ====================
   async sendApplicationApproved(application: any, plan: any): Promise<void> {
     const registerUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/register`;
     const planPrice = plan?.price ?? 0;
@@ -643,6 +683,7 @@ class EmailService {
       application.email,
       `✅ Application Approved - Create Your Account`,
       html,
+      true,
     );
 
     const adminHtml = `
@@ -661,7 +702,7 @@ class EmailService {
     );
   }
 
-  // ==================== APPLICATION REJECTED ====================
+  // ==================== APPLICATION REJECTED (CUSTOMER) ====================
   async sendApplicationRejected(
     application: any,
     reason: string,
@@ -689,7 +730,12 @@ class EmailService {
       </body>
       </html>
     `;
-    await this.sendEmail(application.email, `Application Status Update`, html);
+    await this.sendEmail(
+      application.email,
+      `Application Status Update`,
+      html,
+      true,
+    );
 
     const adminHtml = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
@@ -706,7 +752,7 @@ class EmailService {
     );
   }
 
-  // ==================== ACCOUNT CREDENTIALS ====================
+  // ==================== ACCOUNT CREDENTIALS (CUSTOMER) ====================
   async sendAccountCredentials(
     user: IUser,
     username: string,
@@ -765,10 +811,11 @@ class EmailService {
       user.email,
       `🔐 Your Mister Fyber Account Credentials`,
       html,
+      true,
     );
   }
 
-  // ==================== PASSWORD RESET ====================
+  // ==================== PASSWORD RESET (CUSTOMER) ====================
   async sendPasswordReset(user: IUser, resetToken: string): Promise<void> {
     const frontendUrl =
       process.env.FRONTEND_URL || "https://www.misterfyber.com";
@@ -797,10 +844,10 @@ class EmailService {
       </body>
       </html>
     `;
-    await this.sendEmail(user.email, "Password Reset Request", html);
+    await this.sendEmail(user.email, "Password Reset Request", html, true);
   }
 
-  // ==================== INVOICE ====================
+  // ==================== INVOICE (CUSTOMER) ====================
   async sendInvoice(user: IUser, billing: any): Promise<void> {
     const dueDate = billing.dueDate
       ? new Date(billing.dueDate).toLocaleDateString()
@@ -865,6 +912,7 @@ class EmailService {
       user.email,
       `🧾 Invoice #${billing.invoiceNumber || billing._id} Ready`,
       html,
+      true,
     );
 
     const adminHtml = `
@@ -883,7 +931,7 @@ class EmailService {
     );
   }
 
-  // ==================== PAYMENT CONFIRMATION ====================
+  // ==================== PAYMENT CONFIRMATION (CUSTOMER) ====================
   async sendPaymentConfirmation(
     user: IUser,
     payment: any,
@@ -921,6 +969,7 @@ class EmailService {
       user.email,
       `💰 Payment Confirmation - ₱${safeToFixed(amount)}`,
       html,
+      true,
     );
 
     const adminHtml = `
@@ -940,7 +989,7 @@ class EmailService {
     );
   }
 
-  // ==================== PAYMENT REMINDER ====================
+  // ==================== PAYMENT REMINDER (CUSTOMER) ====================
   async sendPaymentReminder(user: IUser, billing: any): Promise<void> {
     const dueDate = billing.dueDate
       ? new Date(billing.dueDate).toLocaleDateString()
@@ -980,10 +1029,11 @@ class EmailService {
       user.email,
       `⚠️ Payment Reminder - Due ${dueDate}`,
       html,
+      true,
     );
   }
 
-  // ==================== BILLING REMINDER ====================
+  // ==================== BILLING REMINDER (CUSTOMER) ====================
   async sendBillingReminder(user: IUser, billing: any): Promise<void> {
     const dueDate = billing.dueDate
       ? new Date(billing.dueDate).toLocaleDateString()
@@ -1021,10 +1071,11 @@ class EmailService {
       user.email,
       `📅 Billing Reminder - Due ${dueDate}`,
       html,
+      true,
     );
   }
 
-  // ==================== ACCOUNT STATUS UPDATE ====================
+  // ==================== ACCOUNT STATUS UPDATE (CUSTOMER) ====================
   async sendAccountStatusUpdate(user: IUser): Promise<void> {
     const statusMessages: Record<string, string> = {
       active:
@@ -1065,6 +1116,7 @@ class EmailService {
       user.email,
       `🔄 Account Status Update: ${user.status || "pending"}`,
       html,
+      true,
     );
 
     const adminHtml = `
@@ -1080,7 +1132,7 @@ class EmailService {
     );
   }
 
-  // ==================== PLAN CHANGE NOTIFICATION ====================
+  // ==================== PLAN CHANGE NOTIFICATION (CUSTOMER) ====================
   async sendPlanChangeNotification(
     user: IUser,
     oldPlan: any,
@@ -1116,6 +1168,7 @@ class EmailService {
       user.email,
       `📡 Plan Changed to ${newPlan?.name || "N/A"}`,
       html,
+      true,
     );
 
     const adminHtml = `
@@ -1133,7 +1186,7 @@ class EmailService {
     );
   }
 
-  // ==================== SERVICE REMINDER ====================
+  // ==================== SERVICE REMINDER (CUSTOMER) ====================
   async sendServiceReminder(user: IUser): Promise<void> {
     const frontendUrl =
       process.env.FRONTEND_URL || "https://www.misterfyber.com";
@@ -1158,10 +1211,10 @@ class EmailService {
       </body>
       </html>
     `;
-    await this.sendEmail(user.email, "Weekly Service Update", html);
+    await this.sendEmail(user.email, "Weekly Service Update", html, true);
   }
 
-  // ==================== SERVICE INTERRUPTION ====================
+  // ==================== SERVICE INTERRUPTION (CUSTOMER) ====================
   async sendServiceInterruption(
     user: IUser,
     reason: string,
@@ -1193,7 +1246,7 @@ class EmailService {
       </body>
       </html>
     `;
-    await this.sendEmail(user.email, "Service Interruption Notice", html);
+    await this.sendEmail(user.email, "Service Interruption Notice", html, true);
 
     const adminHtml = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">

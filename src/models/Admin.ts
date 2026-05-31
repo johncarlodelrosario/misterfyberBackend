@@ -1,4 +1,3 @@
-// models/Admin.ts - COMPLETE WITH DEFAULT EXPORT
 import mongoose, { Schema, Document } from "mongoose";
 import bcrypt from "bcryptjs";
 
@@ -12,6 +11,7 @@ export interface IAdmin extends Document {
   role: "super_admin" | "admin" | "staff";
   status: "active" | "inactive" | "suspended";
   permissions: string[];
+  customerEmailAlertsEnabled: boolean; // Controls CUSTOMER emails
   lastLogin?: Date;
   profilePicture?: string;
   createdAt: Date;
@@ -38,6 +38,7 @@ const AdminSchema: Schema = new Schema(
       default: "active",
     },
     permissions: [{ type: String }],
+    customerEmailAlertsEnabled: { type: Boolean, default: true }, // Default: ON (customers receive emails)
     lastLogin: { type: Date },
     profilePicture: { type: String },
   },

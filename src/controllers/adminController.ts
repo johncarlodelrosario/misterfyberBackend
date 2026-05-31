@@ -6,6 +6,7 @@ import Payment from "../models/Payment";
 import Billing from "../models/Billing";
 import BillingCycle from "../models/BillingCycle";
 import Application from "../models/Application";
+import Admin from "../models/Admin";
 import emailService from "../services/emailService";
 import { startBilling as startBillingService } from "./billingController";
 
@@ -848,7 +849,7 @@ const getTimeAgo = (date: Date): string => {
   return `${diffDays} day${diffDays > 1 ? "s" : ""} ago`;
 };
 
-// ==================== MANUAL CUSTOMER CREATION (UPDATED) ====================
+// ==================== MANUAL CUSTOMER CREATION ====================
 export const createManualCustomer = async (
   req: AuthRequest,
   res: Response,
@@ -1005,13 +1006,11 @@ export const createManualCustomer = async (
         await startBillingService(billingReq, billingRes, next);
         billingResult = capturedData;
 
-        // UPDATED: Use sendWelcomeEmail instead of direct sendEmail
         await emailService.sendWelcomeEmail(userDoc);
       } catch (billingError) {
         console.error("Error starting billing:", billingError);
       }
     } else {
-      // UPDATED: Use sendApplicationApproved instead of direct sendEmail
       await emailService.sendApplicationApproved(appDoc, plan);
     }
 
@@ -1078,6 +1077,80 @@ export const getCustomersWithoutAccounts = async (
     });
   } catch (error) {
     console.error("Error in getCustomersWithoutAccounts:", error);
+    next(error);
+  }
+};
+
+// ==================== CUSTOMER EMAIL ALERTS TOGGLE (UPDATED) ====================
+export const toggleCustomerEmailAlerts = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const adminId = req.user?.id;
+    const { enabled } = req.body;
+
+    if (typeof enabled !== "boolean") {
+      return res.status(400).json({
+        success: false,
+        message: "Please provide a boolean value for 'enabled'",
+      });
+    }
+
+    const admin = await Admin.findById(adminId);
+
+    if (!admin) {
+      return res.status(404).json({
+        success: false,
+        message: "Admin not found",
+      });
+    }
+
+    admin.customerEmailAlertsEnabled = enabled;
+    await admin.save();
+
+    return res.status(200).json({
+      success: true,
+      message: `Customer email alerts ${enabled ? "enabled" : "disabled"} successfully`,
+      data: {
+        customerEmailAlertsEnabled: admin.customerEmailAlertsEnabled,
+      },
+    });
+  } catch (error) {
+    console.error("Error toggling customer email alerts:", error);
+    next(error);
+  }
+};
+
+// ==================== GET CUSTOMER EMAIL ALERTS PREFERENCE (UPDATED) ====================
+export const getCustomerEmailAlertsPreference = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const adminId = req.user?.id;
+
+    const admin = await Admin.findById(adminId).select(
+      "customerEmailAlertsEnabled",
+    );
+
+    if (!admin) {
+      return res.status(404).json({
+        success: false,
+        message: "Admin not found",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        customerEmailAlertsEnabled: admin.customerEmailAlertsEnabled,
+      },
+    });
+  } catch (error) {
+    console.error("Error getting customer email alerts preference:", error);
     next(error);
   }
 };
