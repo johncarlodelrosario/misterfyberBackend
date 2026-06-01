@@ -42,7 +42,7 @@ const sendTokenResponse = (
     expires: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
-    sameSite: "strict" as const,
+    sameSite: "lax" as const, // Changed from 'strict' for better compatibility
   };
 
   const responseData: any = {
@@ -50,6 +50,7 @@ const sendTokenResponse = (
     token,
     user: {
       id: user._id,
+      _id: user._id,
       username: user.username,
       email: user.email,
       firstName: user.firstName,
@@ -60,6 +61,10 @@ const sendTokenResponse = (
 
   if (isAdmin) {
     responseData.user.role = user.role;
+    responseData.user.isAdmin = true;
+  } else {
+    responseData.user.role = "user";
+    responseData.user.isAdmin = false;
   }
 
   res.status(statusCode).cookie("token", token, options).json(responseData);
@@ -162,7 +167,7 @@ export const checkApplication = async (
   }
 };
 
-// ==================== REGISTER WITH APPLICATION - CREATES USER ACCOUNT ====================
+// ==================== REGISTER WITH APPLICATION ====================
 export const registerWithApplication = async (
   req: Request,
   res: Response,
@@ -290,7 +295,6 @@ export const registerWithApplication = async (
 
     await session.commitTransaction();
 
-    // UPDATED: Use sendWelcomeEmail
     try {
       await emailService.sendWelcomeEmail(userDoc);
       console.log("[Auth] Welcome email sent to:", userDoc.email);
@@ -377,7 +381,7 @@ export const registerAdmin = async (
   }
 };
 
-// ==================== REGULAR USER REGISTRATION (DIRECT) ====================
+// ==================== REGULAR USER REGISTRATION ====================
 export const register = async (
   req: Request,
   res: Response,
@@ -414,7 +418,6 @@ export const register = async (
 
     console.log("[Auth] Regular registration successful for:", user.email);
 
-    // UPDATED: Send welcome email
     try {
       await emailService.sendWelcomeEmail(user);
     } catch (emailError) {
@@ -481,29 +484,36 @@ export const createInitialAdmin = async (
   }
 };
 
-// ==================== LOGIN ====================
+// ==================== LOGIN - FIXED: Supports both email and username ====================
 export const login = async (
   req: Request,
   res: Response,
   next: NextFunction,
 ) => {
   try {
-    const { email, password } = req.body;
+    const { email, password, username } = req.body;
 
-    console.log("[Auth] Login attempt for email:", email);
+    // Support both 'email' and 'username' fields
+    const loginIdentifier = email || username;
 
-    if (!email || !password) {
+    console.log("[Auth] Login attempt for:", loginIdentifier);
+
+    if (!loginIdentifier || !password) {
       return res.status(400).json({
         success: false,
-        message: "Please provide email and password",
+        message: "Please provide email/username and password",
       });
     }
 
-    let admin = await Admin.findOne({ email }).select("+password");
+    // Check if it's an admin first (by email)
+    let admin = await Admin.findOne({
+      $or: [{ email: loginIdentifier }, { username: loginIdentifier }],
+    }).select("+password");
+
     if (admin) {
       const isMatch = await admin.comparePassword(password);
       if (!isMatch) {
-        console.log("[Auth] Admin password mismatch for:", email);
+        console.log("[Auth] Admin password mismatch for:", loginIdentifier);
         return res
           .status(401)
           .json({ success: false, message: "Invalid credentials" });
@@ -524,9 +534,13 @@ export const login = async (
       return sendTokenResponse(admin, 200, res, true);
     }
 
-    const user = await User.findOne({ email }).select("+password");
+    // Check regular user (by email OR username)
+    const user = await User.findOne({
+      $or: [{ email: loginIdentifier }, { username: loginIdentifier }],
+    }).select("+password");
+
     if (!user) {
-      console.log("[Auth] User not found for email:", email);
+      console.log("[Auth] User not found for:", loginIdentifier);
       return res
         .status(401)
         .json({ success: false, message: "Invalid credentials" });
@@ -534,7 +548,7 @@ export const login = async (
 
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
-      console.log("[Auth] User password mismatch for:", email);
+      console.log("[Auth] User password mismatch for:", loginIdentifier);
       return res
         .status(401)
         .json({ success: false, message: "Invalid credentials" });
@@ -582,6 +596,8 @@ export const logout = async (
   res.cookie("token", "none", {
     expires: new Date(Date.now() + 10 * 1000),
     httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
   });
 
   res.status(200).json({
@@ -590,7 +606,7 @@ export const logout = async (
   });
 };
 
-// ==================== GET CURRENT USER ====================
+// ==================== GET CURRENT USER - FIXED ====================
 export const getMe = async (
   req: AuthRequest,
   res: Response,
@@ -598,9 +614,12 @@ export const getMe = async (
 ) => {
   try {
     const userId = req.user?._id;
-    const isAdmin = req.user?.role !== undefined;
+    const userRole = req.user?.role;
 
-    if (isAdmin) {
+    console.log("[Auth] getMe called for user:", userId, "role:", userRole);
+
+    // Check if it's an admin (has role property)
+    if (userRole && userRole !== "user") {
       const admin = await Admin.findById(userId).select("-password");
       if (!admin) {
         return res
@@ -610,15 +629,26 @@ export const getMe = async (
       return res.status(200).json({
         success: true,
         data: {
-          ...admin.toObject(),
+          _id: admin._id,
+          id: admin._id,
+          username: admin.username,
+          email: admin.email,
+          firstName: admin.firstName,
+          lastName: admin.lastName,
+          phoneNumber: admin.phoneNumber,
+          role: admin.role,
+          status: admin.status,
           isAdmin: true,
+          profilePicture: admin.profilePicture,
         },
       });
     }
 
+    // Regular user
     const user = await User.findById(userId)
       .select("-password")
       .populate("planId");
+
     if (!user) {
       return res
         .status(404)
@@ -628,11 +658,23 @@ export const getMe = async (
     res.status(200).json({
       success: true,
       data: {
-        ...user.toObject(),
+        _id: user._id,
+        id: user._id,
+        username: user.username,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        phoneNumber: user.phoneNumber,
+        role: "user",
+        status: user.status,
         isAdmin: false,
+        profilePicture: user.profilePicture,
+        planId: user.planId,
+        address: user.address,
       },
     });
   } catch (error) {
+    console.error("[Auth] getMe error:", error);
     next(error);
   }
 };
@@ -645,7 +687,7 @@ export const updatePassword = async (
 ) => {
   try {
     const { currentPassword, newPassword } = req.body;
-    const isAdmin = req.user?.role !== undefined;
+    const isAdmin = req.user?.role && req.user.role !== "user";
 
     if (isAdmin) {
       const admin = await Admin.findById(req.user._id).select("+password");
@@ -728,7 +770,6 @@ export const forgotPassword = async (
 
     await user.save();
 
-    // UPDATED: Use sendPasswordReset method
     await emailService.sendPasswordReset(user, resetToken);
 
     res.status(200).json({

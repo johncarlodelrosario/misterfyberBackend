@@ -11,7 +11,7 @@ export interface AuthRequest extends Request {
   authorization?: string;
 }
 
-// ==================== OPTIONAL AUTH - HINDI MAG EERROR KAHIT WALANG TOKEN ====================
+// ==================== OPTIONAL AUTH ====================
 export const optionalAuth = async (
   req: AuthRequest,
   res: Response,
@@ -46,7 +46,16 @@ export const optionalAuth = async (
     if (decoded.role) {
       const admin = await Admin.findById(decoded.id);
       if (admin) {
-        req.user = admin;
+        req.user = {
+          _id: admin._id,
+          id: admin._id,
+          email: admin.email,
+          username: admin.username,
+          firstName: admin.firstName,
+          lastName: admin.lastName,
+          role: admin.role,
+          status: admin.status,
+        };
         console.log(`✅ Authenticated Admin: ${admin.email} (${admin.role})`);
       } else {
         console.log("[Auth] Admin not found for id:", decoded.id);
@@ -55,7 +64,16 @@ export const optionalAuth = async (
     } else {
       const user = await User.findById(decoded.id);
       if (user) {
-        req.user = user;
+        req.user = {
+          _id: user._id,
+          id: user._id,
+          email: user.email,
+          username: user.username,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          role: "user",
+          status: user.status,
+        };
         console.log(`✅ Authenticated User: ${user.email}`);
       } else {
         console.log("[Auth] User not found for id:", decoded.id);
@@ -73,8 +91,8 @@ export const optionalAuth = async (
   }
 };
 
-// ==================== REQUIRED AUTH - MAG EERROR KUNG WALANG TOKEN ====================
-export const authMiddleware = async (
+// ==================== REQUIRED AUTH - PROTECT ====================
+export const protect = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
@@ -107,7 +125,7 @@ export const authMiddleware = async (
       role: decoded.role,
     });
 
-    // CHECK KUNG MAY ROLE - ADMIN
+    // Check if admin
     if (decoded.role) {
       const admin = await Admin.findById(decoded.id);
       if (!admin) {
@@ -117,7 +135,6 @@ export const authMiddleware = async (
           .json({ success: false, message: "Admin account not found" });
       }
 
-      // I-set ang user object na may role property
       req.user = {
         _id: admin._id,
         id: admin._id,
@@ -125,12 +142,12 @@ export const authMiddleware = async (
         username: admin.username,
         firstName: admin.firstName,
         lastName: admin.lastName,
-        role: admin.role, // IMPORTANTE: ito ang role!
+        role: admin.role,
         status: admin.status,
       };
       console.log(`✅ Authenticated Admin: ${admin.email} (${admin.role})`);
     } else {
-      // REGULAR USER
+      // Regular user
       const user = await User.findById(decoded.id);
       if (!user) {
         console.log("[Auth] User not found for id:", decoded.id);
@@ -146,7 +163,7 @@ export const authMiddleware = async (
         username: user.username,
         firstName: user.firstName,
         lastName: user.lastName,
-        role: "user", // Regular user role
+        role: "user",
         status: user.status,
       };
       console.log(`✅ Authenticated User: ${user.email}`);
@@ -162,7 +179,7 @@ export const authMiddleware = async (
   }
 };
 
-// ==================== ADMIN MIDDLEWARE - FIXED ====================
+// ==================== ADMIN MIDDLEWARE ====================
 export const adminMiddleware = (
   req: AuthRequest,
   res: Response,
@@ -181,7 +198,6 @@ export const adminMiddleware = (
   const userRole = req.user.role;
   console.log("[AdminMiddleware] User role:", userRole);
 
-  // Allow super_admin, admin, and staff
   if (!userRole) {
     console.log("[AdminMiddleware] No role assigned to user");
     return res.status(403).json({
@@ -225,8 +241,8 @@ export const superAdminOnly = (
   next();
 };
 
-// ==================== ALIASES FOR BACKWARD COMPATIBILITY ====================
-export const protect = authMiddleware;
+// ==================== ALIASES ====================
+export const authMiddleware = protect;
 export const adminOnly = adminMiddleware;
 
 // ==================== AUTHORIZE MIDDLEWARE ====================

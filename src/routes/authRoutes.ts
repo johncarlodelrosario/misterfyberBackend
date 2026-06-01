@@ -71,10 +71,15 @@ router.post("/create-initial-admin", createInitialAdmin);
 
 // ==================== LOGIN/LOGOUT ====================
 
+// FIXED: Accepts both email and username
 router.post(
   "/login",
   [
-    body("email").isEmail().withMessage("Please provide a valid email"),
+    body("email")
+      .optional()
+      .isEmail()
+      .withMessage("Please provide a valid email"),
+    body("username").optional().notEmpty().withMessage("Username is required"),
     body("password").notEmpty().withMessage("Password is required"),
   ],
   login,
