@@ -1,4 +1,3 @@
-// controllers/billingController.ts - COMPLETE UPDATED WITH EMAIL SERVICE
 import { Request, Response, NextFunction } from "express";
 import Billing from "../models/Billing";
 import BillingCycle from "../models/BillingCycle";
@@ -142,7 +141,6 @@ function getDueDateForRegularMonthly(currentDate: Date, settings: any): Date {
   return dueDate;
 }
 
-// ==================== CHECK ADMIN FUNCTION ====================
 function checkAdmin(req: AuthRequest, res: Response): boolean {
   if (!req.user || !req.user.role) {
     res.status(401).json({
@@ -162,7 +160,7 @@ function checkAdmin(req: AuthRequest, res: Response): boolean {
   return true;
 }
 
-// ==================== START BILLING FOR USER/APPLICATION (WITH DUPLICATE CHECK) ====================
+// ==================== START BILLING FOR USER/APPLICATION ====================
 export const startBilling = async (
   req: AuthRequest,
   res: Response,
@@ -301,7 +299,8 @@ export const startBilling = async (
     let billingEndDateForCycle: Date;
     let nextBillingDate: Date;
     let createdBill: any = null;
-    let billingStatus = "pending_activation";
+    // 🔥🔥🔥 PINALITAN ITO - ACTIVE AGAD, HINDI PENDING_ACTIVATION 🔥🔥🔥
+    let billingStatus = "active";
 
     const cycleData: any = {
       planId: plan._id,
@@ -401,7 +400,7 @@ export const startBilling = async (
               "billingInfo.currentBill": totalAmount,
               "billingInfo.nextBillingDate": nextBillingDate,
               "billingInfo.billingCycleId": billingCycle[0]._id,
-              status: "pending_activation",
+              status: "active",
             },
           },
         );
@@ -412,6 +411,7 @@ export const startBilling = async (
             $set: {
               billingStarted: true,
               billingCycleId: billingCycle[0]._id,
+              serviceStatus: "active",
             },
           },
         );
@@ -517,7 +517,7 @@ export const startBilling = async (
               "billingInfo.currentBill": proRatedAmount,
               "billingInfo.nextBillingDate": nextBillingDate,
               "billingInfo.billingCycleId": billingCycle[0]._id,
-              status: "pending_activation",
+              status: "active",
             },
           },
         );
@@ -528,6 +528,7 @@ export const startBilling = async (
             $set: {
               billingStarted: true,
               billingCycleId: billingCycle[0]._id,
+              serviceStatus: "active",
             },
           },
         );
@@ -895,7 +896,7 @@ export const getAllBills = async (
   }
 };
 
-// ==================== PAUSE BILLING (WITH UNPAID BILLS CHECK) ====================
+// ==================== PAUSE BILLING ====================
 export const pauseBilling = async (
   req: AuthRequest,
   res: Response,
@@ -915,10 +916,6 @@ export const pauseBilling = async (
     let customerEmail = "";
     let customerName = "";
 
-    console.log(
-      `📋 Pause billing request: userId=${userId}, applicationId=${applicationId}`,
-    );
-
     if (applicationId) {
       application = await Application.findOne({ applicationId }).lean();
       if (!application) {
@@ -933,9 +930,6 @@ export const pauseBilling = async (
       }).lean();
       customerEmail = application.email;
       customerName = `${application.firstName} ${application.lastName}`;
-      console.log(
-        `🔍 Found application: ${customerName}, Billing cycle: ${billingCycle?._id || "none"}`,
-      );
     } else if (userId) {
       user = await User.findById(userId).lean();
       if (!user) {
@@ -950,9 +944,6 @@ export const pauseBilling = async (
       }).lean();
       customerEmail = user.email;
       customerName = `${user.firstName} ${user.lastName}`;
-      console.log(
-        `🔍 Found user: ${customerName}, Billing cycle: ${billingCycle?._id || "none"}`,
-      );
     } else {
       await session.abortTransaction();
       return res.status(400).json({
@@ -965,8 +956,7 @@ export const pauseBilling = async (
       await session.abortTransaction();
       return res.status(404).json({
         success: false,
-        message:
-          "No active billing cycle found to pause. Customer may not have started billing yet.",
+        message: "No active billing cycle found to pause.",
       });
     }
 
@@ -974,8 +964,6 @@ export const pauseBilling = async (
       ...(user ? { userId } : { applicationId: application?._id }),
       status: { $in: ["sent", "overdue", "pending_confirmation"] },
     }).lean();
-
-    console.log(`💰 Unpaid bills found: ${unpaidBills.length}`);
 
     if (unpaidBills.length > 0) {
       await session.abortTransaction();
@@ -985,16 +973,8 @@ export const pauseBilling = async (
       );
       return res.status(400).json({
         success: false,
-        message: `Cannot pause service. Customer has ${unpaidBills.length} unpaid bill(s) totaling ₱${totalAmount.toFixed(2)}. Please settle outstanding balance first.`,
-        data: {
-          unpaidBills: unpaidBills.map((b) => ({
-            invoiceNumber: b.invoiceNumber,
-            amount: b.total,
-            dueDate: b.dueDate,
-            status: b.status,
-          })),
-          totalAmount,
-        },
+        message: `Cannot pause service. Customer has ${unpaidBills.length} unpaid bill(s) totaling ₱${totalAmount.toFixed(2)}.`,
+        data: { unpaidBills, totalAmount },
       });
     }
 
@@ -1018,14 +998,6 @@ export const pauseBilling = async (
         { $set: { status: "paused" } },
         { session },
       );
-      if (user.mikrotik?.username) {
-        try {
-          await mikrotikService.disablePPPoEUser(user);
-          console.log(`🔌 Disabled MikroTik user: ${user.mikrotik.username}`);
-        } catch (error) {
-          console.error("Error disabling user in MikroTik:", error);
-        }
-      }
     } else if (application) {
       await Application.updateOne(
         { _id: application._id },
@@ -1040,18 +1012,8 @@ export const pauseBilling = async (
       await emailService.sendEmail(
         customerEmail,
         "Your Service Has Been Paused - Mister Fyber",
-        `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #e67e22;">⏸️ Service Paused</h2>
-          <p>Dear ${customerName},</p>
-          <p>Your internet service has been paused as requested.</p>
-          <p><strong>Reason:</strong> ${reason || "Customer requested pause"}</p>
-          ${pauseUntilDate ? `<p><strong>Auto-resume Date:</strong> ${new Date(pauseUntilDate).toLocaleDateString()}</p>` : ""}
-          <p>To resume your service, please contact our support team.</p>
-          <hr>
-          <p style="color: #666; font-size: 12px;">Mister Fyber - Your trusted internet provider</p>
-        </div>`,
+        `<div><h2>Service Paused</h2><p>Dear ${customerName},</p><p>Your internet service has been paused.</p></div>`,
       );
-      console.log(`📧 Pause notification email sent to: ${customerEmail}`);
     } catch (emailError) {
       console.error("Failed to send pause notification email:", emailError);
     }
@@ -1061,13 +1023,7 @@ export const pauseBilling = async (
     res.status(200).json({
       success: true,
       message: `Service paused for ${customerName}`,
-      data: {
-        customerName,
-        customerEmail,
-        pausedAt: pauseDate,
-        pauseUntil: pauseUntilDate || null,
-        reason: reason || "Customer requested pause",
-      },
+      data: { customerName, customerEmail, pausedAt: pauseDate },
     });
   } catch (error) {
     await session.abortTransaction();
@@ -1077,7 +1033,7 @@ export const pauseBilling = async (
   }
 };
 
-// ==================== RESUME BILLING (WITH UNPAID BILLS CHECK) ====================
+// ==================== RESUME BILLING ====================
 export const resumeBilling = async (
   req: AuthRequest,
   res: Response,
@@ -1156,8 +1112,7 @@ export const resumeBilling = async (
       );
       return res.status(400).json({
         success: false,
-        message: `Cannot resume service. Customer has ${pendingBills.length} unpaid bill(s) totaling ₱${totalAmount.toFixed(2)}. Please settle outstanding balance first.`,
-        data: { pendingBills, totalAmount },
+        message: `Cannot resume service. Customer has ${pendingBills.length} unpaid bill(s) totaling ₱${totalAmount.toFixed(2)}.`,
       });
     }
 
@@ -1185,13 +1140,6 @@ export const resumeBilling = async (
         { $set: { status: "active" } },
         { session },
       );
-      if (user.mikrotik?.username && user.planId) {
-        try {
-          await mikrotikService.applyPlanToUser(user, user.planId);
-        } catch (error) {
-          console.error("Error enabling user in MikroTik:", error);
-        }
-      }
     } else if (application) {
       await Application.updateOne(
         { _id: application._id },
@@ -1206,15 +1154,7 @@ export const resumeBilling = async (
       await emailService.sendEmail(
         customerEmail,
         "Your Service Has Been Resumed - Mister Fyber",
-        `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #27ae60;">✅ Service Resumed</h2>
-          <p>Dear ${customerName},</p>
-          <p>Your internet service has been resumed.</p>
-          <p><strong>Next Billing Date:</strong> ${nextBillingDate.toLocaleDateString()}</p>
-          <p>Thank you for being a valued customer!</p>
-          <hr>
-          <p style="color: #666; font-size: 12px;">Mister Fyber - Your trusted internet provider</p>
-        </div>`,
+        `<div><h2>Service Resumed</h2><p>Dear ${customerName},</p><p>Your internet service has been resumed.</p></div>`,
       );
     } catch (emailError) {
       console.error("Failed to send resume notification email:", emailError);
@@ -1240,7 +1180,7 @@ export const resumeBilling = async (
   }
 };
 
-// ==================== MARK BILL AS PAID (WITH DUPLICATE CHECK) ====================
+// ==================== MARK BILL AS PAID ====================
 export const markBillAsPaid = async (
   req: AuthRequest,
   res: Response,
@@ -1257,7 +1197,6 @@ export const markBillAsPaid = async (
     const adminId = req.user?._id;
 
     const existingBill = await Billing.findById(billId).session(session);
-
     if (!existingBill) {
       await session.abortTransaction();
       return res
@@ -1270,25 +1209,6 @@ export const markBillAsPaid = async (
       return res.status(400).json({
         success: false,
         message: `Bill ${existingBill.invoiceNumber} is already paid`,
-        data: {
-          invoiceNumber: existingBill.invoiceNumber,
-          paidAt: existingBill.updatedAt,
-        },
-      });
-    }
-
-    const existingPayment = await Payment.findOne({
-      billingId: billId,
-    }).session(session);
-    if (existingPayment && existingPayment.status === "completed") {
-      await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: "A payment has already been recorded for this bill",
-        data: {
-          paymentId: existingPayment._id,
-          status: existingPayment.status,
-        },
       });
     }
 
@@ -1315,16 +1235,6 @@ export const markBillAsPaid = async (
         customerId = application._id;
         customerEmail = application.email;
         customerName = `${application.firstName} ${application.lastName}`;
-      } else if (bill.applicationId) {
-        application = await Application.findById(bill.applicationId).session(
-          session,
-        );
-        if (application) {
-          readableApplicationId = application.applicationId;
-          customerId = application._id;
-          customerEmail = application.email;
-          customerName = `${application.firstName} ${application.lastName}`;
-        }
       }
     } else if (bill.userId) {
       user = bill.userId as any;
@@ -1332,22 +1242,7 @@ export const markBillAsPaid = async (
         customerId = user._id;
         customerEmail = user.email;
         customerName = `${user.firstName} ${user.lastName}`;
-      } else if (bill.userId) {
-        user = await User.findById(bill.userId).session(session);
-        if (user) {
-          customerId = user._id;
-          customerEmail = user.email;
-          customerName = `${user.firstName} ${user.lastName}`;
-        }
       }
-    }
-
-    if (!customerId) {
-      await session.abortTransaction();
-      return res.status(404).json({
-        success: false,
-        message: "Cannot find customer for this bill",
-      });
     }
 
     const paymentData: any = {
@@ -1404,26 +1299,6 @@ export const markBillAsPaid = async (
       await billingCycle.save({ session });
     }
 
-    if (
-      user &&
-      user._id &&
-      (user.status === "pending_activation" || user.status === "suspended")
-    ) {
-      await User.updateOne(
-        { _id: user._id },
-        { $set: { status: "active" } },
-        { session },
-      );
-    }
-
-    if (application && application._id) {
-      await Application.updateOne(
-        { _id: application._id },
-        { $set: { billingStarted: true } },
-        { session },
-      );
-    }
-
     await session.commitTransaction();
 
     try {
@@ -1431,15 +1306,7 @@ export const markBillAsPaid = async (
         await emailService.sendEmail(
           application.email,
           `Payment Confirmation - ${bill.invoiceNumber}`,
-          `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2 style="color: #28a745;">✅ Payment Confirmed!</h2>
-            <p>Dear ${application.firstName} ${application.lastName},</p>
-            <p>Your payment of <strong>₱${bill.total.toLocaleString()}</strong> has been confirmed.</p>
-            <p><strong>Invoice Number:</strong> ${bill.invoiceNumber}</p>
-            <p><strong>Amount:</strong> ₱${bill.total.toLocaleString()}</p>
-            <hr>
-            <p style="color: #666; font-size: 12px;">Mister Fyber - Your trusted internet provider</p>
-          </div>`,
+          `<div><h2>Payment Confirmed!</h2><p>Dear ${application.firstName},</p><p>Your payment of ₱${bill.total.toLocaleString()} has been confirmed.</p></div>`,
         );
       } else if (user && user.email) {
         await emailService.sendPaymentConfirmation(user, payment[0], bill);
@@ -1457,7 +1324,6 @@ export const markBillAsPaid = async (
         billId: bill._id,
         invoiceNumber: bill.invoiceNumber,
         paymentId: payment[0]._id,
-        customerType: application ? "application" : "user",
       },
     });
   } catch (error) {
@@ -1561,10 +1427,12 @@ export const confirmProRatedPayment = async (
     }
 
     if ((!user && !application) || !billingCycle) {
-      return res.status(404).json({
-        success: false,
-        message: "User/Application or billing cycle not found",
-      });
+      return res
+        .status(404)
+        .json({
+          success: false,
+          message: "User/Application or billing cycle not found",
+        });
     }
 
     const proRatedBill = await Billing.findOne({
@@ -1648,14 +1516,7 @@ export const confirmProRatedPayment = async (
       await emailService.sendEmail(
         email,
         "Pro-rated Payment Confirmed",
-        `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #28a745;">✅ Pro-rated Payment Confirmed!</h2>
-          <p>Dear ${user?.firstName || application?.firstName},</p>
-          <p>Your pro-rated payment of <strong>₱${proRatedBill.total.toLocaleString()}</strong> has been confirmed.</p>
-          <p>Your service is now active. Thank you for choosing Mister Fyber!</p>
-          <hr>
-          <p style="color: #666; font-size: 12px;">Mister Fyber - Your trusted internet provider</p>
-        </div>`,
+        `<div><h2>Pro-rated Payment Confirmed!</h2><p>Dear ${user?.firstName || application?.firstName},</p><p>Your payment has been confirmed.</p></div>`,
       );
     }
 
@@ -1712,10 +1573,12 @@ export const startMonthlyBilling = async (
     }
 
     if ((!user && !application) || !billingCycle) {
-      return res.status(404).json({
-        success: false,
-        message: "User/Application or billing cycle not found",
-      });
+      return res
+        .status(404)
+        .json({
+          success: false,
+          message: "User/Application or billing cycle not found",
+        });
     }
 
     const settings = await getOrCreateSettings();
@@ -1859,10 +1722,12 @@ export const stopBilling = async (
         status: { $in: ["active", "paused"] },
       }).lean();
     } else {
-      return res.status(400).json({
-        success: false,
-        message: "userId or applicationId is required",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "userId or applicationId is required",
+        });
     }
 
     if (!billingCycle) {
@@ -1889,13 +1754,6 @@ export const stopBilling = async (
         { $set: { status: "inactive" } },
         { session },
       );
-      if (user.mikrotik?.username) {
-        try {
-          await mikrotikService.disablePPPoEUser(user);
-        } catch (error) {
-          console.error(error);
-        }
-      }
     } else if (application) {
       await Application.updateOne(
         { _id: application._id },
@@ -1908,10 +1766,9 @@ export const stopBilling = async (
     clearAllCache();
 
     const name = user?.firstName || application?.firstName;
-    res.status(200).json({
-      success: true,
-      message: `Billing stopped for ${name}`,
-    });
+    res
+      .status(200)
+      .json({ success: true, message: `Billing stopped for ${name}` });
   } catch (error) {
     await session.abortTransaction();
     next(error);
@@ -1932,13 +1789,10 @@ export const disconnectClient = async (
   session.startTransaction();
 
   try {
-    const { userId, applicationId, reason } = req.body;
-
-    let user = null;
-    let application = null;
+    const { userId, applicationId } = req.body;
 
     if (applicationId) {
-      application = await Application.findOne({ applicationId }).lean();
+      const application = await Application.findOne({ applicationId }).lean();
       if (!application) {
         return res
           .status(404)
@@ -1950,7 +1804,7 @@ export const disconnectClient = async (
         { session },
       );
     } else if (userId) {
-      user = await User.findById(userId).lean();
+      const user = await User.findById(userId).lean();
       if (!user) {
         return res
           .status(404)
@@ -1961,28 +1815,19 @@ export const disconnectClient = async (
         { $set: { status: "suspended" } },
         { session },
       );
-      if (user.mikrotik?.username) {
-        try {
-          await mikrotikService.disablePPPoEUser(user);
-        } catch (error) {
-          console.error(error);
-        }
-      }
     } else {
-      return res.status(400).json({
-        success: false,
-        message: "userId or applicationId is required",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "userId or applicationId is required",
+        });
     }
 
     await session.commitTransaction();
     clearAllCache();
 
-    const name = user?.firstName || application?.firstName;
-    res.status(200).json({
-      success: true,
-      message: `Service disconnected for ${name}`,
-    });
+    res.status(200).json({ success: true, message: "Service disconnected" });
   } catch (error) {
     await session.abortTransaction();
     next(error);
@@ -2005,13 +1850,8 @@ export const reconnectClient = async (
   try {
     const { userId, applicationId } = req.body;
 
-    let user = null;
-    let application = null;
-
     if (applicationId) {
-      application = await Application.findOne({ applicationId })
-        .populate("planId")
-        .lean();
+      const application = await Application.findOne({ applicationId }).lean();
       if (!application) {
         return res
           .status(404)
@@ -2023,7 +1863,7 @@ export const reconnectClient = async (
         { session },
       );
     } else if (userId) {
-      user = await User.findById(userId).populate("planId").lean();
+      const user = await User.findById(userId).lean();
       if (!user) {
         return res
           .status(404)
@@ -2034,28 +1874,19 @@ export const reconnectClient = async (
         { $set: { status: "active" } },
         { session },
       );
-      if (user.mikrotik?.username && user.planId) {
-        try {
-          await mikrotikService.applyPlanToUser(user, user.planId);
-        } catch (error) {
-          console.error(error);
-        }
-      }
     } else {
-      return res.status(400).json({
-        success: false,
-        message: "userId or applicationId is required",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "userId or applicationId is required",
+        });
     }
 
     await session.commitTransaction();
     clearAllCache();
 
-    const name = user?.firstName || application?.firstName;
-    res.status(200).json({
-      success: true,
-      message: `Service reconnected for ${name}`,
-    });
+    res.status(200).json({ success: true, message: "Service reconnected" });
   } catch (error) {
     await session.abortTransaction();
     next(error);
@@ -2079,24 +1910,20 @@ export const deleteBillingCycle = async (
     const { billingCycleId, customerId, customerType } = req.body;
 
     if (!billingCycleId) {
-      return res.status(400).json({
-        success: false,
-        message: "Billing cycle ID is required",
-      });
+      return res
+        .status(400)
+        .json({ success: false, message: "Billing cycle ID is required" });
     }
 
     const billingCycle =
       await BillingCycle.findById(billingCycleId).session(session);
-
     if (!billingCycle) {
-      return res.status(404).json({
-        success: false,
-        message: "Billing cycle not found",
-      });
+      return res
+        .status(404)
+        .json({ success: false, message: "Billing cycle not found" });
     }
 
     await Billing.deleteMany({ billingCycleId: billingCycle._id }, { session });
-
     await BillingCycle.deleteOne({ _id: billingCycle._id }, { session });
 
     if (customerType === "user" && customerId) {
@@ -2114,10 +1941,7 @@ export const deleteBillingCycle = async (
     } else if (customerType === "application" && customerId) {
       await Application.updateOne(
         { _id: customerId },
-        {
-          $set: { billingStarted: false },
-          $unset: { billingCycleId: "" },
-        },
+        { $set: { billingStarted: false }, $unset: { billingCycleId: "" } },
         { session },
       );
     }
@@ -2125,13 +1949,11 @@ export const deleteBillingCycle = async (
     await session.commitTransaction();
     clearAllCache();
 
-    res.status(200).json({
-      success: true,
-      message: "Billing cycle and associated records deleted successfully",
-    });
+    res
+      .status(200)
+      .json({ success: true, message: "Billing cycle deleted successfully" });
   } catch (error) {
     await session.abortTransaction();
-    console.error("Delete billing cycle error:", error);
     next(error);
   } finally {
     session.endSession();
@@ -2159,7 +1981,6 @@ export const autoGenerateMonthlyBills = async (
     const billingCycles = await BillingCycle.find({
       status: "active",
       proRatedPaid: true,
-      manualBillStart: true,
       nextBillingDate: { $lte: today },
     })
       .populate("userId planId")
@@ -2288,14 +2109,7 @@ export const autoSendReminders = async (req?: AuthRequest, res?: Response) => {
           await emailService.sendEmail(
             customer.email,
             `Payment Reminder - Invoice ${bill.invoiceNumber}`,
-            `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-              <h2 style="color: #f39c12;">⚠️ Payment Reminder</h2>
-              <p>Dear ${customer.firstName || customer.username},</p>
-              <p>Your bill of <strong>₱${bill.total.toFixed(2)}</strong> is due on <strong>${new Date(bill.dueDate).toLocaleDateString()}</strong>.</p>
-              <p>Please pay before the due date to avoid service interruption.</p>
-              <hr>
-              <p style="color: #666; font-size: 12px;">Mister Fyber - Your trusted internet provider</p>
-            </div>`,
+            `<div><h2>Payment Reminder</h2><p>Dear ${customer.firstName || customer.username},</p><p>Your bill of ₱${bill.total.toFixed(2)} is due soon.</p></div>`,
           );
           await Billing.updateOne(
             { _id: bill._id },
@@ -2362,13 +2176,6 @@ export const autoSuspendOverdue = async (req?: AuthRequest, res?: Response) => {
           { _id: user._id },
           { $set: { status: "suspended" } },
         );
-        if (user.mikrotik?.username) {
-          try {
-            await mikrotikService.disablePPPoEUser(user);
-          } catch (error) {
-            console.error(error);
-          }
-        }
         suspendedCount++;
       }
     }
@@ -2395,7 +2202,6 @@ export const getUserCurrentBilling = async (
 ) => {
   try {
     const userId = req.user?._id;
-
     if (!userId) {
       return res.status(200).json({ success: true, data: null });
     }
@@ -2444,12 +2250,13 @@ export const getUserBillingHistory = async (
 ) => {
   try {
     const userId = req.user?._id;
-
     if (!userId) {
-      return res.status(200).json({
-        success: true,
-        data: { billingHistory: [], total: 0, page: 1, pages: 0 },
-      });
+      return res
+        .status(200)
+        .json({
+          success: true,
+          data: { billingHistory: [], total: 0, page: 1, pages: 0 },
+        });
     }
 
     const { limit = 50, page = 1 } = req.query;
@@ -2587,7 +2394,6 @@ export const getApplicationBillingStatus = async (
     })
       .populate("planId")
       .lean();
-
     const bills = await Billing.find({ applicationId: application._id })
       .sort({ createdAt: -1 })
       .lean();
