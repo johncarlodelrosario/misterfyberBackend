@@ -28,7 +28,7 @@ export interface IBillingCycle extends Document {
   disconnectReason?: string;
   isAfterCutoff?: boolean;
   cutoffDayUsed?: number;
-  applicationId?: mongoose.Types.ObjectId;
+  applicationId?: string; // Changed from ObjectId to string
   pendingPlanChange?: {
     newPlanId: mongoose.Types.ObjectId;
     requestedAt: Date;
@@ -74,7 +74,7 @@ const BillingCycleSchema = new Schema<IBillingCycle>(
     disconnectReason: { type: String },
     isAfterCutoff: { type: Boolean, default: false },
     cutoffDayUsed: { type: Number },
-    applicationId: { type: Schema.Types.ObjectId, ref: "Application" },
+    applicationId: { type: String, ref: "Application", index: true }, // Changed to String type
     pendingPlanChange: {
       newPlanId: { type: Schema.Types.ObjectId, ref: "Plan" },
       requestedAt: Date,

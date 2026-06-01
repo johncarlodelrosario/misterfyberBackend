@@ -30,7 +30,7 @@ export interface IBilling extends Document {
   isProRated: boolean;
   proRatedDays: number;
   billingCycleId: mongoose.Types.ObjectId;
-  applicationId?: mongoose.Types.ObjectId;
+  applicationId: string; // Changed from ObjectId to string
   reminder7DaySent: boolean;
   reminder3DaySent: boolean;
   reminder1DaySent: boolean;
@@ -94,7 +94,7 @@ const BillingSchema: Schema = new Schema(
     isProRated: { type: Boolean, default: false },
     proRatedDays: { type: Number, default: 0 },
     billingCycleId: { type: Schema.Types.ObjectId, ref: "BillingCycle" },
-    applicationId: { type: Schema.Types.ObjectId, ref: "Application" },
+    applicationId: { type: String, ref: "Application", index: true }, // Changed to String type, referencing applicationId field
     reminder7DaySent: { type: Boolean, default: false },
     reminder3DaySent: { type: Boolean, default: false },
     reminder1DaySent: { type: Boolean, default: false },
