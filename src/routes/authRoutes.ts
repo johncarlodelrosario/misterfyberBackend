@@ -12,14 +12,17 @@ import {
   forgotPassword,
   resetPassword,
   checkApplication,
+  testAuth,
 } from "../controllers/authController";
 import { protect } from "../middleware/auth";
 
 const router = express.Router();
 
+// ==================== TEST ENDPOINT - TO VERIFY BACKEND IS WORKING ====================
+router.get("/test", testAuth);
+
 // ==================== PUBLIC REGISTRATION ROUTES ====================
 
-// Regular user registration (direct - no application needed)
 router.post(
   "/register",
   [
@@ -34,7 +37,6 @@ router.post(
   register,
 );
 
-// Registration with application ID (for approved applications)
 router.post(
   "/register-with-application",
   [
@@ -71,15 +73,11 @@ router.post("/create-initial-admin", createInitialAdmin);
 
 // ==================== LOGIN/LOGOUT ====================
 
-// FIXED: Accepts both email and username
 router.post(
   "/login",
   [
-    body("email")
-      .optional()
-      .isEmail()
-      .withMessage("Please provide a valid email"),
-    body("username").optional().notEmpty().withMessage("Username is required"),
+    body("email").optional().isEmail(),
+    body("username").optional().notEmpty(),
     body("password").notEmpty().withMessage("Password is required"),
   ],
   login,
@@ -93,6 +91,7 @@ router.get("/check-application/:applicationId", checkApplication);
 
 // ==================== PROTECTED ROUTES ====================
 
+// THIS IS THE CRITICAL ENDPOINT - MAKE SURE IT EXISTS
 router.get("/me", protect, getMe);
 
 router.put(

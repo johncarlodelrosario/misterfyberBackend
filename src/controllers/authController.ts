@@ -42,7 +42,7 @@ const sendTokenResponse = (
     expires: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
-    sameSite: "lax" as const, // Changed from 'strict' for better compatibility
+    sameSite: "lax" as const,
   };
 
   const responseData: any = {
@@ -484,7 +484,7 @@ export const createInitialAdmin = async (
   }
 };
 
-// ==================== LOGIN - FIXED: Supports both email and username ====================
+// ==================== LOGIN - FIXED ====================
 export const login = async (
   req: Request,
   res: Response,
@@ -505,7 +505,7 @@ export const login = async (
       });
     }
 
-    // Check if it's an admin first (by email)
+    // Check if it's an admin first
     let admin = await Admin.findOne({
       $or: [{ email: loginIdentifier }, { username: loginIdentifier }],
     }).select("+password");
@@ -534,7 +534,7 @@ export const login = async (
       return sendTokenResponse(admin, 200, res, true);
     }
 
-    // Check regular user (by email OR username)
+    // Check regular user
     const user = await User.findOne({
       $or: [{ email: loginIdentifier }, { username: loginIdentifier }],
     }).select("+password");
@@ -606,19 +606,29 @@ export const logout = async (
   });
 };
 
-// ==================== GET CURRENT USER - FIXED ====================
+// ==================== GET CURRENT USER - CRITICAL FIX ====================
 export const getMe = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ) => {
   try {
-    const userId = req.user?._id;
+    console.log("[Auth] getMe called - Request user:", req.user);
+
+    const userId = req.user?._id || req.user?.id;
     const userRole = req.user?.role;
 
-    console.log("[Auth] getMe called for user:", userId, "role:", userRole);
+    console.log("[Auth] getMe - userId:", userId, "role:", userRole);
 
-    // Check if it's an admin (has role property)
+    if (!userId) {
+      console.log("[Auth] getMe - No userId found");
+      return res.status(401).json({
+        success: false,
+        message: "Not authenticated. Please login again.",
+      });
+    }
+
+    // Check if it's an admin
     if (userRole && userRole !== "user") {
       const admin = await Admin.findById(userId).select("-password");
       if (!admin) {
@@ -639,7 +649,6 @@ export const getMe = async (
           role: admin.role,
           status: admin.status,
           isAdmin: true,
-          profilePicture: admin.profilePicture,
         },
       });
     }
@@ -670,7 +679,6 @@ export const getMe = async (
         isAdmin: false,
         profilePicture: user.profilePicture,
         planId: user.planId,
-        address: user.address,
       },
     });
   } catch (error) {
@@ -723,16 +731,6 @@ export const updatePassword = async (
 
       user.password = newPassword;
       await user.save();
-
-      try {
-        await emailService.sendEmail(
-          user.email,
-          "Password Changed Successfully",
-          `<p>Your password has been changed successfully. If you did not perform this action, please contact support immediately.</p>`,
-        );
-      } catch (emailError) {
-        console.error("Failed to send password change email:", emailError);
-      }
     }
 
     res.status(200).json({
@@ -815,6 +813,21 @@ export const resetPassword = async (
   }
 };
 
+// ==================== TEST ENDPOINT - TO VERIFY BACKEND IS WORKING ====================
+export const testAuth = async (req: Request, res: Response) => {
+  res.status(200).json({
+    success: true,
+    message: "Auth routes are working!",
+    timestamp: new Date().toISOString(),
+    endpoints: {
+      login: "POST /api/auth/login",
+      register: "POST /api/auth/register",
+      me: "GET /api/auth/me (requires token)",
+      logout: "POST /api/auth/logout",
+    },
+  });
+};
+
 export default {
   register,
   registerAdmin,
@@ -827,4 +840,5 @@ export default {
   forgotPassword,
   resetPassword,
   checkApplication,
+  testAuth,
 };
