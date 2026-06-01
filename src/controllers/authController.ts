@@ -112,7 +112,7 @@ export const checkApplication = async (
 
     if (application.billingStarted && application.billingCycleId) {
       const bill = await Billing.findOne({
-        applicationId: application._id,
+        applicationId: application.applicationId,
         status: { $in: ["sent", "overdue"] },
       }).lean();
 
@@ -236,7 +236,7 @@ export const registerWithApplication = async (
     }
 
     const existingBill = await Billing.findOne({
-      applicationId: application._id,
+      applicationId: application.applicationId,
       status: { $in: ["sent", "overdue"] },
     }).lean();
 
@@ -274,7 +274,7 @@ export const registerWithApplication = async (
     const userDoc = user[0];
 
     await Application.updateOne(
-      { _id: application._id },
+      { _id: application.applicationId },
       { $set: { registeredUserId: userDoc._id } },
       { session },
     );
@@ -287,7 +287,7 @@ export const registerWithApplication = async (
       );
 
       await Billing.updateMany(
-        { applicationId: application._id },
+        { applicationId: application.applicationId },
         { $set: { userId: userDoc._id } },
         { session },
       );
@@ -439,7 +439,7 @@ export const createInitialAdmin = async (
 ) => {
   try {
     const existingAdmin = await Admin.findOne({
-      email: "admin@misterfyber.com",
+      email: "",
     });
     if (existingAdmin) {
       return res.status(200).json({
@@ -456,8 +456,8 @@ export const createInitialAdmin = async (
 
     const admin = await Admin.create({
       username: "superadmin",
-      email: "admin@misterfyber.com",
-      password: "admin123",
+      email: "",
+      password: "",
       firstName: "Super",
       lastName: "Admin",
       role: "super_admin",
@@ -484,7 +484,7 @@ export const createInitialAdmin = async (
   }
 };
 
-// ==================== LOGIN - FIXED ====================
+// ==================== LOGIN ====================
 export const login = async (
   req: Request,
   res: Response,
@@ -493,7 +493,6 @@ export const login = async (
   try {
     const { email, password, username } = req.body;
 
-    // Support both 'email' and 'username' fields
     const loginIdentifier = email || username;
 
     console.log("[Auth] Login attempt for:", loginIdentifier);
@@ -505,7 +504,6 @@ export const login = async (
       });
     }
 
-    // Check if it's an admin first
     let admin = await Admin.findOne({
       $or: [{ email: loginIdentifier }, { username: loginIdentifier }],
     }).select("+password");
@@ -534,7 +532,6 @@ export const login = async (
       return sendTokenResponse(admin, 200, res, true);
     }
 
-    // Check regular user
     const user = await User.findOne({
       $or: [{ email: loginIdentifier }, { username: loginIdentifier }],
     }).select("+password");
@@ -606,7 +603,7 @@ export const logout = async (
   });
 };
 
-// ==================== GET CURRENT USER - CRITICAL FIX ====================
+// ==================== GET CURRENT USER ====================
 export const getMe = async (
   req: AuthRequest,
   res: Response,
@@ -628,7 +625,6 @@ export const getMe = async (
       });
     }
 
-    // Check if it's an admin
     if (userRole && userRole !== "user") {
       const admin = await Admin.findById(userId).select("-password");
       if (!admin) {
@@ -653,7 +649,6 @@ export const getMe = async (
       });
     }
 
-    // Regular user
     const user = await User.findById(userId)
       .select("-password")
       .populate("planId");
@@ -813,7 +808,7 @@ export const resetPassword = async (
   }
 };
 
-// ==================== TEST ENDPOINT - TO VERIFY BACKEND IS WORKING ====================
+// ==================== TEST ENDPOINT ====================
 export const testAuth = async (req: Request, res: Response) => {
   res.status(200).json({
     success: true,

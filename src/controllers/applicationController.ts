@@ -528,7 +528,6 @@ export const getApplication = async (
   }
 };
 
-// UPDATED approveApplication - USING sendApplicationApproved
 export const approveApplication = async (
   req: AuthRequest,
   res: Response,
@@ -571,7 +570,6 @@ export const approveApplication = async (
 
     await session.commitTransaction();
 
-    // UPDATED: Use sendApplicationApproved method
     const plan = application.planId as any;
     await emailService.sendApplicationApproved(application, plan);
 
@@ -723,7 +721,7 @@ export const startBillingForApplication = async (
     }
 
     const existingBillingCycle = await BillingCycle.findOne({
-      applicationId: application._id,
+      applicationId: application.applicationId,
     }).lean();
 
     if (existingBillingCycle) {
@@ -747,7 +745,7 @@ export const startBillingForApplication = async (
     }
 
     const existingBills = await Billing.findOne({
-      applicationId: application._id,
+      applicationId: application.applicationId,
     }).lean();
 
     if (existingBills) {
@@ -884,7 +882,7 @@ export const startBillingForApplication = async (
       [
         {
           userId: null,
-          applicationId: application._id,
+          applicationId: application.applicationId,
           planId: plan._id,
           billingStartDate: billingStartDateForCycle,
           billingEndDate: billingEndDateForCycle,
@@ -911,7 +909,7 @@ export const startBillingForApplication = async (
       [
         {
           userId: null,
-          applicationId: application._id,
+          applicationId: application.applicationId,
           billingCycleId: billingCycle[0]._id,
           invoiceNumber: invoiceNumber,
           billingPeriod: {

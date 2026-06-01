@@ -24,10 +24,6 @@ async function getPopulatedPayment(paymentId: string) {
       "userId",
       "firstName lastName email username phoneNumber status mikrotik planId",
     )
-    .populate(
-      "applicationId",
-      "firstName lastName email applicationId phoneNumber status billingStarted",
-    )
     .populate("billingId", "invoiceNumber total dueDate isProRated")
     .lean();
 
@@ -36,21 +32,31 @@ async function getPopulatedPayment(paymentId: string) {
   // Create a plain object with application data for frontend
   const result: any = { ...payment };
 
-  // If applicationId is populated, create an 'application' field for frontend
-  if (payment.applicationId && typeof payment.applicationId === "object") {
-    const app = payment.applicationId as any;
-    result.application = {
-      _id: app._id,
-      applicationId: app.applicationId,
-      firstName: app.firstName,
-      lastName: app.lastName,
-      email: app.email,
-      phoneNumber: app.phoneNumber,
-      status: app.status,
-      billingStarted: app.billingStarted,
-      applicantName: `${app.firstName || ""} ${app.lastName || ""}`.trim(),
-      address: app.address,
-    };
+  // Manually fetch application data using string applicationId
+  if (payment.applicationId) {
+    const application = await Application.findOne({
+      applicationId: payment.applicationId,
+    })
+      .select(
+        "firstName lastName email applicationId phoneNumber status billingStarted",
+      )
+      .lean();
+
+    if (application) {
+      result.application = {
+        _id: application._id,
+        applicationId: application.applicationId,
+        firstName: application.firstName,
+        lastName: application.lastName,
+        email: application.email,
+        phoneNumber: application.phoneNumber,
+        status: application.status,
+        billingStarted: application.billingStarted,
+        applicantName:
+          `${application.firstName || ""} ${application.lastName || ""}`.trim(),
+      };
+      result.applicationId = application.applicationId;
+    }
   }
 
   // If userId is populated, also add user data
@@ -94,7 +100,7 @@ export const createPayment = async (
       return res.status(404).json({ message: "Billing record not found" });
     }
 
-    const payment = await Payment.create({
+    const paymentData: any = {
       userId,
       amount,
       paymentMethod: paymentMethod || "manual",
@@ -107,7 +113,14 @@ export const createPayment = async (
         gatewayResponse: null,
         notes: notes || "Manual payment - pending admin approval",
       },
-    });
+    };
+
+    // If billing has applicationId (string), use it
+    if (billing.applicationId) {
+      paymentData.applicationId = billing.applicationId;
+    }
+
+    const payment = await Payment.create(paymentData);
 
     res.status(201).json({
       success: true,
@@ -134,10 +147,28 @@ export const getPayments = async (
       .populate("billingId")
       .lean();
 
+    // Manually fetch application data for each payment
+    const enrichedPayments = await Promise.all(
+      payments.map(async (payment) => {
+        const enriched: any = { ...payment };
+        if (payment.applicationId) {
+          const application = await Application.findOne({
+            applicationId: payment.applicationId,
+          })
+            .select("firstName lastName email applicationId")
+            .lean();
+          if (application) {
+            enriched.application = application;
+          }
+        }
+        return enriched;
+      }),
+    );
+
     res.status(200).json({
       success: true,
-      count: payments.length,
-      data: payments,
+      count: enrichedPayments.length,
+      data: enrichedPayments,
     });
   } catch (error) {
     next(error);
@@ -326,7 +357,6 @@ export const confirmPayment = async (
     // Get payment with populated data
     const payment = await Payment.findById(id)
       .populate("userId")
-      .populate("applicationId")
       .populate("billingId")
       .session(session);
 
@@ -340,18 +370,23 @@ export const confirmPayment = async (
       return res.status(400).json({ message: "Payment already confirmed" });
     }
 
-    // Get readable application ID
+    // Get readable application ID - fetch application using string ID
     let readableApplicationId = "";
     let customerEmail = "";
     let customerName = "";
     let customer: any = null;
 
     if (payment.applicationId) {
-      customer = payment.applicationId as any;
-      readableApplicationId = customer.applicationId || customer._id.toString();
-      customerEmail = customer.email;
-      customerName =
-        `${customer.firstName || ""} ${customer.lastName || ""}`.trim();
+      const application = await Application.findOne({
+        applicationId: payment.applicationId,
+      }).lean();
+      if (application) {
+        customer = application;
+        readableApplicationId = application.applicationId;
+        customerEmail = application.email;
+        customerName =
+          `${application.firstName || ""} ${application.lastName || ""}`.trim();
+      }
     } else if (payment.userId) {
       customer = payment.userId as any;
       customerEmail = customer.email;
@@ -425,9 +460,9 @@ export const confirmPayment = async (
         await user.save({ session });
       }
     } else if (payment.applicationId) {
-      const app = await Application.findById(payment.applicationId).session(
-        session,
-      );
+      const app = await Application.findOne({
+        applicationId: payment.applicationId,
+      }).session(session);
       if (app) {
         app.billingStarted = true;
         await app.save({ session });
@@ -488,60 +523,68 @@ export const getPendingPayments = async (
         "userId",
         "firstName lastName email username phoneNumber status",
       )
-      .populate(
-        "applicationId",
-        "firstName lastName email applicationId phoneNumber status billingStarted",
-      )
       .populate("billingId", "invoiceNumber total dueDate")
       .sort({ createdAt: -1 })
       .lean();
 
     // Enrich payments with application data for frontend
-    const enrichedPayments = payments.map((payment) => {
-      const enriched: any = { ...payment };
+    const enrichedPayments = await Promise.all(
+      payments.map(async (payment) => {
+        const enriched: any = { ...payment };
 
-      // Create application object for frontend if applicationId is populated
-      if (payment.applicationId && typeof payment.applicationId === "object") {
-        const app = payment.applicationId as any;
-        enriched.application = {
-          _id: app._id,
-          applicationId: app.applicationId,
-          firstName: app.firstName,
-          lastName: app.lastName,
-          email: app.email,
-          phoneNumber: app.phoneNumber,
-          status: app.status,
-          billingStarted: app.billingStarted,
-          applicantName: `${app.firstName || ""} ${app.lastName || ""}`.trim(),
-        };
-        enriched.applicationId = app.applicationId;
-      }
+        // Fetch application data using string applicationId
+        if (payment.applicationId) {
+          const application = await Application.findOne({
+            applicationId: payment.applicationId,
+          })
+            .select(
+              "firstName lastName email applicationId phoneNumber status billingStarted",
+            )
+            .lean();
 
-      // Add readable application ID from gateway response if available
-      if (
-        !enriched.application &&
-        payment.paymentDetails?.gatewayResponse?.applicationId
-      ) {
-        enriched.readableApplicationId =
-          payment.paymentDetails.gatewayResponse.applicationId;
-      }
+          if (application) {
+            enriched.application = {
+              _id: application._id,
+              applicationId: application.applicationId,
+              firstName: application.firstName,
+              lastName: application.lastName,
+              email: application.email,
+              phoneNumber: application.phoneNumber,
+              status: application.status,
+              billingStarted: application.billingStarted,
+              applicantName:
+                `${application.firstName || ""} ${application.lastName || ""}`.trim(),
+            };
+            enriched.applicationId = application.applicationId;
+          }
+        }
 
-      // Create user object if userId is populated
-      if (payment.userId && typeof payment.userId === "object") {
-        const user = payment.userId as any;
-        enriched.user = {
-          _id: user._id,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          email: user.email,
-          phoneNumber: user.phoneNumber,
-          username: user.username,
-          status: user.status,
-        };
-      }
+        // Add readable application ID from gateway response if available
+        if (
+          !enriched.application &&
+          payment.paymentDetails?.gatewayResponse?.applicationId
+        ) {
+          enriched.readableApplicationId =
+            payment.paymentDetails.gatewayResponse.applicationId;
+        }
 
-      return enriched;
-    });
+        // Create user object if userId is populated
+        if (payment.userId && typeof payment.userId === "object") {
+          const user = payment.userId as any;
+          enriched.user = {
+            _id: user._id,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            email: user.email,
+            phoneNumber: user.phoneNumber,
+            username: user.username,
+            status: user.status,
+          };
+        }
+
+        return enriched;
+      }),
+    );
 
     res.status(200).json({
       success: true,
@@ -576,10 +619,6 @@ export const getAllPaymentsAdmin = async (
         .populate(
           "userId",
           "firstName lastName email username phoneNumber status",
-        )
-        .populate(
-          "applicationId",
-          "firstName lastName email applicationId phoneNumber status billingStarted",
         )
         .populate("billingId", "invoiceNumber total dueDate")
         .sort({ createdAt: -1 })
@@ -617,39 +656,51 @@ export const getAllPaymentsAdmin = async (
     ]);
 
     // Enrich payments with application data
-    const enrichedPayments = payments.map((payment) => {
-      const enriched: any = { ...payment };
+    const enrichedPayments = await Promise.all(
+      payments.map(async (payment) => {
+        const enriched: any = { ...payment };
 
-      if (payment.applicationId && typeof payment.applicationId === "object") {
-        const app = payment.applicationId as any;
-        enriched.application = {
-          _id: app._id,
-          applicationId: app.applicationId,
-          firstName: app.firstName,
-          lastName: app.lastName,
-          email: app.email,
-          phoneNumber: app.phoneNumber,
-          status: app.status,
-          billingStarted: app.billingStarted,
-          applicantName: `${app.firstName || ""} ${app.lastName || ""}`.trim(),
-        };
-      }
+        if (payment.applicationId) {
+          const application = await Application.findOne({
+            applicationId: payment.applicationId,
+          })
+            .select(
+              "firstName lastName email applicationId phoneNumber status billingStarted",
+            )
+            .lean();
 
-      if (payment.userId && typeof payment.userId === "object") {
-        const user = payment.userId as any;
-        enriched.user = {
-          _id: user._id,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          email: user.email,
-          phoneNumber: user.phoneNumber,
-          username: user.username,
-          status: user.status,
-        };
-      }
+          if (application) {
+            enriched.application = {
+              _id: application._id,
+              applicationId: application.applicationId,
+              firstName: application.firstName,
+              lastName: application.lastName,
+              email: application.email,
+              phoneNumber: application.phoneNumber,
+              status: application.status,
+              billingStarted: application.billingStarted,
+              applicantName:
+                `${application.firstName || ""} ${application.lastName || ""}`.trim(),
+            };
+          }
+        }
 
-      return enriched;
-    });
+        if (payment.userId && typeof payment.userId === "object") {
+          const user = payment.userId as any;
+          enriched.user = {
+            _id: user._id,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            email: user.email,
+            phoneNumber: user.phoneNumber,
+            username: user.username,
+            status: user.status,
+          };
+        }
+
+        return enriched;
+      }),
+    );
 
     res.status(200).json({
       success: true,
@@ -683,7 +734,7 @@ export const rejectPayment = async (
 
     const payment = await Payment.findById(id)
       .populate("userId", "firstName lastName email")
-      .populate("applicationId", "firstName lastName email applicationId");
+      .lean();
 
     if (!payment) {
       return res.status(404).json({ message: "Payment not found" });
@@ -693,24 +744,44 @@ export const rejectPayment = async (
       return res.status(400).json({ message: "Payment already confirmed" });
     }
 
-    const customer = (payment.userId as any) || (payment.applicationId as any);
-    const customerEmail = customer?.email;
-    const customerName = customer
-      ? `${customer.firstName || ""} ${customer.lastName || ""}`.trim()
-      : "Customer";
+    // Fetch customer data
+    let customer = null;
+    let customerEmail = "";
+    let customerName = "";
 
-    payment.status = "failed";
-    payment.paymentDetails = {
-      gateway: payment.paymentDetails?.gateway || "manual",
-      gatewayResponse: {
-        ...payment.paymentDetails?.gatewayResponse,
-        rejectionReason: reason || "Payment verification failed",
-        rejectedAt: new Date(),
-        rejectedBy: req.user._id,
+    if (payment.applicationId) {
+      const application = await Application.findOne({
+        applicationId: payment.applicationId,
+      }).lean();
+      if (application) {
+        customer = application;
+        customerEmail = application.email;
+        customerName =
+          `${application.firstName || ""} ${application.lastName || ""}`.trim();
+      }
+    } else if (payment.userId) {
+      const user = await User.findById(payment.userId).lean();
+      if (user) {
+        customer = user;
+        customerEmail = user.email;
+        customerName = `${user.firstName || ""} ${user.lastName || ""}`.trim();
+      }
+    }
+
+    await Payment.updateOne(
+      { _id: id },
+      {
+        $set: {
+          status: "failed",
+          "paymentDetails.gatewayResponse.rejectionReason":
+            reason || "Payment verification failed",
+          "paymentDetails.gatewayResponse.rejectedAt": new Date(),
+          "paymentDetails.gatewayResponse.rejectedBy": req.user._id,
+        },
       },
-      notes: payment.paymentDetails?.notes,
-    };
-    await payment.save();
+    );
+
+    const updatedPayment = await Payment.findById(id).lean();
 
     if (customerEmail) {
       await emailService.sendEmail(
@@ -729,14 +800,14 @@ export const rejectPayment = async (
     }
 
     const responsePayment = {
-      _id: payment._id,
-      userId: payment.userId,
-      applicationId: payment.applicationId,
-      amount: payment.amount,
-      status: payment.status,
-      referenceNumber: payment.referenceNumber,
-      paymentDetails: payment.paymentDetails,
-      createdAt: payment.createdAt,
+      _id: updatedPayment?._id,
+      userId: updatedPayment?.userId,
+      applicationId: updatedPayment?.applicationId,
+      amount: updatedPayment?.amount,
+      status: updatedPayment?.status,
+      referenceNumber: updatedPayment?.referenceNumber,
+      paymentDetails: updatedPayment?.paymentDetails,
+      createdAt: updatedPayment?.createdAt,
     };
 
     res.status(200).json({

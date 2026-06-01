@@ -1,8 +1,9 @@
+// models/Payment.ts
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IPayment extends Document {
   userId?: mongoose.Types.ObjectId;
-  applicationId?: mongoose.Types.ObjectId;
+  applicationId?: string; // Changed from ObjectId to string
   amount: number;
   currency: string;
   paymentMethod:
@@ -37,9 +38,10 @@ const PaymentSchema: Schema = new Schema(
   {
     userId: { type: Schema.Types.ObjectId, ref: "User", required: false },
     applicationId: {
-      type: Schema.Types.ObjectId,
+      type: String, // Changed to String
       ref: "Application",
       required: false,
+      index: true,
     },
     amount: { type: Number, required: true },
     currency: { type: String, default: "PHP" },
@@ -78,7 +80,7 @@ const PaymentSchema: Schema = new Schema(
       confirmedBy: { type: String },
       confirmedAt: { type: Date },
     },
-    billingId: { type: Schema.Types.ObjectId, ref: "Billing" },
+    billingId: { type: Schema.Types.ObjectId, ref: "Billing", required: true },
     metadata: { type: Schema.Types.Mixed },
     paidAt: { type: Date },
   },
@@ -104,5 +106,10 @@ PaymentSchema.pre("validate", function (next) {
   }
   next();
 });
+
+// Add index for applicationId
+PaymentSchema.index({ applicationId: 1 });
+PaymentSchema.index({ status: 1 });
+PaymentSchema.index({ createdAt: -1 });
 
 export default mongoose.model<IPayment>("Payment", PaymentSchema);
