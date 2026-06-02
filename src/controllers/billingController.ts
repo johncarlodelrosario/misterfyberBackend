@@ -1762,7 +1762,7 @@ export const deleteBillingCycle = async (
   }
 };
 
-// ==================== AUTO-GENERATE MONTHLY BILLS ====================
+// ==================== AUTO-GENERATE MONTHLY BILLS (FIXED - WITH MISSING BILLS DETECTION) ====================
 export const autoGenerateMonthlyBills = async (
   req?: AuthRequest,
   res?: Response,
@@ -1780,17 +1780,18 @@ export const autoGenerateMonthlyBills = async (
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
+    // FIX: Get ALL active cycles, hindi lang yung nextBillingDate <= today
+    // Para makuha ang lahat ng cycles kahit may missed bills
     const billingCycles = await BillingCycle.find({
       status: "active",
       proRatedPaid: true,
-      nextBillingDate: { $lte: today },
       applicationId: { $exists: true, $ne: null },
     })
       .populate("planId")
       .lean();
 
     console.log(
-      `🔄 Found ${billingCycles.length} active billing cycles needing monthly bills`,
+      `🔄 Checking ${billingCycles.length} active billing cycles for missing bills`,
     );
 
     let generatedCount = 0;
@@ -1822,68 +1823,116 @@ export const autoGenerateMonthlyBills = async (
         continue;
       }
 
-      const billingStart = new Date(cycle.nextBillingDate);
-      billingStart.setHours(0, 0, 0, 0);
-      const billingEnd = getEndOfMonth(billingStart);
-      const dueDate = getDueDateForRegularMonthly(billingStart, settings);
-
-      const existingBill = await Billing.findOne({
+      // FIX: Hanapin ang last bill na na-generate (hindi lang paid)
+      const lastBill = await Billing.findOne({
         applicationId: cycle.applicationId,
         billingCycleId: cycle._id,
         isProRated: false,
-        "billingPeriod.start": billingStart,
-      }).lean();
+      })
+        .sort({ "billingPeriod.end": -1 })
+        .lean();
 
-      if (existingBill) {
-        console.log(
-          `📄 Bill already exists for ${application.firstName} ${application.lastName}`,
-        );
-        continue;
+      let startFromDate: Date;
+
+      if (lastBill) {
+        // Start from the month after the last bill
+        startFromDate = new Date(lastBill.billingPeriod.end);
+        startFromDate.setDate(1);
+        startFromDate.setMonth(startFromDate.getMonth() + 1);
+      } else {
+        // No monthly bills yet, start from nextBillingDate
+        startFromDate = new Date(cycle.nextBillingDate);
+        startFromDate.setDate(1);
       }
 
-      const billData: any = {
-        billingCycleId: cycle._id,
-        invoiceNumber: generateInvoiceNumber(),
-        billingPeriod: { start: billingStart, end: billingEnd },
-        dueDate,
-        items: [
-          {
-            description: `Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}`,
-            quantity: 1,
-            rate: plan.price,
-            amount: plan.price,
-          },
-        ],
-        subtotal: plan.price,
-        total: plan.price,
-        status: "sent",
-        isProRated: false,
-        applicationId: cycle.applicationId,
-      };
+      // FIX: Loop through all missing months from startFromDate to today
+      let currentDate = new Date(startFromDate);
+      let billsGeneratedForThisCycle = 0;
 
-      const bill = await Billing.create(billData);
+      while (currentDate <= today) {
+        // Make sure we're at the first day of the month
+        currentDate.setDate(1);
+        currentDate.setHours(0, 0, 0, 0);
 
-      const nextDate = getStartOfNextMonth(billingStart);
-      await BillingCycle.updateOne(
-        { _id: cycle._id },
-        { $set: { nextBillingDate: nextDate } },
-      );
+        const billingStart = new Date(currentDate);
+        const billingEnd = getEndOfMonth(billingStart);
+        const dueDate = getDueDateForRegularMonthly(billingStart, settings);
 
-      try {
-        await sendInvoiceToApplication(application, bill);
-        console.log(
-          `✅ Generated bill for ${application.firstName} ${application.lastName} - Amount: ₱${plan.price}`,
-        );
-      } catch (e) {
-        console.error(`❌ Failed to send email for ${application.email}:`, e);
+        // Check if bill already exists for this period
+        const existingBill = await Billing.findOne({
+          applicationId: cycle.applicationId,
+          billingCycleId: cycle._id,
+          isProRated: false,
+          "billingPeriod.start": billingStart,
+        }).lean();
+
+        if (!existingBill) {
+          const billData: any = {
+            billingCycleId: cycle._id,
+            invoiceNumber: generateInvoiceNumber(),
+            billingPeriod: { start: billingStart, end: billingEnd },
+            dueDate,
+            items: [
+              {
+                description: `Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}`,
+                quantity: 1,
+                rate: plan.price,
+                amount: plan.price,
+              },
+            ],
+            subtotal: plan.price,
+            total: plan.price,
+            status: "sent",
+            isProRated: false,
+            applicationId: cycle.applicationId,
+          };
+
+          const bill = await Billing.create(billData);
+          billsGeneratedForThisCycle++;
+
+          try {
+            await sendInvoiceToApplication(application, bill);
+            console.log(
+              `✅ Generated missing bill for ${application.firstName} ${application.lastName} - Period: ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)} - Amount: ₱${plan.price}`,
+            );
+          } catch (e) {
+            console.error(
+              `❌ Failed to send email for ${application.email}:`,
+              e,
+            );
+          }
+        }
+
+        // Move to next month
+        currentDate.setMonth(currentDate.getMonth() + 1);
       }
 
-      generatedCount++;
+      if (billsGeneratedForThisCycle > 0) {
+        // Update nextBillingDate to the next month after the last generated bill
+        const lastGeneratedMonth = new Date(currentDate);
+        lastGeneratedMonth.setMonth(lastGeneratedMonth.getMonth() - 1);
+        lastGeneratedMonth.setDate(1);
+
+        const newNextBillingDate = new Date(lastGeneratedMonth);
+        newNextBillingDate.setMonth(newNextBillingDate.getMonth() + 1);
+        newNextBillingDate.setDate(1);
+
+        await BillingCycle.updateOne(
+          { _id: cycle._id },
+          { $set: { nextBillingDate: newNextBillingDate } },
+        );
+
+        console.log(
+          `📅 Updated nextBillingDate for ${application.firstName} ${application.lastName} to ${newNextBillingDate.toISOString().split("T")[0]}`,
+        );
+      }
+
+      generatedCount += billsGeneratedForThisCycle;
     }
 
     clearAllCache();
     console.log(
-      `🎉 Auto-generate complete: ${generatedCount} bills generated, ${skippedCount} skipped`,
+      `🎉 Auto-generate complete: ${generatedCount} new bills generated, ${skippedCount} cycles skipped`,
     );
 
     if (res) {
