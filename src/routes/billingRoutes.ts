@@ -23,10 +23,12 @@ import {
   autoGenerateMonthlyBills,
   autoSendReminders,
   autoSuspendOverdue,
-  getUserCurrentBilling,
-  getUserBillingHistory,
+  getApplicationCurrentBilling,
+  getApplicationBillingHistory,
   submitProRatedPayment,
   submitMonthlyPayment,
+  getApplicationBillingStatus,
+  recoverMissingBills,
 } from "../controllers/billingController";
 
 const router = express.Router();
@@ -59,11 +61,13 @@ router.delete("/delete-cycle", adminMiddleware, deleteBillingCycle);
 router.post("/auto-generate", adminMiddleware, autoGenerateMonthlyBills);
 router.post("/auto-reminders", adminMiddleware, autoSendReminders);
 router.post("/auto-suspend", adminMiddleware, autoSuspendOverdue);
+router.post("/recover-missing-bills", adminMiddleware, recoverMissingBills);
 
-// ==================== USER ROUTES (NEED AUTH FOR ACTIONS) ====================
-router.get("/user/current", getUserCurrentBilling);
-router.get("/user/history", getUserBillingHistory);
-router.post("/user/submit-pro-rated", submitProRatedPayment);
-router.post("/user/submit-monthly", submitMonthlyPayment);
+// ==================== APPLICATION ROUTES ====================
+router.get("/application/:applicationId/current", getApplicationCurrentBilling);
+router.get("/application/:applicationId/history", getApplicationBillingHistory);
+router.get("/application/:applicationId/status", getApplicationBillingStatus);
+router.post("/application/submit-pro-rated", submitProRatedPayment);
+router.post("/application/submit-monthly", submitMonthlyPayment);
 
 export default router;
