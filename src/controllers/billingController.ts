@@ -160,20 +160,17 @@ function checkAdmin(req: AuthRequest, res: Response): boolean {
   return true;
 }
 
-// Helper function to send invoice to Application (creates a temporary User-like object with minimal required fields)
 async function sendInvoiceToApplication(
   application: any,
   bill: any,
 ): Promise<void> {
   if (application && application.email) {
-    // Create a minimal user object with only the fields emailService needs
     const tempUser = {
       _id: application.applicationId || application._id,
       email: application.email,
       firstName: application.firstName || "",
       lastName: application.lastName || "",
       username: application.email,
-      // Add dummy values for required fields that emailService might check
       password: "",
       phoneNumber: application.phoneNumber || "",
       status: "active",
@@ -191,6 +188,312 @@ async function sendInvoiceToApplication(
     await emailService.sendInvoice(tempUser, bill);
   }
 }
+
+// ==================== INITIALIZE BACKDATED BILLING FOR EXISTING CUSTOMER ====================
+export const initializeBackdatedBilling = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const {
+      applicationId,
+      serviceStartDate,
+      customPlanName,
+      monthlyRate,
+      skipFirstBill,
+      notes,
+    } = req.body;
+
+    if (!applicationId) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: "applicationId is required",
+      });
+    }
+
+    if (!serviceStartDate) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message:
+          "serviceStartDate is required (when customer started using service)",
+      });
+    }
+
+    const application = await Application.findOne({ applicationId }).lean();
+    if (!application) {
+      await session.abortTransaction();
+      return res.status(404).json({
+        success: false,
+        message: `Application not found with ID: ${applicationId}`,
+      });
+    }
+
+    const existingBillingCycle = await BillingCycle.findOne({
+      applicationId: application.applicationId,
+    }).session(session);
+
+    if (existingBillingCycle) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: `Billing already exists for this application. Status: ${existingBillingCycle.status}`,
+      });
+    }
+
+    // Get or create a plan
+    let plan: any = application.planId;
+
+    if (!plan && customPlanName && monthlyRate) {
+      const PlanModel = require("../models/Plan").default;
+      plan = await PlanModel.create({
+        name: customPlanName,
+        price: monthlyRate,
+        speed: { download: 0, upload: 0 },
+        type: "custom",
+        isActive: true,
+      });
+    } else if (plan) {
+      plan = await require("../models/Plan").default.findById(plan);
+    }
+
+    if (!plan && !monthlyRate) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message:
+          "Either a plan must be assigned or customPlanName + monthlyRate provided",
+      });
+    }
+
+    const actualMonthlyRate = plan ? plan.price : monthlyRate;
+    const settings = await getOrCreateSettings();
+
+    // Calculate from service start date to now
+    const startDate = new Date(serviceStartDate);
+    startDate.setHours(0, 0, 0, 0);
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Create billing cycle
+    const billingStartDate = new Date(startDate);
+    billingStartDate.setDate(1);
+    billingStartDate.setHours(0, 0, 0, 0);
+
+    const billingEndDate = getEndOfMonth(billingStartDate);
+    let nextBillingDate = getStartOfNextMonth(billingStartDate);
+
+    const billingCycle = await BillingCycle.create(
+      [
+        {
+          applicationId: application.applicationId,
+          planId: plan?._id || null,
+          monthlyRate: actualMonthlyRate,
+          billingStartDate: billingStartDate,
+          billingEndDate: billingEndDate,
+          nextBillingDate: nextBillingDate,
+          status: "active",
+          proRatedPaid: true,
+          proRatedPaidAt: new Date(),
+          currentProRatedAmount: 0,
+          actualBillableDays: 0,
+          manualBillStart: true,
+          manuallyStartedAt: new Date(),
+        },
+      ],
+      { session },
+    );
+
+    // Generate all missing bills from start date to now
+    const generatedBills = [];
+    const missingMonths = [];
+    let currentBillDate = new Date(startDate);
+    currentBillDate.setDate(1);
+    currentBillDate.setHours(0, 0, 0, 0);
+    let totalAmount = 0;
+
+    // Track months that have unpaid bills
+    const unpaidMonths = [];
+
+    while (currentBillDate <= today) {
+      const billingStart = new Date(currentBillDate);
+      const billingEnd = getEndOfMonth(billingStart);
+      const dueDate = getDueDateForRegularMonthly(billingStart, settings);
+
+      // Check if bill already exists for this period
+      const existingBill = await Billing.findOne({
+        applicationId: application.applicationId,
+        billingCycleId: billingCycle[0]._id,
+        "billingPeriod.start": billingStart,
+      }).session(session);
+
+      if (!existingBill) {
+        let amount = actualMonthlyRate;
+        let description = `Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}`;
+        let isProRated = false;
+        let proRatedDays = 0;
+        let isMissingBill = false;
+
+        // If first month is partial (service started after 1st)
+        if (
+          currentBillDate.getTime() ===
+            new Date(
+              startDate.getFullYear(),
+              startDate.getMonth(),
+              1,
+            ).getTime() &&
+          startDate.getDate() > 1
+        ) {
+          const daysInMonth = new Date(
+            startDate.getFullYear(),
+            startDate.getMonth() + 1,
+            0,
+          ).getDate();
+          const daysUsed = daysInMonth - startDate.getDate() + 1;
+          const dailyRate = (actualMonthlyRate * 12) / 365;
+          amount = Math.round(dailyRate * daysUsed * 100) / 100;
+          description = `Pro-rated payment from ${formatDateForDisplay(startDate)} to ${formatDateForDisplay(billingEnd)} (${daysUsed} days)`;
+          isProRated = true;
+          proRatedDays = daysUsed;
+        } else if (currentBillDate < today) {
+          // This is a missing past month bill
+          isMissingBill = true;
+          description = `[MISSING BILL - BACKDATED] Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}`;
+        }
+
+        const billData: any = {
+          billingCycleId: billingCycle[0]._id,
+          invoiceNumber: generateInvoiceNumber(),
+          billingPeriod: { start: billingStart, end: billingEnd },
+          dueDate: dueDate,
+          items: [
+            {
+              description: description,
+              quantity: 1,
+              rate: amount,
+              amount: amount,
+            },
+          ],
+          subtotal: amount,
+          total: amount,
+          status: "sent",
+          isProRated: isProRated,
+          proRatedDays: proRatedDays,
+          applicationId: application.applicationId,
+          notes:
+            notes ||
+            (isMissingBill
+              ? `MISSING BILL - Generated from backdated billing. Original period: ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}. Customer started service on ${formatDateForDisplay(startDate)}.`
+              : `Generated from backdated billing starting ${formatDateForDisplay(startDate)}`),
+        };
+
+        const newBill = await Billing.create([billData], { session });
+        generatedBills.push(newBill[0]);
+        totalAmount += amount;
+
+        if (isMissingBill) {
+          missingMonths.push({
+            month: formatDateForDisplay(billingStart),
+            amount: amount,
+            billId: newBill[0]._id,
+            invoiceNumber: newBill[0].invoiceNumber,
+          });
+        }
+
+        // Send email for each bill
+        try {
+          await sendInvoiceToApplication(application, newBill[0]);
+        } catch (emailError) {
+          console.error("Failed to send invoice email:", emailError);
+        }
+      } else {
+        // Check if existing bill is unpaid
+        if (existingBill.status !== "paid") {
+          unpaidMonths.push({
+            month: formatDateForDisplay(billingStart),
+            amount: existingBill.total,
+            billId: existingBill._id,
+            invoiceNumber: existingBill.invoiceNumber,
+            status: existingBill.status,
+          });
+        }
+      }
+
+      currentBillDate.setMonth(currentBillDate.getMonth() + 1);
+    }
+
+    // Update next billing date
+    const lastGeneratedMonth = new Date(currentBillDate);
+    lastGeneratedMonth.setMonth(lastGeneratedMonth.getMonth() - 1);
+    lastGeneratedMonth.setDate(1);
+
+    const newNextBillingDate = new Date(lastGeneratedMonth);
+    newNextBillingDate.setMonth(newNextBillingDate.getMonth() + 1);
+    newNextBillingDate.setDate(1);
+
+    await BillingCycle.updateOne(
+      { _id: billingCycle[0]._id },
+      { $set: { nextBillingDate: newNextBillingDate } },
+      { session },
+    );
+
+    await Application.updateOne(
+      { applicationId: application.applicationId },
+      {
+        $set: {
+          billingStarted: true,
+          billingCycleId: billingCycle[0]._id,
+          serviceStatus: "active",
+          lastBillingAudit: new Date(),
+        },
+      },
+      { session },
+    );
+
+    await session.commitTransaction();
+    clearAllCache();
+
+    // Prepare response message with missing months info
+    let message = `Backdated billing initialized for ${application.firstName} ${application.lastName}. Generated ${generatedBills.length} bill(s) totaling ₱${totalAmount.toFixed(2)}.`;
+
+    if (missingMonths.length > 0) {
+      message += ` Missing months found: ${missingMonths.map((m) => m.month).join(", ")}. Bills have been generated for these periods.`;
+    }
+
+    if (unpaidMonths.length > 0) {
+      message += ` Warning: ${unpaidMonths.length} unpaid bill(s) detected from previous periods.`;
+    }
+
+    res.status(200).json({
+      success: true,
+      message: message,
+      data: {
+        billingCycle: billingCycle[0],
+        generatedBills: generatedBills,
+        totalAmount: totalAmount,
+        billsCount: generatedBills.length,
+        serviceStartDate: startDate,
+        applicationId: application.applicationId,
+        missingMonths: missingMonths,
+        unpaidPreviousBills: unpaidMonths,
+        currentDate: today,
+      },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
 
 // ==================== START BILLING FOR APPLICATION ====================
 export const startBilling = async (
@@ -1762,7 +2065,7 @@ export const deleteBillingCycle = async (
   }
 };
 
-// ==================== AUTO-GENERATE MONTHLY BILLS (FIXED - WITH MISSING BILLS DETECTION) ====================
+// ==================== AUTO-GENERATE MONTHLY BILLS ====================
 export const autoGenerateMonthlyBills = async (
   req?: AuthRequest,
   res?: Response,
@@ -1780,8 +2083,6 @@ export const autoGenerateMonthlyBills = async (
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // FIX: Get ALL active cycles, hindi lang yung nextBillingDate <= today
-    // Para makuha ang lahat ng cycles kahit may missed bills
     const billingCycles = await BillingCycle.find({
       status: "active",
       proRatedPaid: true,
@@ -1823,7 +2124,6 @@ export const autoGenerateMonthlyBills = async (
         continue;
       }
 
-      // FIX: Hanapin ang last bill na na-generate (hindi lang paid)
       const lastBill = await Billing.findOne({
         applicationId: cycle.applicationId,
         billingCycleId: cycle._id,
@@ -1835,22 +2135,18 @@ export const autoGenerateMonthlyBills = async (
       let startFromDate: Date;
 
       if (lastBill) {
-        // Start from the month after the last bill
         startFromDate = new Date(lastBill.billingPeriod.end);
         startFromDate.setDate(1);
         startFromDate.setMonth(startFromDate.getMonth() + 1);
       } else {
-        // No monthly bills yet, start from nextBillingDate
         startFromDate = new Date(cycle.nextBillingDate);
         startFromDate.setDate(1);
       }
 
-      // FIX: Loop through all missing months from startFromDate to today
       let currentDate = new Date(startFromDate);
       let billsGeneratedForThisCycle = 0;
 
       while (currentDate <= today) {
-        // Make sure we're at the first day of the month
         currentDate.setDate(1);
         currentDate.setHours(0, 0, 0, 0);
 
@@ -1858,7 +2154,6 @@ export const autoGenerateMonthlyBills = async (
         const billingEnd = getEndOfMonth(billingStart);
         const dueDate = getDueDateForRegularMonthly(billingStart, settings);
 
-        // Check if bill already exists for this period
         const existingBill = await Billing.findOne({
           applicationId: cycle.applicationId,
           billingCycleId: cycle._id,
@@ -1903,12 +2198,10 @@ export const autoGenerateMonthlyBills = async (
           }
         }
 
-        // Move to next month
         currentDate.setMonth(currentDate.getMonth() + 1);
       }
 
       if (billsGeneratedForThisCycle > 0) {
-        // Update nextBillingDate to the next month after the last generated bill
         const lastGeneratedMonth = new Date(currentDate);
         lastGeneratedMonth.setMonth(lastGeneratedMonth.getMonth() - 1);
         lastGeneratedMonth.setDate(1);
@@ -2307,15 +2600,13 @@ export const recoverMissingBills = async (
   if (!checkAdmin(req, res)) return;
 
   try {
-    const { applicationId } = req.body;
+    const { applicationId, startFromDate } = req.body;
 
     if (!applicationId) {
       return res
         .status(400)
         .json({ success: false, message: "applicationId is required" });
     }
-
-    const currentDate = new Date();
 
     const billingCycle = await BillingCycle.findOne({
       applicationId: applicationId,
@@ -2340,30 +2631,29 @@ export const recoverMissingBills = async (
     const plan = billingCycle.planId as any;
     const monthlyRate = plan.price;
 
-    const lastPaidBill = await Billing.findOne({
-      applicationId: applicationId,
-      status: "paid",
-      isProRated: false,
-    }).sort({ "billingPeriod.end": -1 });
-
     let startDate: Date;
-    if (lastPaidBill) {
-      startDate = new Date(lastPaidBill.billingPeriod.end);
+    if (startFromDate) {
+      startDate = new Date(startFromDate);
       startDate.setDate(1);
-      startDate.setMonth(startDate.getMonth() + 1);
+      startDate.setHours(0, 0, 0, 0);
     } else {
-      if (billingCycle.proRatedPaid) {
+      const lastPaidBill = await Billing.findOne({
+        applicationId: applicationId,
+        status: "paid",
+        isProRated: false,
+      }).sort({ "billingPeriod.end": -1 });
+
+      if (lastPaidBill) {
+        startDate = new Date(lastPaidBill.billingPeriod.end);
+        startDate.setDate(1);
+        startDate.setMonth(startDate.getMonth() + 1);
+      } else {
         startDate = new Date(billingCycle.billingStartDate);
         startDate.setDate(1);
-      } else {
-        return res.status(400).json({
-          success: false,
-          message:
-            "No paid bills found. Please mark pro-rated bill as paid first.",
-        });
       }
     }
 
+    const currentDate = new Date();
     const settings = await getOrCreateSettings();
     const missingBills = [];
     let currentBillDate = new Date(startDate);
@@ -2380,7 +2670,6 @@ export const recoverMissingBills = async (
         applicationId: applicationId,
         billingCycleId: billingCycle._id,
         "billingPeriod.start": billingStart,
-        "billingPeriod.end": billingEnd,
       });
 
       if (!existingBill) {
@@ -2445,6 +2734,90 @@ export const recoverMissingBills = async (
   }
 };
 
+// ==================== GET UNPAID BILLS REPORT ====================
+export const getUnpaidBillsReport = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  try {
+    const { applicationId, includePaid } = req.query;
+    let query: any = {};
+
+    if (applicationId) {
+      query.applicationId = applicationId;
+    }
+
+    if (includePaid !== "true") {
+      query.status = { $in: ["sent", "overdue", "pending_confirmation"] };
+    }
+
+    const unpaidBills = await Billing.find(query).sort({ dueDate: 1 }).lean();
+
+    const enrichedBills = await Promise.all(
+      unpaidBills.map(async (bill) => {
+        const b = { ...bill };
+        if (b.applicationId) {
+          const application = await Application.findOne({
+            applicationId: b.applicationId,
+          })
+            .select("firstName lastName email applicationId phoneNumber")
+            .lean();
+          if (application) {
+            (b as any).applicationData = application;
+          }
+        }
+        return b;
+      }),
+    );
+
+    const summary = {
+      totalUnpaidBills: enrichedBills.length,
+      totalAmountDue: enrichedBills.reduce((sum, bill) => sum + bill.total, 0),
+      byStatus: {
+        sent: enrichedBills.filter((b) => b.status === "sent").length,
+        overdue: enrichedBills.filter((b) => b.status === "overdue").length,
+        pending_confirmation: enrichedBills.filter(
+          (b) => b.status === "pending_confirmation",
+        ).length,
+      },
+      byMonth: {} as any,
+    };
+
+    // Group by month
+    enrichedBills.forEach((bill) => {
+      const monthKey = formatDateForDisplay(new Date(bill.billingPeriod.start));
+      if (!summary.byMonth[monthKey]) {
+        summary.byMonth[monthKey] = {
+          count: 0,
+          amount: 0,
+          bills: [],
+        };
+      }
+      summary.byMonth[monthKey].count++;
+      summary.byMonth[monthKey].amount += bill.total;
+      summary.byMonth[monthKey].bills.push({
+        invoiceNumber: bill.invoiceNumber,
+        amount: bill.total,
+        status: bill.status,
+        dueDate: bill.dueDate,
+      });
+    });
+
+    res.status(200).json({
+      success: true,
+      data: {
+        bills: enrichedBills,
+        summary,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export default {
   startBilling,
   stopBilling,
@@ -2474,4 +2847,6 @@ export default {
   submitMonthlyPayment,
   getApplicationBillingStatus,
   recoverMissingBills,
+  initializeBackdatedBilling,
+  getUnpaidBillsReport,
 };

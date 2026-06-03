@@ -29,6 +29,8 @@ import {
   submitMonthlyPayment,
   getApplicationBillingStatus,
   recoverMissingBills,
+  initializeBackdatedBilling,
+  getUnpaidBillsReport,
 } from "../controllers/billingController";
 
 const router = express.Router();
@@ -43,6 +45,7 @@ router.get("/all-bills", getAllBills);
 router.get("/summary", getBillingSummaryAdmin);
 router.get("/pending-pro-rated", getPendingProRatedBills);
 router.get("/pending-activations", getPendingActivations);
+router.get("/unpaid-bills-report", adminMiddleware, getUnpaidBillsReport);
 
 // ==================== ADMIN ROUTES (NEED ADMIN ROLE FOR ACTIONS) ====================
 router.put("/settings", adminMiddleware, updateBillingSettings);
@@ -62,6 +65,11 @@ router.post("/auto-generate", adminMiddleware, autoGenerateMonthlyBills);
 router.post("/auto-reminders", adminMiddleware, autoSendReminders);
 router.post("/auto-suspend", adminMiddleware, autoSuspendOverdue);
 router.post("/recover-missing-bills", adminMiddleware, recoverMissingBills);
+router.post(
+  "/initialize-backdated",
+  adminMiddleware,
+  initializeBackdatedBilling,
+);
 
 // ==================== APPLICATION ROUTES ====================
 router.get("/application/:applicationId/current", getApplicationCurrentBilling);
