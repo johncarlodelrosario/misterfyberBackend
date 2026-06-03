@@ -30,12 +30,15 @@ export interface IBilling extends Document {
   isProRated: boolean;
   proRatedDays: number;
   billingCycleId: mongoose.Types.ObjectId;
-  applicationId: string; // Changed from ObjectId to string
+  applicationId: string;
   reminder7DaySent: boolean;
   reminder3DaySent: boolean;
   reminder1DaySent: boolean;
   reminderDueDateSent: boolean;
   suspensionNotified: boolean;
+  installationFee: number;
+  installationFeePaid: boolean;
+  paidAt: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -94,12 +97,15 @@ const BillingSchema: Schema = new Schema(
     isProRated: { type: Boolean, default: false },
     proRatedDays: { type: Number, default: 0 },
     billingCycleId: { type: Schema.Types.ObjectId, ref: "BillingCycle" },
-    applicationId: { type: String, ref: "Application", index: true }, // Changed to String type, referencing applicationId field
+    applicationId: { type: String, ref: "Application", index: true },
     reminder7DaySent: { type: Boolean, default: false },
     reminder3DaySent: { type: Boolean, default: false },
     reminder1DaySent: { type: Boolean, default: false },
     reminderDueDateSent: { type: Boolean, default: false },
     suspensionNotified: { type: Boolean, default: false },
+    installationFee: { type: Number, default: 0 },
+    installationFeePaid: { type: Boolean, default: false },
+    paidAt: { type: Date },
   },
   { timestamps: true },
 );
@@ -116,5 +122,6 @@ BillingSchema.index({ userId: 1, status: 1 });
 BillingSchema.index({ dueDate: 1 });
 BillingSchema.index({ isProRated: 1, status: 1 });
 BillingSchema.index({ applicationId: 1 });
+BillingSchema.index({ installationFeePaid: 1 });
 
 export default mongoose.model<IBilling>("Billing", BillingSchema);

@@ -15,6 +15,7 @@ export interface IBillingSettings extends Document {
   enableAutoBilling: boolean;
   sendInvoiceOnInstall: boolean;
   requireAdminActivation: boolean;
+  installationFee: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -35,6 +36,7 @@ const BillingSettingsSchema: Schema = new Schema(
     enableAutoBilling: { type: Boolean, default: true },
     sendInvoiceOnInstall: { type: Boolean, default: true },
     requireAdminActivation: { type: Boolean, default: false },
+    installationFee: { type: Number, default: 1500, min: 0 },
   },
   { timestamps: true },
 );
@@ -57,6 +59,7 @@ BillingSettingsSchema.statics.getDefaultSettings = async function () {
       enableAutoBilling: true,
       sendInvoiceOnInstall: true,
       requireAdminActivation: false,
+      installationFee: 1500,
     });
   }
   return settings;

@@ -15,7 +15,7 @@ export interface IApplication extends Document {
   idType?: string;
   idNumber?: string;
   idImage?: string;
-  macAddress?: string; // ADDED - OPTIONAL FIELD
+  macAddress?: string;
   status: "pending" | "approved" | "rejected";
   adminNotes: string;
   reviewedBy?: mongoose.Types.ObjectId;
@@ -24,6 +24,8 @@ export interface IApplication extends Document {
   billingStarted: boolean;
   billingCycleId?: mongoose.Types.ObjectId;
   approvalEmailSent: boolean;
+  installationFee: number;
+  installationFeePaid: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -80,7 +82,7 @@ const ApplicationSchema: Schema = new Schema(
       default: "Not Provided",
     },
     idImage: { type: String, required: false, default: "" },
-    macAddress: { type: String, required: false, default: "", index: false }, // ADDED - OPTIONAL
+    macAddress: { type: String, required: false, default: "", index: false },
     status: {
       type: String,
       enum: ["pending", "approved", "rejected"],
@@ -93,6 +95,8 @@ const ApplicationSchema: Schema = new Schema(
     billingStarted: { type: Boolean, default: false },
     billingCycleId: { type: Schema.Types.ObjectId, ref: "BillingCycle" },
     approvalEmailSent: { type: Boolean, default: false },
+    installationFee: { type: Number, default: 0 },
+    installationFeePaid: { type: Boolean, default: false },
   },
   { timestamps: true },
 );
@@ -102,5 +106,6 @@ ApplicationSchema.index({ email: 1 });
 ApplicationSchema.index({ status: 1 });
 ApplicationSchema.index({ registeredUserId: 1 });
 ApplicationSchema.index({ billingCycleId: 1 });
+ApplicationSchema.index({ installationFeePaid: 1 });
 
 export default mongoose.model<IApplication>("Application", ApplicationSchema);

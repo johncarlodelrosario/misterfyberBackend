@@ -1,4 +1,3 @@
-// controllers/paymentController.ts
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import Payment from "../models/Payment";
@@ -24,7 +23,10 @@ async function getPopulatedPayment(paymentId: string) {
       "userId",
       "firstName lastName email username phoneNumber status mikrotik planId",
     )
-    .populate("billingId", "invoiceNumber total dueDate isProRated")
+    .populate(
+      "billingId",
+      "invoiceNumber total dueDate isProRated installationFee installationFeePaid",
+    )
     .lean();
 
   if (!payment) return null;
@@ -38,7 +40,7 @@ async function getPopulatedPayment(paymentId: string) {
       applicationId: payment.applicationId,
     })
       .select(
-        "firstName lastName email applicationId phoneNumber status billingStarted",
+        "firstName lastName email applicationId phoneNumber status billingStarted installationFee installationFeePaid",
       )
       .lean();
 
@@ -52,6 +54,8 @@ async function getPopulatedPayment(paymentId: string) {
         phoneNumber: application.phoneNumber,
         status: application.status,
         billingStarted: application.billingStarted,
+        installationFee: (application as any).installationFee || 0,
+        installationFeePaid: (application as any).installationFeePaid || false,
         applicantName:
           `${application.firstName || ""} ${application.lastName || ""}`.trim(),
       };
@@ -306,11 +310,29 @@ export const getPaymentStats = async (
       },
     ]);
 
+    // Get installation fee revenue
+    const installationFeeRevenue = await Payment.aggregate([
+      {
+        $match: {
+          status: "completed",
+          paymentType: "installation",
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: "$amount" },
+          count: { $sum: 1 },
+        },
+      },
+    ]);
+
     res.status(200).json({
       success: true,
       data: {
         daily: stats,
         totals: totalRevenue[0] || { total: 0, count: 0 },
+        installationFees: installationFeeRevenue[0] || { total: 0, count: 0 },
       },
     });
   } catch (error) {
@@ -351,7 +373,7 @@ export const confirmPayment = async (
 
   try {
     const { id } = req.params;
-    const { notes } = req.body;
+    const { notes, paymentType } = req.body;
     const adminId = req.user._id;
 
     // Get payment with populated data
@@ -368,6 +390,11 @@ export const confirmPayment = async (
     if (payment.status === "completed") {
       await session.abortTransaction();
       return res.status(400).json({ message: "Payment already confirmed" });
+    }
+
+    // Update payment type if specified
+    if (paymentType) {
+      payment.paymentType = paymentType;
     }
 
     // Get readable application ID - fetch application using string ID
@@ -413,8 +440,23 @@ export const confirmPayment = async (
     // Update billing record
     const billing = await Billing.findById(payment.billingId).session(session);
     if (billing) {
+      const updateData: any = {
+        status: "paid",
+        paymentId: payment._id,
+        paidAt: new Date(),
+      };
+
+      // If this bill has installation fee, mark it as paid
+      if (billing.installationFee && billing.installationFee > 0) {
+        updateData.installationFeePaid = true;
+      }
+
       billing.status = "paid";
       billing.paymentId = payment._id;
+      billing.paidAt = new Date();
+      if (billing.installationFee && billing.installationFee > 0) {
+        billing.installationFeePaid = true;
+      }
       await billing.save({ session });
 
       // Update billing cycle
@@ -436,6 +478,12 @@ export const confirmPayment = async (
             billingCycle.status = "active";
           }
         }
+
+        // Mark installation fee as paid in billing cycle
+        if (billing.installationFee && billing.installationFee > 0) {
+          billingCycle.installationFeePaid = true;
+        }
+
         await billingCycle.save({ session });
       }
     }
@@ -465,6 +513,13 @@ export const confirmPayment = async (
       }).session(session);
       if (app) {
         app.billingStarted = true;
+        // If this payment includes installation fee, mark it as paid
+        if (
+          payment.paymentType === "installation" ||
+          (billing && billing.installationFee && billing.installationFee > 0)
+        ) {
+          (app as any).installationFeePaid = true;
+        }
         await app.save({ session });
       }
     }
@@ -473,10 +528,7 @@ export const confirmPayment = async (
 
     // Send confirmation email
     if (customerEmail && billing) {
-      await emailService.sendEmail(
-        customerEmail,
-        `Payment Confirmed - ${billing.invoiceNumber}`,
-        `<div style="font-family: Arial, sans-serif; max-width: 600px;">
+      let emailBody = `<div style="font-family: Arial, sans-serif; max-width: 600px;">
           <h2 style="color: #28a745;">✅ Payment Confirmed!</h2>
           <p>Dear ${customerName},</p>
           <p>Your payment of <strong>₱${payment.amount.toLocaleString()}</strong> has been confirmed.</p>
@@ -484,12 +536,21 @@ export const confirmPayment = async (
             <p><strong>Invoice:</strong> ${billing.invoiceNumber}</p>
             ${readableApplicationId ? `<p><strong>Application ID:</strong> ${readableApplicationId}</p>` : ""}
             <p><strong>Amount:</strong> ₱${payment.amount.toLocaleString()}</p>
-            <p><strong>Reference:</strong> ${payment.referenceNumber}</p>
-          </div>
-          <p>Thank you for your payment!</p>
+            <p><strong>Reference:</strong> ${payment.referenceNumber}</p>`;
+
+      if (billing.installationFee && billing.installationFee > 0) {
+        emailBody += `<p><strong>Installation Fee:</strong> ₱${billing.installationFee.toLocaleString()} (Paid)</p>`;
+      }
+
+      emailBody += `</div><p>Thank you for your payment!</p>
           <hr>
           <p style="color: #666; font-size: 12px;">Mister Fyber - Your trusted internet provider</p>
-        </div>`,
+        </div>`;
+
+      await emailService.sendEmail(
+        customerEmail,
+        `Payment Confirmed - ${billing.invoiceNumber}`,
+        emailBody,
       );
     }
 
@@ -523,7 +584,10 @@ export const getPendingPayments = async (
         "userId",
         "firstName lastName email username phoneNumber status",
       )
-      .populate("billingId", "invoiceNumber total dueDate")
+      .populate(
+        "billingId",
+        "invoiceNumber total dueDate installationFee installationFeePaid",
+      )
       .sort({ createdAt: -1 })
       .lean();
 
@@ -538,7 +602,7 @@ export const getPendingPayments = async (
             applicationId: payment.applicationId,
           })
             .select(
-              "firstName lastName email applicationId phoneNumber status billingStarted",
+              "firstName lastName email applicationId phoneNumber status billingStarted installationFee installationFeePaid",
             )
             .lean();
 
@@ -552,6 +616,9 @@ export const getPendingPayments = async (
               phoneNumber: application.phoneNumber,
               status: application.status,
               billingStarted: application.billingStarted,
+              installationFee: (application as any).installationFee || 0,
+              installationFeePaid:
+                (application as any).installationFeePaid || false,
               applicantName:
                 `${application.firstName || ""} ${application.lastName || ""}`.trim(),
             };
@@ -608,10 +675,14 @@ export const getAllPaymentsAdmin = async (
     const limit = parseInt(req.query.limit as string) || 10;
     const skip = (page - 1) * limit;
     const status = req.query.status as string;
+    const paymentType = req.query.paymentType as string;
 
     let query: any = {};
     if (status && status !== "all") {
       query.status = status;
+    }
+    if (paymentType && paymentType !== "all") {
+      query.paymentType = paymentType;
     }
 
     const [payments, total] = await Promise.all([
@@ -620,7 +691,10 @@ export const getAllPaymentsAdmin = async (
           "userId",
           "firstName lastName email username phoneNumber status",
         )
-        .populate("billingId", "invoiceNumber total dueDate")
+        .populate(
+          "billingId",
+          "invoiceNumber total dueDate installationFee installationFeePaid",
+        )
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
@@ -629,7 +703,7 @@ export const getAllPaymentsAdmin = async (
     ]);
 
     // Calculate stats
-    const [totalStats, monthlyStats] = await Promise.all([
+    const [totalStats, monthlyStats, installationFeeStats] = await Promise.all([
       Payment.aggregate([
         { $match: { status: "completed" } },
         {
@@ -653,6 +727,17 @@ export const getAllPaymentsAdmin = async (
           $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } },
         },
       ]),
+      Payment.aggregate([
+        {
+          $match: {
+            status: "completed",
+            paymentType: "installation",
+          },
+        },
+        {
+          $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } },
+        },
+      ]),
     ]);
 
     // Enrich payments with application data
@@ -665,7 +750,7 @@ export const getAllPaymentsAdmin = async (
             applicationId: payment.applicationId,
           })
             .select(
-              "firstName lastName email applicationId phoneNumber status billingStarted",
+              "firstName lastName email applicationId phoneNumber status billingStarted installationFee installationFeePaid",
             )
             .lean();
 
@@ -679,6 +764,9 @@ export const getAllPaymentsAdmin = async (
               phoneNumber: application.phoneNumber,
               status: application.status,
               billingStarted: application.billingStarted,
+              installationFee: (application as any).installationFee || 0,
+              installationFeePaid:
+                (application as any).installationFeePaid || false,
               applicantName:
                 `${application.firstName || ""} ${application.lastName || ""}`.trim(),
             };
@@ -713,6 +801,8 @@ export const getAllPaymentsAdmin = async (
         totalCount: totalStats[0]?.count || 0,
         monthly: monthlyStats[0]?.total || 0,
         monthlyCount: monthlyStats[0]?.count || 0,
+        installationFees: installationFeeStats[0]?.total || 0,
+        installationFeeCount: installationFeeStats[0]?.count || 0,
       },
     });
   } catch (error) {
@@ -734,6 +824,7 @@ export const rejectPayment = async (
 
     const payment = await Payment.findById(id)
       .populate("userId", "firstName lastName email")
+      .populate("billingId", "invoiceNumber total installationFee")
       .lean();
 
     if (!payment) {
@@ -784,18 +875,25 @@ export const rejectPayment = async (
     const updatedPayment = await Payment.findById(id).lean();
 
     if (customerEmail) {
-      await emailService.sendEmail(
-        customerEmail,
-        "Payment Verification Failed - Mister Fyber",
-        `<div style="font-family: Arial, sans-serif; max-width: 600px;">
+      let emailBody = `<div style="font-family: Arial, sans-serif; max-width: 600px;">
           <h2 style="color: #dc3545;">❌ Payment Verification Failed</h2>
           <p>Dear ${customerName},</p>
           <p>Your payment of <strong>₱${payment.amount.toLocaleString()}</strong> could not be verified.</p>
-          <p><strong>Reason:</strong> ${reason || "Please contact support for more information"}</p>
-          <p>Please submit your payment again or contact our support team.</p>
+          <p><strong>Reason:</strong> ${reason || "Please contact support for more information"}</p>`;
+
+      if (payment.billingId && (payment.billingId as any).installationFee) {
+        emailBody += `<p><strong>Note:</strong> This payment was for an installation fee of ₱${(payment.billingId as any).installationFee.toLocaleString()}.</p>`;
+      }
+
+      emailBody += `<p>Please submit your payment again or contact our support team.</p>
           <hr>
           <p style="color: #666; font-size: 12px;">Mister Fyber - Your trusted internet provider</p>
-        </div>`,
+        </div>`;
+
+      await emailService.sendEmail(
+        customerEmail,
+        "Payment Verification Failed - Mister Fyber",
+        emailBody,
       );
     }
 

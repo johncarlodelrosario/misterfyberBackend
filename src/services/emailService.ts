@@ -872,6 +872,18 @@ class EmailService {
       `;
     }
 
+    let installationFeeInfo = "";
+    if (billing.installationFee && billing.installationFee > 0) {
+      installationFeeInfo = `
+        <div style="margin-top: 15px; padding: 10px; background-color: #fff3cd; border-radius: 5px;">
+          <p style="margin: 0; font-size: 12px; color: #856404;">
+            <strong>🔧 Installation Fee:</strong> ₱${billing.installationFee.toLocaleString()} (One-time charge)
+            ${billing.installationFeePaid ? '✅ <span style="color: #28a745;">(Paid)</span>' : '⚠️ <span style="color: #dc3545;">(Pending)</span>'}
+          </p>
+        </div>
+      `;
+    }
+
     const html = `
       <!DOCTYPE html>
       <html>
@@ -890,7 +902,9 @@ class EmailService {
                   <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
                   <p><strong>Due Date:</strong> ${dueDate}</p>
                   ${billing.isProRated ? `<p><strong>Bill Type:</strong> Pro-rated (First Bill)</p>` : `<p><strong>Bill Type:</strong> Monthly Subscription</p>`}
+                  ${billing.installationFee && billing.installationFee > 0 ? `<p><strong>Installation Fee:</strong> ₱${billing.installationFee.toLocaleString()}</p>` : ""}
               </div>
+              ${installationFeeInfo}
               ${additionalInfo}
               <div style="text-align: center; margin: 30px 0;">
                   <a href="${frontendUrl}/billing" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">View & Pay Invoice</a>
@@ -900,7 +914,8 @@ class EmailService {
                   <p style="margin: 5px 0 0;">• Install Day 1-24: Pro-rated bill from installation to end of month (due on 25th)<br>
                   • Install Day 25-31: Combined bill (pro-rated + next month) due on 5th of following month<br>
                   • Monthly bills due on 5th of each month (pay before service period)<br>
-                  • Daily rate formula: (Monthly Price × 12) ÷ 365 days</p>
+                  • Daily rate formula: (Monthly Price × 12) ÷ 365 days<br>
+                  • Installation fee: One-time charge of ₱${billing.installationFee || 1500}</p>
               </div>
               <hr>
               <p style="color: #666; font-size: 12px;">Mister Fyber</p>
@@ -923,6 +938,7 @@ class EmailService {
           <p><strong>Amount:</strong> ₱${safeToFixed(amount)}</p>
           <p><strong>Due Date:</strong> ${dueDate}</p>
           ${billing.isProRated ? `<p><strong>Type:</strong> Pro-rated Bill</p>` : `<p><strong>Type:</strong> Monthly Bill</p>`}
+          ${billing.installationFee && billing.installationFee > 0 ? `<p><strong>Installation Fee:</strong> ₱${billing.installationFee.toLocaleString()}</p>` : ""}
       </div>
     `;
     await this.sendToAdmin(
