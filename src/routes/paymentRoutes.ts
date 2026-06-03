@@ -13,6 +13,7 @@ import {
   rejectPayment,
   getPendingPayments,
   getAllPaymentsAdmin,
+  getInstallationPaymentSummary,
 } from "../controllers/paymentController";
 import { protect, authorize } from "../middleware/auth";
 
@@ -57,6 +58,13 @@ router.get(
   protect,
   authorize("super_admin", "admin", "staff"),
   getPaymentStats,
+);
+
+router.get(
+  "/admin/installation/summary",
+  protect,
+  authorize("super_admin", "admin", "staff"),
+  getInstallationPaymentSummary,
 );
 
 router.put(

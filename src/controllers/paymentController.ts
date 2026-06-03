@@ -18,6 +18,10 @@ interface AuthRequest extends Request {
 
 // Helper function to get populated customer data
 async function getPopulatedPayment(paymentId: string) {
+  if (!mongoose.Types.ObjectId.isValid(paymentId)) {
+    return null;
+  }
+
   const payment = await Payment.findById(paymentId)
     .populate(
       "userId",
@@ -25,7 +29,7 @@ async function getPopulatedPayment(paymentId: string) {
     )
     .populate(
       "billingId",
-      "invoiceNumber total dueDate isProRated installationFee installationFeePaid",
+      "invoiceNumber total dueDate isProRated isInstallationBill installationFee installationFeePaid billingPeriod",
     )
     .lean();
 
@@ -40,7 +44,7 @@ async function getPopulatedPayment(paymentId: string) {
       applicationId: payment.applicationId,
     })
       .select(
-        "firstName lastName email applicationId phoneNumber status billingStarted installationFee installationFeePaid",
+        "firstName lastName email applicationId phoneNumber status serviceStatus billingStarted installationFee installationFeePaid",
       )
       .lean();
 
@@ -53,6 +57,7 @@ async function getPopulatedPayment(paymentId: string) {
         email: application.email,
         phoneNumber: application.phoneNumber,
         status: application.status,
+        serviceStatus: (application as any).serviceStatus || "pending",
         billingStarted: application.billingStarted,
         installationFee: (application as any).installationFee || 0,
         installationFeePaid: (application as any).installationFeePaid || false,
@@ -99,6 +104,14 @@ export const createPayment = async (
     } = req.body;
     const userId = req.user._id;
 
+    // Validate required fields
+    if (!amount) {
+      return res.status(400).json({ message: "Amount is required" });
+    }
+    if (!billingId) {
+      return res.status(400).json({ message: "Billing ID is required" });
+    }
+
     const billing = await Billing.findById(billingId);
     if (!billing) {
       return res.status(404).json({ message: "Billing record not found" });
@@ -106,9 +119,11 @@ export const createPayment = async (
 
     const paymentData: any = {
       userId,
-      amount,
+      amount: Number(amount),
       paymentMethod: paymentMethod || "manual",
-      paymentType: paymentType || "subscription",
+      paymentType:
+        paymentType ||
+        (billing.isInstallationBill ? "installation" : "subscription"),
       status: "pending",
       referenceNumber: referenceNumber || `MANUAL-${Date.now()}`,
       billingId,
@@ -188,7 +203,13 @@ export const getPayment = async (
   next: NextFunction,
 ) => {
   try {
-    const payment = await getPopulatedPayment(req.params.id);
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid payment ID" });
+    }
+
+    const payment = await getPopulatedPayment(id);
 
     if (!payment) {
       return res.status(404).json({ message: "Payment not found" });
@@ -222,7 +243,13 @@ export const verifyPayment = async (
   next: NextFunction,
 ) => {
   try {
-    const payment = await paymentService.verifyPayment(req.params.reference);
+    const { reference } = req.params;
+
+    if (!reference) {
+      return res.status(400).json({ message: "Reference number is required" });
+    }
+
+    const payment = await paymentService.verifyPayment(reference);
     res.status(200).json({
       success: true,
       data: payment,
@@ -244,7 +271,9 @@ export const payMongoWebhook = async (
     await paymentService.processPaymentWebhook(req.body, "paymongo");
     res.status(200).json({ received: true });
   } catch (error) {
-    next(error);
+    console.error("PayMongo webhook error:", error);
+    // Always return 200 to acknowledge receipt
+    res.status(200).json({ received: true, error: "Processing error" });
   }
 };
 
@@ -260,7 +289,8 @@ export const dragonPayWebhook = async (
     await paymentService.processPaymentWebhook(req.body, "dragonpay");
     res.status(200).json({ status: "success" });
   } catch (error) {
-    next(error);
+    console.error("DragonPay webhook error:", error);
+    res.status(200).json({ status: "success", error: "Processing error" });
   }
 };
 
@@ -287,6 +317,7 @@ export const getPaymentStats = async (
           _id: {
             date: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
             method: "$paymentMethod",
+            type: "$paymentType",
           },
           total: { $sum: "$amount" },
           count: { $sum: 1 },
@@ -300,6 +331,23 @@ export const getPaymentStats = async (
     const totalRevenue = await Payment.aggregate([
       {
         $match: { status: "completed" },
+      },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: "$amount" },
+          count: { $sum: 1 },
+        },
+      },
+    ]);
+
+    // Get subscription revenue
+    const subscriptionRevenue = await Payment.aggregate([
+      {
+        $match: {
+          status: "completed",
+          paymentType: "subscription",
+        },
       },
       {
         $group: {
@@ -327,12 +375,48 @@ export const getPaymentStats = async (
       },
     ]);
 
+    // Get this month's revenue
+    const thisMonthRevenue = await Payment.aggregate([
+      {
+        $match: {
+          status: "completed",
+          createdAt: {
+            $gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
+          },
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: "$amount" },
+          count: { $sum: 1 },
+        },
+      },
+    ]);
+
+    // Get pending payments total
+    const pendingPayments = await Payment.aggregate([
+      {
+        $match: { status: "pending" },
+      },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: "$amount" },
+          count: { $sum: 1 },
+        },
+      },
+    ]);
+
     res.status(200).json({
       success: true,
       data: {
         daily: stats,
         totals: totalRevenue[0] || { total: 0, count: 0 },
+        subscriptionRevenue: subscriptionRevenue[0] || { total: 0, count: 0 },
         installationFees: installationFeeRevenue[0] || { total: 0, count: 0 },
+        thisMonth: thisMonthRevenue[0] || { total: 0, count: 0 },
+        pending: pendingPayments[0] || { total: 0, count: 0 },
       },
     });
   } catch (error) {
@@ -349,13 +433,22 @@ export const refundPayment = async (
   next: NextFunction,
 ) => {
   try {
+    const { id } = req.params;
     const { reason } = req.body;
-    const payment = await paymentService.refundPayment(req.params.id, reason);
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid payment ID" });
+    }
+
+    const payment = await paymentService.refundPayment(id, reason);
     res.status(200).json({
       success: true,
       data: payment,
     });
-  } catch (error) {
+  } catch (error: any) {
+    if (error.message === "Payment not found") {
+      return res.status(404).json({ message: error.message });
+    }
     next(error);
   }
 };
@@ -375,6 +468,11 @@ export const confirmPayment = async (
     const { id } = req.params;
     const { notes, paymentType } = req.body;
     const adminId = req.user._id;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      await session.abortTransaction();
+      return res.status(400).json({ message: "Invalid payment ID" });
+    }
 
     // Get payment with populated data
     const payment = await Payment.findById(id)
@@ -440,21 +538,11 @@ export const confirmPayment = async (
     // Update billing record
     const billing = await Billing.findById(payment.billingId).session(session);
     if (billing) {
-      const updateData: any = {
-        status: "paid",
-        paymentId: payment._id,
-        paidAt: new Date(),
-      };
-
-      // If this bill has installation fee, mark it as paid
-      if (billing.installationFee && billing.installationFee > 0) {
-        updateData.installationFeePaid = true;
-      }
-
       billing.status = "paid";
       billing.paymentId = payment._id;
       billing.paidAt = new Date();
-      if (billing.installationFee && billing.installationFee > 0) {
+
+      if (billing.isInstallationBill || billing.installationFee > 0) {
         billing.installationFeePaid = true;
       }
       await billing.save({ session });
@@ -480,7 +568,10 @@ export const confirmPayment = async (
         }
 
         // Mark installation fee as paid in billing cycle
-        if (billing.installationFee && billing.installationFee > 0) {
+        if (
+          billing.isInstallationBill ||
+          (billing.installationFee && billing.installationFee > 0)
+        ) {
           billingCycle.installationFeePaid = true;
         }
 
@@ -513,12 +604,13 @@ export const confirmPayment = async (
       }).session(session);
       if (app) {
         app.billingStarted = true;
-        // If this payment includes installation fee, mark it as paid
+        app.serviceStatus = "active";
+        // If this payment is for installation fee, mark it as paid
         if (
           payment.paymentType === "installation" ||
-          (billing && billing.installationFee && billing.installationFee > 0)
+          (billing && billing.isInstallationBill)
         ) {
-          (app as any).installationFeePaid = true;
+          app.installationFeePaid = true;
         }
         await app.save({ session });
       }
@@ -528,6 +620,9 @@ export const confirmPayment = async (
 
     // Send confirmation email
     if (customerEmail && billing) {
+      const isInstallationPayment =
+        billing.isInstallationBill || payment.paymentType === "installation";
+
       let emailBody = `<div style="font-family: Arial, sans-serif; max-width: 600px;">
           <h2 style="color: #28a745;">✅ Payment Confirmed!</h2>
           <p>Dear ${customerName},</p>
@@ -538,8 +633,10 @@ export const confirmPayment = async (
             <p><strong>Amount:</strong> ₱${payment.amount.toLocaleString()}</p>
             <p><strong>Reference:</strong> ${payment.referenceNumber}</p>`;
 
-      if (billing.installationFee && billing.installationFee > 0) {
-        emailBody += `<p><strong>Installation Fee:</strong> ₱${billing.installationFee.toLocaleString()} (Paid)</p>`;
+      if (isInstallationPayment) {
+        emailBody += `<p><strong>Payment Type:</strong> Installation Fee</p>`;
+        emailBody += `<p><strong>Installation Fee:</strong> ₱${(billing.installationFee || payment.amount).toLocaleString()} (Paid)</p>`;
+        emailBody += `<p><strong>Next Step:</strong> Your installation will be scheduled within 24-48 hours.</p>`;
       }
 
       emailBody += `</div><p>Thank you for your payment!</p>
@@ -586,7 +683,7 @@ export const getPendingPayments = async (
       )
       .populate(
         "billingId",
-        "invoiceNumber total dueDate installationFee installationFeePaid",
+        "invoiceNumber total dueDate isProRated isInstallationBill installationFee installationFeePaid billingPeriod",
       )
       .sort({ createdAt: -1 })
       .lean();
@@ -602,7 +699,7 @@ export const getPendingPayments = async (
             applicationId: payment.applicationId,
           })
             .select(
-              "firstName lastName email applicationId phoneNumber status billingStarted installationFee installationFeePaid",
+              "firstName lastName email applicationId phoneNumber status serviceStatus billingStarted installationFee installationFeePaid",
             )
             .lean();
 
@@ -615,6 +712,7 @@ export const getPendingPayments = async (
               email: application.email,
               phoneNumber: application.phoneNumber,
               status: application.status,
+              serviceStatus: (application as any).serviceStatus || "pending",
               billingStarted: application.billingStarted,
               installationFee: (application as any).installationFee || 0,
               installationFeePaid:
@@ -649,6 +747,13 @@ export const getPendingPayments = async (
           };
         }
 
+        // Add flag for installation payment
+        enriched.isInstallationPayment =
+          payment.paymentType === "installation" ||
+          (payment.billingId &&
+            typeof payment.billingId === "object" &&
+            (payment.billingId as any).isInstallationBill);
+
         return enriched;
       }),
     );
@@ -676,6 +781,7 @@ export const getAllPaymentsAdmin = async (
     const skip = (page - 1) * limit;
     const status = req.query.status as string;
     const paymentType = req.query.paymentType as string;
+    const search = req.query.search as string;
 
     let query: any = {};
     if (status && status !== "all") {
@@ -683,6 +789,14 @@ export const getAllPaymentsAdmin = async (
     }
     if (paymentType && paymentType !== "all") {
       query.paymentType = paymentType;
+    }
+
+    // Search functionality
+    if (search) {
+      query.$or = [
+        { referenceNumber: { $regex: search, $options: "i" } },
+        { applicationId: { $regex: search, $options: "i" } },
+      ];
     }
 
     const [payments, total] = await Promise.all([
@@ -693,7 +807,7 @@ export const getAllPaymentsAdmin = async (
         )
         .populate(
           "billingId",
-          "invoiceNumber total dueDate installationFee installationFeePaid",
+          "invoiceNumber total dueDate isProRated isInstallationBill installationFee installationFeePaid billingPeriod",
         )
         .sort({ createdAt: -1 })
         .skip(skip)
@@ -703,7 +817,13 @@ export const getAllPaymentsAdmin = async (
     ]);
 
     // Calculate stats
-    const [totalStats, monthlyStats, installationFeeStats] = await Promise.all([
+    const [
+      totalStats,
+      monthlyStats,
+      subscriptionStats,
+      installationStats,
+      pendingStats,
+    ] = await Promise.all([
       Payment.aggregate([
         { $match: { status: "completed" } },
         {
@@ -731,7 +851,28 @@ export const getAllPaymentsAdmin = async (
         {
           $match: {
             status: "completed",
+            paymentType: "subscription",
+          },
+        },
+        {
+          $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } },
+        },
+      ]),
+      Payment.aggregate([
+        {
+          $match: {
+            status: "completed",
             paymentType: "installation",
+          },
+        },
+        {
+          $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } },
+        },
+      ]),
+      Payment.aggregate([
+        {
+          $match: {
+            status: "pending",
           },
         },
         {
@@ -750,7 +891,7 @@ export const getAllPaymentsAdmin = async (
             applicationId: payment.applicationId,
           })
             .select(
-              "firstName lastName email applicationId phoneNumber status billingStarted installationFee installationFeePaid",
+              "firstName lastName email applicationId phoneNumber status serviceStatus billingStarted installationFee installationFeePaid",
             )
             .lean();
 
@@ -763,6 +904,7 @@ export const getAllPaymentsAdmin = async (
               email: application.email,
               phoneNumber: application.phoneNumber,
               status: application.status,
+              serviceStatus: (application as any).serviceStatus || "pending",
               billingStarted: application.billingStarted,
               installationFee: (application as any).installationFee || 0,
               installationFeePaid:
@@ -786,6 +928,12 @@ export const getAllPaymentsAdmin = async (
           };
         }
 
+        enriched.isInstallationPayment =
+          payment.paymentType === "installation" ||
+          (payment.billingId &&
+            typeof payment.billingId === "object" &&
+            (payment.billingId as any).isInstallationBill);
+
         return enriched;
       }),
     );
@@ -801,8 +949,12 @@ export const getAllPaymentsAdmin = async (
         totalCount: totalStats[0]?.count || 0,
         monthly: monthlyStats[0]?.total || 0,
         monthlyCount: monthlyStats[0]?.count || 0,
-        installationFees: installationFeeStats[0]?.total || 0,
-        installationFeeCount: installationFeeStats[0]?.count || 0,
+        subscription: subscriptionStats[0]?.total || 0,
+        subscriptionCount: subscriptionStats[0]?.count || 0,
+        installationFees: installationStats[0]?.total || 0,
+        installationFeeCount: installationStats[0]?.count || 0,
+        pending: pendingStats[0]?.total || 0,
+        pendingCount: pendingStats[0]?.count || 0,
       },
     });
   } catch (error) {
@@ -822,9 +974,16 @@ export const rejectPayment = async (
     const { id } = req.params;
     const { reason } = req.body;
 
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid payment ID" });
+    }
+
     const payment = await Payment.findById(id)
       .populate("userId", "firstName lastName email")
-      .populate("billingId", "invoiceNumber total installationFee")
+      .populate(
+        "billingId",
+        "invoiceNumber total isInstallationBill installationFee",
+      )
       .lean();
 
     if (!payment) {
@@ -833,6 +992,10 @@ export const rejectPayment = async (
 
     if (payment.status === "completed") {
       return res.status(400).json({ message: "Payment already confirmed" });
+    }
+
+    if (payment.status === "failed") {
+      return res.status(400).json({ message: "Payment already rejected" });
     }
 
     // Fetch customer data
@@ -875,24 +1038,34 @@ export const rejectPayment = async (
     const updatedPayment = await Payment.findById(id).lean();
 
     if (customerEmail) {
+      const isInstallationPayment =
+        payment.paymentType === "installation" ||
+        (payment.billingId &&
+          typeof payment.billingId === "object" &&
+          (payment.billingId as any).isInstallationBill);
+
       let emailBody = `<div style="font-family: Arial, sans-serif; max-width: 600px;">
           <h2 style="color: #dc3545;">❌ Payment Verification Failed</h2>
           <p>Dear ${customerName},</p>
           <p>Your payment of <strong>₱${payment.amount.toLocaleString()}</strong> could not be verified.</p>
           <p><strong>Reason:</strong> ${reason || "Please contact support for more information"}</p>`;
 
-      if (payment.billingId && (payment.billingId as any).installationFee) {
-        emailBody += `<p><strong>Note:</strong> This payment was for an installation fee of ₱${(payment.billingId as any).installationFee.toLocaleString()}.</p>`;
+      if (isInstallationPayment) {
+        emailBody += `<p><strong>Note:</strong> This payment was for an installation fee of ₱${payment.amount.toLocaleString()}.</p>`;
+        emailBody += `<p>Please submit your installation fee payment again to proceed with your installation.</p>`;
+      } else {
+        emailBody += `<p>Please submit your payment again or contact our support team.</p>`;
       }
 
-      emailBody += `<p>Please submit your payment again or contact our support team.</p>
-          <hr>
+      emailBody += `<hr>
           <p style="color: #666; font-size: 12px;">Mister Fyber - Your trusted internet provider</p>
         </div>`;
 
       await emailService.sendEmail(
         customerEmail,
-        "Payment Verification Failed - Mister Fyber",
+        isInstallationPayment
+          ? "Installation Fee Payment Failed - Mister Fyber"
+          : "Payment Verification Failed - Mister Fyber",
         emailBody,
       );
     }
@@ -904,6 +1077,7 @@ export const rejectPayment = async (
       amount: updatedPayment?.amount,
       status: updatedPayment?.status,
       referenceNumber: updatedPayment?.referenceNumber,
+      paymentType: updatedPayment?.paymentType,
       paymentDetails: updatedPayment?.paymentDetails,
       createdAt: updatedPayment?.createdAt,
     };
@@ -916,4 +1090,87 @@ export const rejectPayment = async (
   } catch (error) {
     next(error);
   }
+};
+
+// @desc    Get installation fee payment summary
+// @route   GET /api/payments/installation/summary
+// @access  Private/Admin
+export const getInstallationPaymentSummary = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    // Get all installation payments
+    const installationPayments = await Payment.find({
+      paymentType: "installation",
+      status: "completed",
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const pendingInstallationPayments = await Payment.find({
+      paymentType: "installation",
+      status: "pending",
+    }).lean();
+
+    const totalInstallationRevenue = installationPayments.reduce(
+      (sum, p) => sum + (p.amount || 0),
+      0,
+    );
+
+    const pendingTotal = pendingInstallationPayments.reduce(
+      (sum, p) => sum + (p.amount || 0),
+      0,
+    );
+
+    const thisMonthInstallation = await Payment.aggregate([
+      {
+        $match: {
+          paymentType: "installation",
+          status: "completed",
+          createdAt: {
+            $gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
+          },
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: "$amount" },
+          count: { $sum: 1 },
+        },
+      },
+    ]);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        totalRevenue: totalInstallationRevenue,
+        totalCount: installationPayments.length,
+        pendingCount: pendingInstallationPayments.length,
+        pendingTotal: pendingTotal,
+        thisMonth: thisMonthInstallation[0] || { total: 0, count: 0 },
+        recentPayments: installationPayments.slice(0, 10),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export default {
+  createPayment,
+  getPayments,
+  getPayment,
+  verifyPayment,
+  payMongoWebhook,
+  dragonPayWebhook,
+  getPaymentStats,
+  refundPayment,
+  confirmPayment,
+  rejectPayment,
+  getPendingPayments,
+  getAllPaymentsAdmin,
+  getInstallationPaymentSummary,
 };

@@ -954,6 +954,17 @@ class EmailService {
     billing: any,
   ): Promise<void> {
     const amount = payment.amount || payment.totalAmount || 0;
+    const isInstallationPayment =
+      payment.paymentType === "installation" ||
+      (billing && billing.isInstallationBill);
+
+    let additionalMessage = "";
+    if (isInstallationPayment) {
+      additionalMessage = `<p><strong>Installation Fee:</strong> Your installation fee has been paid. Our team will schedule your installation within 24-48 hours.</p>`;
+    } else if (billing?.isProRated) {
+      additionalMessage = `<p><strong>Note:</strong> Your pro-rated payment has been confirmed. Your service is now active!</p>`;
+    }
+
     const html = `
       <!DOCTYPE html>
       <html>
@@ -973,7 +984,7 @@ class EmailService {
                   <p><strong>Payment Method:</strong> ${payment.paymentMethod || "N/A"}</p>
                   <p><strong>Reference:</strong> ${payment.referenceNumber || "N/A"}</p>
                   <p><strong>Date:</strong> ${new Date().toLocaleString()}</p>
-                  ${billing?.isProRated ? `<p><strong>Note:</strong> Your pro-rated payment has been confirmed. Your service is now active!</p>` : ""}
+                  ${additionalMessage}
               </div>
               <hr>
               <p style="color: #666; font-size: 12px;">Thank you for being a valued Mister Fyber customer!</p>
@@ -997,6 +1008,7 @@ class EmailService {
           <p><strong>Reference:</strong> ${payment.referenceNumber || "N/A"}</p>
           <p><strong>Date:</strong> ${new Date().toLocaleString()}</p>
           ${billing?.isProRated ? `<p><strong>Note:</strong> Pro-rated payment confirmed. User service activated.</p>` : ""}
+          ${isInstallationPayment ? `<p><strong>Note:</strong> Installation fee payment confirmed.</p>` : ""}
       </div>
     `;
     await this.sendToAdmin(
@@ -1014,6 +1026,15 @@ class EmailService {
     const frontendUrl =
       process.env.FRONTEND_URL || "https://www.misterfyber.com";
 
+    const isInstallationBill = billing.isInstallationBill;
+
+    let reminderMessage = "";
+    if (isInstallationBill) {
+      reminderMessage = `<p><strong>Note:</strong> This is your installation fee. Once paid, our team will schedule your installation.</p>`;
+    } else if (billing.isProRated) {
+      reminderMessage = `<p><strong>Note:</strong> This is your pro-rated first bill. Once paid, your service will be fully activated.</p>`;
+    }
+
     const html = `
       <!DOCTYPE html>
       <html>
@@ -1029,7 +1050,7 @@ class EmailService {
               <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
                   <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
                   <p><strong>Due Date:</strong> ${dueDate}</p>
-                  ${billing?.isProRated ? `<p><strong>Note:</strong> This is your pro-rated first bill. Once paid, your service will be fully activated.</p>` : ""}
+                  ${reminderMessage}
               </div>
               <div style="text-align: center; margin: 30px 0;">
                   <a href="${frontendUrl}/billing" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">Pay Now</a>

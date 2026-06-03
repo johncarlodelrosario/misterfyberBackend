@@ -16,7 +16,9 @@ import {
   getAllBillingCycles,
   getAllBills,
   markBillAsPaid,
+  markInstallationBillAsPaid,
   getPendingProRatedBills,
+  getPendingInstallationBills,
   getPendingActivations,
   confirmProRatedPayment,
   startMonthlyBilling,
@@ -26,6 +28,7 @@ import {
   getApplicationCurrentBilling,
   getApplicationBillingHistory,
   submitProRatedPayment,
+  submitInstallationPayment,
   submitMonthlyPayment,
   getApplicationBillingStatus,
   recoverMissingBills,
@@ -44,6 +47,7 @@ router.get("/cycles", getAllBillingCycles);
 router.get("/all-bills", getAllBills);
 router.get("/summary", getBillingSummaryAdmin);
 router.get("/pending-pro-rated", getPendingProRatedBills);
+router.get("/pending-installation", getPendingInstallationBills);
 router.get("/pending-activations", getPendingActivations);
 router.get("/unpaid-bills-report", adminMiddleware, getUnpaidBillsReport);
 
@@ -52,6 +56,11 @@ router.put("/settings", adminMiddleware, updateBillingSettings);
 router.get("/settings/admin", adminMiddleware, getBillingSettingsAdmin);
 router.put("/settings/admin", adminMiddleware, updateBillingSettingsAdmin);
 router.put("/mark-paid/:billId", adminMiddleware, markBillAsPaid);
+router.put(
+  "/mark-installation-paid/:billId",
+  adminMiddleware,
+  markInstallationBillAsPaid,
+);
 router.post("/confirm-pro-rated", adminMiddleware, confirmProRatedPayment);
 router.post("/start-monthly", adminMiddleware, startMonthlyBilling);
 router.post("/start", adminMiddleware, startBilling);
@@ -76,6 +85,7 @@ router.get("/application/:applicationId/current", getApplicationCurrentBilling);
 router.get("/application/:applicationId/history", getApplicationBillingHistory);
 router.get("/application/:applicationId/status", getApplicationBillingStatus);
 router.post("/application/submit-pro-rated", submitProRatedPayment);
+router.post("/application/submit-installation", submitInstallationPayment);
 router.post("/application/submit-monthly", submitMonthlyPayment);
 
 export default router;

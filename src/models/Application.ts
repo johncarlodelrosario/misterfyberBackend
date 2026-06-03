@@ -16,7 +16,8 @@ export interface IApplication extends Document {
   idNumber?: string;
   idImage?: string;
   macAddress?: string;
-  status: "pending" | "approved" | "rejected";
+  status: "pending" | "approved" | "rejected" | "suspended" | "active";
+  serviceStatus: "inactive" | "active" | "suspended" | "pending";
   adminNotes: string;
   reviewedBy?: mongoose.Types.ObjectId;
   reviewedAt?: Date;
@@ -57,7 +58,7 @@ const ApplicationSchema: Schema = new Schema(
       type: String,
       required: true,
       unique: true,
-      default: function () {
+      default: function (this: any) {
         return generateApplicationIdSync(this.buildingName);
       },
     },
@@ -85,7 +86,12 @@ const ApplicationSchema: Schema = new Schema(
     macAddress: { type: String, required: false, default: "", index: false },
     status: {
       type: String,
-      enum: ["pending", "approved", "rejected"],
+      enum: ["pending", "approved", "rejected", "suspended", "active"],
+      default: "pending",
+    },
+    serviceStatus: {
+      type: String,
+      enum: ["inactive", "active", "suspended", "pending"],
       default: "pending",
     },
     adminNotes: { type: String, default: "" },
@@ -107,5 +113,6 @@ ApplicationSchema.index({ status: 1 });
 ApplicationSchema.index({ registeredUserId: 1 });
 ApplicationSchema.index({ billingCycleId: 1 });
 ApplicationSchema.index({ installationFeePaid: 1 });
+ApplicationSchema.index({ serviceStatus: 1 });
 
 export default mongoose.model<IApplication>("Application", ApplicationSchema);

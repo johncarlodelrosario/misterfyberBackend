@@ -36,6 +36,8 @@ export interface IBilling extends Document {
   reminder1DaySent: boolean;
   reminderDueDateSent: boolean;
   suspensionNotified: boolean;
+  // SEPARATE INSTALLATION FEE TRACKING
+  isInstallationBill: boolean;
   installationFee: number;
   installationFeePaid: boolean;
   paidAt: Date;
@@ -103,6 +105,8 @@ const BillingSchema: Schema = new Schema(
     reminder1DaySent: { type: Boolean, default: false },
     reminderDueDateSent: { type: Boolean, default: false },
     suspensionNotified: { type: Boolean, default: false },
+    // SEPARATE INSTALLATION FEE TRACKING
+    isInstallationBill: { type: Boolean, default: false },
     installationFee: { type: Number, default: 0 },
     installationFeePaid: { type: Boolean, default: false },
     paidAt: { type: Date },
@@ -123,5 +127,6 @@ BillingSchema.index({ dueDate: 1 });
 BillingSchema.index({ isProRated: 1, status: 1 });
 BillingSchema.index({ applicationId: 1 });
 BillingSchema.index({ installationFeePaid: 1 });
+BillingSchema.index({ isInstallationBill: 1 });
 
 export default mongoose.model<IBilling>("Billing", BillingSchema);

@@ -35,6 +35,17 @@ function generateInvoiceNumber(): string {
   return `INV-${year}${month}-${timestamp}${random}`;
 }
 
+function generateInstallationInvoiceNumber(): string {
+  const date = new Date();
+  const year = date.getFullYear();
+  const month = (date.getMonth() + 1).toString().padStart(2, "0");
+  const timestamp = Date.now().toString().slice(-6);
+  const random = Math.floor(Math.random() * 1000)
+    .toString()
+    .padStart(3, "0");
+  return `INST-${year}${month}-${timestamp}${random}`;
+}
+
 function getCacheKey(params: any): string {
   return JSON.stringify(params);
 }
@@ -66,7 +77,8 @@ async function getOrCreateSettings(): Promise<any> {
       enableAutoBilling: true,
       sendInvoiceOnInstall: true,
       requireAdminActivation: false,
-      installationFee: 1500, // Default installation fee
+      installationFee: 1500,
+      installationFeeDueDays: 7,
     };
     settings = await BillingSettings.create(defaultSettings);
     console.log("✅ Default billing settings created");
@@ -142,6 +154,17 @@ function getDueDateForRegularMonthly(currentDate: Date, settings: any): Date {
   return dueDate;
 }
 
+function getDueDateForInstallationFee(
+  installationDate: Date,
+  settings: any,
+): Date {
+  const dueDays = settings.installationFeeDueDays || 7;
+  const dueDate = new Date(installationDate);
+  dueDate.setDate(dueDate.getDate() + dueDays);
+  dueDate.setHours(23, 59, 59, 999);
+  return dueDate;
+}
+
 function checkAdmin(req: AuthRequest, res: Response): boolean {
   if (!req.user || !req.user.role) {
     res.status(401).json({
@@ -188,6 +211,146 @@ async function sendInvoiceToApplication(
 
     await emailService.sendInvoice(tempUser, bill);
   }
+}
+
+// ==================== CREATE SEPARATE INSTALLATION BILL ====================
+async function createInstallationBill(
+  application: any,
+  billingCycleId: mongoose.Types.ObjectId,
+  installationFee: number,
+  settings: any,
+  session: mongoose.ClientSession,
+): Promise<any> {
+  if (!installationFee || installationFee <= 0) {
+    return null;
+  }
+
+  const dueDate = getDueDateForInstallationFee(new Date(), settings);
+
+  const installationBillData = {
+    billingCycleId: billingCycleId,
+    invoiceNumber: generateInstallationInvoiceNumber(),
+    billingPeriod: {
+      start: new Date(),
+      end: new Date(),
+    },
+    dueDate: dueDate,
+    items: [
+      {
+        description: `Installation Fee (One-time) - Due within ${settings.installationFeeDueDays || 7} days`,
+        quantity: 1,
+        rate: installationFee,
+        amount: installationFee,
+      },
+    ],
+    subtotal: installationFee,
+    tax: 0,
+    discount: 0,
+    total: installationFee,
+    status: "sent",
+    isProRated: false,
+    proRatedDays: 0,
+    isInstallationBill: true,
+    installationFee: installationFee,
+    installationFeePaid: false,
+    notes: `Installation fee bill - Separate from monthly subscription. Due on ${formatDateForDisplay(dueDate)}`,
+    applicationId: application.applicationId,
+  };
+
+  const installationBill = await Billing.create([installationBillData], {
+    session,
+  });
+
+  // Update billing cycle with installation bill reference
+  await BillingCycle.updateOne(
+    { _id: billingCycleId },
+    { $set: { installationFeeBillId: installationBill[0]._id } },
+    { session },
+  );
+
+  // Send installation fee invoice email
+  try {
+    await sendInvoiceToApplication(application, installationBill[0]);
+    console.log(`📧 Sent installation fee invoice to ${application.email}`);
+  } catch (emailError) {
+    console.error("Failed to send installation fee invoice email:", emailError);
+  }
+
+  return installationBill[0];
+}
+
+// ==================== CREATE MONTHLY BILL ====================
+async function createMonthlyBill(
+  application: any,
+  billingCycleId: mongoose.Types.ObjectId,
+  billingStart: Date,
+  billingEnd: Date,
+  monthlyRate: number,
+  settings: any,
+  isProRated: boolean = false,
+  proRatedDays: number = 0,
+  proRatedAmount: number = 0,
+  session?: mongoose.ClientSession,
+): Promise<any> {
+  const dueDate = getDueDateForRegularMonthly(billingStart, settings);
+  let amount = monthlyRate;
+  let description = `Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}`;
+  let items: any[] = [];
+
+  if (isProRated && proRatedAmount > 0) {
+    amount = proRatedAmount;
+    description = `Pro-rated payment from ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)} (${proRatedDays} days)`;
+    items.push({
+      description: description,
+      quantity: proRatedDays,
+      rate: proRatedAmount / proRatedDays,
+      amount: proRatedAmount,
+    });
+  } else {
+    items.push({
+      description: description,
+      quantity: 1,
+      rate: amount,
+      amount: amount,
+    });
+  }
+
+  const billData: any = {
+    billingCycleId: billingCycleId,
+    invoiceNumber: generateInvoiceNumber(),
+    billingPeriod: { start: billingStart, end: billingEnd },
+    dueDate: dueDate,
+    items: items,
+    subtotal: amount,
+    tax: 0,
+    discount: 0,
+    total: amount,
+    status: "sent",
+    isProRated: isProRated,
+    proRatedDays: proRatedDays,
+    isInstallationBill: false,
+    installationFee: 0,
+    installationFeePaid: false,
+    notes: isProRated
+      ? "Pro-rated payment for partial month"
+      : "Monthly subscription",
+    applicationId: application.applicationId,
+  };
+
+  const bill = session
+    ? await Billing.create([billData], { session })
+    : await Billing.create([billData]);
+
+  const createdBill = session ? bill[0] : bill;
+
+  // Send email
+  try {
+    await sendInvoiceToApplication(application, createdBill);
+  } catch (emailError) {
+    console.error("Failed to send invoice email:", emailError);
+  }
+
+  return createdBill;
 }
 
 // ==================== INITIALIZE BACKDATED BILLING FOR EXISTING CUSTOMER ====================
@@ -250,7 +413,6 @@ export const initializeBackdatedBilling = async (
       });
     }
 
-    // Get or create a plan
     let plan: any = application.planId;
 
     if (!plan && customPlanName && monthlyRate) {
@@ -281,14 +443,12 @@ export const initializeBackdatedBilling = async (
       ? settings.installationFee || 1500
       : 0;
 
-    // Calculate from service start date to now
     const startDate = new Date(serviceStartDate);
     startDate.setHours(0, 0, 0, 0);
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // Create billing cycle
     const billingStartDate = new Date(startDate);
     billingStartDate.setDate(1);
     billingStartDate.setHours(0, 0, 0, 0);
@@ -319,17 +479,13 @@ export const initializeBackdatedBilling = async (
       { session },
     );
 
-    // Generate all missing bills from start date to now
     const generatedBills = [];
     const missingMonths = [];
     let currentBillDate = new Date(startDate);
     currentBillDate.setDate(1);
     currentBillDate.setHours(0, 0, 0, 0);
-    let totalAmount = 0;
-
-    // Track months that have unpaid bills
+    let totalMonthlyAmount = 0;
     const unpaidMonths = [];
-
     let isFirstBill = true;
 
     while (currentBillDate <= today) {
@@ -337,11 +493,11 @@ export const initializeBackdatedBilling = async (
       const billingEnd = getEndOfMonth(billingStart);
       const dueDate = getDueDateForRegularMonthly(billingStart, settings);
 
-      // Check if bill already exists for this period
       const existingBill = await Billing.findOne({
         applicationId: application.applicationId,
         billingCycleId: billingCycle[0]._id,
         "billingPeriod.start": billingStart,
+        isInstallationBill: false,
       }).session(session);
 
       if (!existingBill) {
@@ -352,7 +508,6 @@ export const initializeBackdatedBilling = async (
         let isMissingBill = false;
         let items: any[] = [];
 
-        // If first month is partial (service started after 1st)
         if (
           currentBillDate.getTime() ===
             new Date(
@@ -380,7 +535,6 @@ export const initializeBackdatedBilling = async (
             amount: amount,
           });
         } else if (currentBillDate < today) {
-          // This is a missing past month bill
           isMissingBill = true;
           description = `[MISSING BILL - BACKDATED] Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}`;
           items.push({
@@ -398,43 +552,31 @@ export const initializeBackdatedBilling = async (
           });
         }
 
-        // Add installation fee to first bill only
-        let finalAmount = amount;
-        if (isFirstBill && installationFee > 0) {
-          items.push({
-            description: `Installation Fee (One-time)`,
-            quantity: 1,
-            rate: installationFee,
-            amount: installationFee,
-          });
-          finalAmount = amount + installationFee;
-          isFirstBill = false;
-        }
-
         const billData: any = {
           billingCycleId: billingCycle[0]._id,
           invoiceNumber: generateInvoiceNumber(),
           billingPeriod: { start: billingStart, end: billingEnd },
           dueDate: dueDate,
           items: items,
-          subtotal: finalAmount,
-          total: finalAmount,
+          subtotal: amount,
+          total: amount,
           status: "sent",
           isProRated: isProRated,
           proRatedDays: proRatedDays,
-          applicationId: application.applicationId,
-          installationFee: installationFee,
+          isInstallationBill: false,
+          installationFee: 0,
           installationFeePaid: false,
+          applicationId: application.applicationId,
           notes:
             notes ||
             (isMissingBill
-              ? `MISSING BILL - Generated from backdated billing. Original period: ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}. Customer started service on ${formatDateForDisplay(startDate)}.${installationFee > 0 ? ` Includes installation fee of ₱${installationFee.toFixed(2)}` : ""}`
-              : `Generated from backdated billing starting ${formatDateForDisplay(startDate)}${installationFee > 0 ? `. Includes installation fee of ₱${installationFee.toFixed(2)}` : ""}`),
+              ? `MISSING BILL - Generated from backdated billing. Original period: ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}. Customer started service on ${formatDateForDisplay(startDate)}.`
+              : `Generated from backdated billing starting ${formatDateForDisplay(startDate)}`),
         };
 
         const newBill = await Billing.create([billData], { session });
         generatedBills.push(newBill[0]);
-        totalAmount += finalAmount;
+        totalMonthlyAmount += amount;
 
         if (isMissingBill) {
           missingMonths.push({
@@ -445,29 +587,39 @@ export const initializeBackdatedBilling = async (
           });
         }
 
-        // Send email for each bill
         try {
           await sendInvoiceToApplication(application, newBill[0]);
         } catch (emailError) {
           console.error("Failed to send invoice email:", emailError);
         }
-      } else {
-        // Check if existing bill is unpaid
-        if (existingBill.status !== "paid") {
-          unpaidMonths.push({
-            month: formatDateForDisplay(billingStart),
-            amount: existingBill.total,
-            billId: existingBill._id,
-            invoiceNumber: existingBill.invoiceNumber,
-            status: existingBill.status,
-          });
-        }
+      } else if (
+        existingBill.status !== "paid" &&
+        !existingBill.isInstallationBill
+      ) {
+        unpaidMonths.push({
+          month: formatDateForDisplay(billingStart),
+          amount: existingBill.total,
+          billId: existingBill._id,
+          invoiceNumber: existingBill.invoiceNumber,
+          status: existingBill.status,
+        });
       }
 
       currentBillDate.setMonth(currentBillDate.getMonth() + 1);
     }
 
-    // Update next billing date
+    // Create SEPARATE installation bill if applicable
+    let installationBill = null;
+    if (installationFee > 0) {
+      installationBill = await createInstallationBill(
+        application,
+        billingCycle[0]._id,
+        installationFee,
+        settings,
+        session,
+      );
+    }
+
     const lastGeneratedMonth = new Date(currentBillDate);
     lastGeneratedMonth.setMonth(lastGeneratedMonth.getMonth() - 1);
     lastGeneratedMonth.setDate(1);
@@ -500,10 +652,11 @@ export const initializeBackdatedBilling = async (
     await session.commitTransaction();
     clearAllCache();
 
-    // Prepare response message with missing months info
-    let message = `Backdated billing initialized for ${application.firstName} ${application.lastName}. Generated ${generatedBills.length} bill(s) totaling ₱${totalAmount.toFixed(2)}.`;
+    let message = `Backdated billing initialized for ${application.firstName} ${application.lastName}. Generated ${generatedBills.length} monthly bill(s) totaling ₱${totalMonthlyAmount.toFixed(2)}.`;
 
-    if (installationFee > 0) {
+    if (installationBill) {
+      message += ` Installation fee of ₱${installationFee.toFixed(2)} billed separately (Invoice: ${installationBill.invoiceNumber}, due on ${formatDateForDisplay(installationBill.dueDate)}).`;
+    } else if (installationFee > 0) {
       message += ` Installation fee of ₱${installationFee.toFixed(2)} included.`;
     }
 
@@ -512,7 +665,7 @@ export const initializeBackdatedBilling = async (
     }
 
     if (unpaidMonths.length > 0) {
-      message += ` Warning: ${unpaidMonths.length} unpaid bill(s) detected from previous periods.`;
+      message += ` Warning: ${unpaidMonths.length} unpaid monthly bill(s) detected from previous periods.`;
     }
 
     res.status(200).json({
@@ -520,8 +673,10 @@ export const initializeBackdatedBilling = async (
       message: message,
       data: {
         billingCycle: billingCycle[0],
-        generatedBills: generatedBills,
-        totalAmount: totalAmount,
+        generatedMonthlyBills: generatedBills,
+        installationBill: installationBill,
+        totalMonthlyAmount: totalMonthlyAmount,
+        totalInstallationFee: installationFee,
         billsCount: generatedBills.length,
         serviceStartDate: startDate,
         applicationId: application.applicationId,
@@ -529,6 +684,7 @@ export const initializeBackdatedBilling = async (
         unpaidPreviousBills: unpaidMonths,
         currentDate: today,
         installationFee: installationFee,
+        installationFeeSeparate: installationBill !== null,
       },
     });
   } catch (error) {
@@ -631,8 +787,9 @@ export const startBilling = async (
     let billingStartDateForCycle: Date;
     let billingEndDateForCycle: Date;
     let nextBillingDate: Date;
-    let createdBill: any = null;
-    let billingStatus = "active";
+    let createdMonthlyBill: any = null;
+    let createdInstallationBill: any = null;
+    let billingStatus = "pending_activation";
 
     const cycleData: any = {
       planId: plan._id,
@@ -672,7 +829,8 @@ export const startBilling = async (
         { session },
       );
 
-      const totalAmount = monthlyRate + proRatedAmount + installationFee;
+      // Create monthly bill (combined pro-rated + full month)
+      const totalMonthlyAmount = monthlyRate + proRatedAmount;
       const dueDate = getDueDateForMonthly(billingStartDateForCycle, settings);
 
       const items: any[] = [
@@ -690,41 +848,42 @@ export const startBilling = async (
         },
       ];
 
-      if (installationFee > 0) {
-        items.push({
-          description: `Installation Fee (One-time)`,
-          quantity: 1,
-          rate: installationFee,
-          amount: installationFee,
-        });
-      }
-
       const billData: any = {
         billingCycleId: billingCycle[0]._id,
         invoiceNumber: generateInvoiceNumber(),
         billingPeriod: { start: installationDate, end: billingEndDateForCycle },
         dueDate: dueDate,
         items: items,
-        subtotal: totalAmount,
+        subtotal: totalMonthlyAmount,
         tax: 0,
         discount: 0,
-        total: totalAmount,
+        total: totalMonthlyAmount,
         status: "sent",
         isProRated: false,
         proRatedDays: actualBillableDays,
-        notes:
-          notes ||
-          `Combined bill due on ${formatDateForDisplay(dueDate)}${installationFee > 0 ? `. Includes installation fee of ₱${installationFee.toFixed(2)}` : ""}`,
-        applicationId: application.applicationId,
-        installationFee: installationFee,
+        isInstallationBill: false,
+        installationFee: 0,
         installationFeePaid: false,
+        notes: notes || `Combined bill due on ${formatDateForDisplay(dueDate)}`,
+        applicationId: application.applicationId,
       };
 
-      createdBill = await Billing.create([billData], { session });
+      createdMonthlyBill = await Billing.create([billData], { session });
 
-      if (settings.sendInvoiceOnInstall) {
+      // Create SEPARATE installation bill
+      if (installationFee > 0) {
+        createdInstallationBill = await createInstallationBill(
+          application,
+          billingCycle[0]._id,
+          installationFee,
+          settings,
+          session,
+        );
+      }
+
+      if (settings.sendInvoiceOnInstall && createdMonthlyBill) {
         try {
-          await sendInvoiceToApplication(application, createdBill[0]);
+          await sendInvoiceToApplication(application, createdMonthlyBill[0]);
         } catch (emailError) {
           console.error("Failed to send invoice email:", emailError);
         }
@@ -747,12 +906,18 @@ export const startBilling = async (
 
       clearAllCache();
 
+      let message = `Installation on day ${installationDay} (after cutoff). Combined monthly bill due on ${formatDateForDisplay(dueDate)}.`;
+      if (createdInstallationBill) {
+        message += ` Installation fee of ₱${installationFee.toFixed(2)} billed separately (Invoice: ${createdInstallationBill.invoiceNumber}, due on ${formatDateForDisplay(createdInstallationBill.dueDate)}).`;
+      }
+
       res.status(200).json({
         success: true,
-        message: `Installation on day ${installationDay} (after cutoff). Combined bill due on ${formatDateForDisplay(dueDate)}.${installationFee > 0 ? ` Installation fee of ₱${installationFee.toFixed(2)} included.` : ""}`,
+        message: message,
         data: {
           billingCycle: billingCycle[0],
-          bill: createdBill ? createdBill[0] : null,
+          monthlyBill: createdMonthlyBill ? createdMonthlyBill[0] : null,
+          installationBill: createdInstallationBill,
           proRatedAmount: proRatedAmount,
           dailyRate: dailyRate,
           monthlyRate: monthlyRate,
@@ -766,6 +931,7 @@ export const startBilling = async (
           isCombinedBill: true,
           applicationId: application.applicationId,
           installationFee: installationFee,
+          installationFeeSeparate: createdInstallationBill !== null,
         },
       });
     } else {
@@ -793,6 +959,7 @@ export const startBilling = async (
         { session },
       );
 
+      // Create pro-rated monthly bill
       const dueDate = getDueDateForProRated(installationDate, settings);
 
       const items: any[] = [
@@ -804,43 +971,44 @@ export const startBilling = async (
         },
       ];
 
-      if (installationFee > 0) {
-        items.push({
-          description: `Installation Fee (One-time)`,
-          quantity: 1,
-          rate: installationFee,
-          amount: installationFee,
-        });
-      }
-
-      const totalAmount = proRatedAmount + installationFee;
-
       const billData: any = {
         billingCycleId: billingCycle[0]._id,
         invoiceNumber: generateInvoiceNumber(),
         billingPeriod: { start: billingPeriodStart, end: billingPeriodEnd },
         dueDate: dueDate,
         items: items,
-        subtotal: totalAmount,
+        subtotal: proRatedAmount,
         tax: 0,
         discount: 0,
-        total: totalAmount,
+        total: proRatedAmount,
         status: "sent",
         isProRated: true,
         proRatedDays: actualBillableDays,
+        isInstallationBill: false,
+        installationFee: 0,
+        installationFeePaid: false,
         notes:
           notes ||
-          `Pro-rated bill due on ${formatDateForDisplay(dueDate)}. Next billing starts ${formatDateForDisplay(nextBillingDate)}${installationFee > 0 ? `. Includes installation fee of ₱${installationFee.toFixed(2)}` : ""}`,
+          `Pro-rated bill due on ${formatDateForDisplay(dueDate)}. Next billing starts ${formatDateForDisplay(nextBillingDate)}`,
         applicationId: application.applicationId,
-        installationFee: installationFee,
-        installationFeePaid: false,
       };
 
-      createdBill = await Billing.create([billData], { session });
+      createdMonthlyBill = await Billing.create([billData], { session });
 
-      if (settings.sendInvoiceOnInstall) {
+      // Create SEPARATE installation bill
+      if (installationFee > 0) {
+        createdInstallationBill = await createInstallationBill(
+          application,
+          billingCycle[0]._id,
+          installationFee,
+          settings,
+          session,
+        );
+      }
+
+      if (settings.sendInvoiceOnInstall && createdMonthlyBill) {
         try {
-          await sendInvoiceToApplication(application, createdBill[0]);
+          await sendInvoiceToApplication(application, createdMonthlyBill[0]);
         } catch (emailError) {
           console.error("Failed to send invoice email:", emailError);
         }
@@ -863,12 +1031,18 @@ export const startBilling = async (
 
       clearAllCache();
 
+      let message = `Pro-rated amount of ₱${proRatedAmount.toFixed(2)} for ${actualBillableDays} days due on ${formatDateForDisplay(dueDate)}.`;
+      if (createdInstallationBill) {
+        message += ` Installation fee of ₱${installationFee.toFixed(2)} billed separately (Invoice: ${createdInstallationBill.invoiceNumber}, due on ${formatDateForDisplay(createdInstallationBill.dueDate)}).`;
+      }
+
       res.status(200).json({
         success: true,
-        message: `Pro-rated amount of ₱${proRatedAmount.toFixed(2)} for ${actualBillableDays} days due on ${formatDateForDisplay(dueDate)}.${installationFee > 0 ? ` Installation fee of ₱${installationFee.toFixed(2)} included.` : ""}`,
+        message: message,
         data: {
           billingCycle: billingCycle[0],
-          bill: createdBill ? createdBill[0] : null,
+          monthlyBill: createdMonthlyBill ? createdMonthlyBill[0] : null,
+          installationBill: createdInstallationBill,
           proRatedAmount: proRatedAmount,
           dailyRate: dailyRate,
           monthlyRate: monthlyRate,
@@ -882,6 +1056,7 @@ export const startBilling = async (
           isCombinedBill: false,
           applicationId: application.applicationId,
           installationFee: installationFee,
+          installationFeeSeparate: createdInstallationBill !== null,
         },
       });
     }
@@ -927,6 +1102,7 @@ export const getBillingSettings = async (
         sendInvoiceOnInstall: true,
         requireAdminActivation: false,
         installationFee: 1500,
+        installationFeeDueDays: 7,
       });
     }
 
@@ -988,6 +1164,7 @@ export const getBillingSettingsAdmin = async (
         sendInvoiceOnInstall: true,
         requireAdminActivation: false,
         installationFee: 1500,
+        installationFeeDueDays: 7,
       });
     }
     res.status(200).json({ success: true, data: settings });
@@ -1020,6 +1197,7 @@ export const updateBillingSettingsAdmin = async (
       sendInvoiceOnInstall,
       requireAdminActivation,
       installationFee,
+      installationFeeDueDays,
     } = req.body;
 
     const settings = await BillingSettings.findOneAndUpdate(
@@ -1039,6 +1217,7 @@ export const updateBillingSettingsAdmin = async (
         sendInvoiceOnInstall,
         requireAdminActivation,
         installationFee,
+        installationFeeDueDays,
       },
       { new: true, upsert: true },
     ).lean();
@@ -1079,6 +1258,7 @@ export const getBillingSummaryAdmin = async (
       unpaidProRated,
       outstandingResult,
       monthlyRevenue,
+      unpaidInstallationFees,
     ] = await Promise.all([
       BillingCycle.countDocuments({ status: "active", proRatedPaid: true }),
       BillingCycle.countDocuments({ status: "paused" }),
@@ -1091,12 +1271,13 @@ export const getBillingSummaryAdmin = async (
         proRatedPaid: true,
         manualBillStart: false,
       }),
-      Billing.countDocuments({ status: "overdue" }),
+      Billing.countDocuments({ status: "overdue", isInstallationBill: false }),
       Billing.countDocuments({ isProRated: true, status: "sent" }),
       Billing.aggregate([
         {
           $match: {
             status: { $in: ["sent", "overdue", "pending_confirmation"] },
+            isInstallationBill: false,
           },
         },
         { $group: { _id: null, total: { $sum: "$total" } } },
@@ -1116,9 +1297,28 @@ export const getBillingSummaryAdmin = async (
         },
         { $group: { _id: null, total: { $sum: "$amount" } } },
       ]),
+      Billing.aggregate([
+        {
+          $match: {
+            isInstallationBill: true,
+            installationFeePaid: false,
+            status: { $in: ["sent", "overdue"] },
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: "$installationFee" },
+            count: { $sum: 1 },
+          },
+        },
+      ]),
     ]);
 
     const totalOutstanding = outstandingResult[0]?.total || 0;
+    const unpaidInstallationTotal = unpaidInstallationFees[0]?.total || 0;
+    const unpaidInstallationCount = unpaidInstallationFees[0]?.count || 0;
+
     const data = {
       activeSubscriptions: totalActiveCycles,
       pausedSubscriptions: totalPausedCycles,
@@ -1128,6 +1328,10 @@ export const getBillingSummaryAdmin = async (
       totalOutstanding: totalOutstanding,
       monthlyRevenue: monthlyRevenue[0]?.total || 0,
       unpaidProRated: unpaidProRated,
+      unpaidInstallationFees: {
+        total: unpaidInstallationTotal,
+        count: unpaidInstallationCount,
+      },
     };
 
     summaryCache = { data, timestamp: now };
@@ -1207,6 +1411,7 @@ export const getAllBills = async (
     if (status) query.status = status;
     if (type === "pro-rated") query.isProRated = true;
     if (type === "monthly") query.isProRated = false;
+    if (type === "installation") query.isInstallationBill = true;
 
     const bills = await Billing.find(query)
       .populate("billingCycleId")
@@ -1279,21 +1484,22 @@ export const pauseBilling = async (
       });
     }
 
-    const unpaidBills = await Billing.find({
+    const unpaidMonthlyBills = await Billing.find({
       applicationId: application.applicationId,
       status: { $in: ["sent", "overdue", "pending_confirmation"] },
+      isInstallationBill: false,
     }).lean();
 
-    if (unpaidBills.length > 0) {
+    if (unpaidMonthlyBills.length > 0) {
       await session.abortTransaction();
-      const totalAmount = unpaidBills.reduce(
+      const totalAmount = unpaidMonthlyBills.reduce(
         (sum, b) => sum + (b.total || 0),
         0,
       );
       return res.status(400).json({
         success: false,
-        message: `Cannot pause service. Customer has ${unpaidBills.length} unpaid bill(s) totaling ₱${totalAmount.toFixed(2)}.`,
-        data: { unpaidBills, totalAmount },
+        message: `Cannot pause service. Customer has ${unpaidMonthlyBills.length} unpaid monthly bill(s) totaling ₱${totalAmount.toFixed(2)}.`,
+        data: { unpaidMonthlyBills, totalAmount },
       });
     }
 
@@ -1393,20 +1599,21 @@ export const resumeBilling = async (
       });
     }
 
-    const pendingBills = await Billing.find({
+    const pendingMonthlyBills = await Billing.find({
       applicationId: application.applicationId,
       status: { $in: ["sent", "overdue", "pending_confirmation"] },
+      isInstallationBill: false,
     }).lean();
 
-    if (pendingBills.length > 0) {
+    if (pendingMonthlyBills.length > 0) {
       await session.abortTransaction();
-      const totalAmount = pendingBills.reduce(
+      const totalAmount = pendingMonthlyBills.reduce(
         (sum, b) => sum + (b.total || 0),
         0,
       );
       return res.status(400).json({
         success: false,
-        message: `Cannot resume service. Customer has ${pendingBills.length} unpaid bill(s) totaling ₱${totalAmount.toFixed(2)}.`,
+        message: `Cannot resume service. Customer has ${pendingMonthlyBills.length} unpaid monthly bill(s) totaling ₱${totalAmount.toFixed(2)}.`,
       });
     }
 
@@ -1466,7 +1673,152 @@ export const resumeBilling = async (
   }
 };
 
-// ==================== MARK BILL AS PAID ====================
+// ==================== MARK INSTALLATION BILL AS PAID ====================
+export const markInstallationBillAsPaid = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { billId } = req.params;
+    const { referenceNumber, notes } = req.body;
+    const adminId = req.user?._id;
+
+    const installationBill = await Billing.findById(billId).session(session);
+    if (!installationBill) {
+      await session.abortTransaction();
+      return res
+        .status(404)
+        .json({ success: false, message: "Bill not found" });
+    }
+
+    if (!installationBill.isInstallationBill) {
+      await session.abortTransaction();
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "This is not an installation fee bill",
+        });
+    }
+
+    if (installationBill.status === "paid") {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: `Installation bill ${installationBill.invoiceNumber} is already paid`,
+      });
+    }
+
+    let application = null;
+    if (installationBill.applicationId) {
+      application = await Application.findOne({
+        applicationId: installationBill.applicationId,
+      }).lean();
+    }
+
+    const paymentData: any = {
+      amount: installationBill.total,
+      paymentMethod: "manual",
+      paymentType: "installation",
+      status: "completed",
+      referenceNumber: referenceNumber || `INST-ADMIN-${Date.now()}`,
+      billingId: installationBill._id,
+      paymentDetails: {
+        gateway: "manual",
+        gatewayResponse: {
+          confirmedBy: adminId,
+          confirmedAt: new Date(),
+          notes: notes || "Installation fee marked as paid by admin",
+          applicationId: installationBill.applicationId,
+        },
+      },
+      paidAt: new Date(),
+    };
+
+    if (application) {
+      paymentData.applicationId = application.applicationId;
+    }
+
+    const payment = await Payment.create([paymentData], { session });
+
+    await Billing.updateOne(
+      { _id: installationBill._id },
+      {
+        $set: {
+          status: "paid",
+          paymentId: payment[0]._id,
+          paidAt: new Date(),
+          installationFeePaid: true,
+        },
+      },
+      { session },
+    );
+
+    const billingCycle = await BillingCycle.findById(
+      installationBill.billingCycleId,
+    ).session(session);
+    if (billingCycle) {
+      billingCycle.installationFeePaid = true;
+      billingCycle.paymentHistory = billingCycle.paymentHistory || [];
+      billingCycle.paymentHistory.push({
+        billingId: installationBill._id,
+        amount: installationBill.total,
+        paidAt: new Date(),
+      });
+      await billingCycle.save({ session });
+    }
+
+    if (application) {
+      await Application.updateOne(
+        { applicationId: application.applicationId },
+        { $set: { installationFeePaid: true } },
+        { session },
+      );
+    }
+
+    await session.commitTransaction();
+
+    try {
+      if (application && application.email) {
+        await emailService.sendEmail(
+          application.email,
+          `Installation Fee Payment Confirmation - ${installationBill.invoiceNumber}`,
+          `<div><h2>Installation Fee Payment Confirmed!</h2><p>Dear ${application.firstName},</p><p>Your installation fee payment of ₱${installationBill.total.toLocaleString()} has been confirmed.</p></div>`,
+        );
+      }
+    } catch (emailError) {
+      console.error(
+        "Failed to send installation fee payment confirmation email:",
+        emailError,
+      );
+    }
+
+    clearAllCache();
+
+    res.status(200).json({
+      success: true,
+      message: `Installation bill ${installationBill.invoiceNumber} marked as paid`,
+      data: {
+        billId: installationBill._id,
+        invoiceNumber: installationBill.invoiceNumber,
+        paymentId: payment[0]._id,
+      },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
+// ==================== MARK MONTHLY BILL AS PAID ====================
 export const markBillAsPaid = async (
   req: AuthRequest,
   res: Response,
@@ -1488,6 +1840,15 @@ export const markBillAsPaid = async (
       return res
         .status(404)
         .json({ success: false, message: "Bill not found" });
+    }
+
+    if (existingBill.isInstallationBill) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message:
+          "Please use the installation bill payment endpoint for installation fees",
+      });
     }
 
     if (existingBill.status === "paid") {
@@ -1537,21 +1898,15 @@ export const markBillAsPaid = async (
 
     const payment = await Payment.create([paymentData], { session });
 
-    // Update bill status
-    const updateData: any = {
-      status: "paid",
-      paymentId: payment[0]._id,
-      paidAt: new Date(),
-    };
-
-    // If this bill includes installation fee, mark it as paid
-    if (existingBill.installationFee && existingBill.installationFee > 0) {
-      updateData.installationFeePaid = true;
-    }
-
     await Billing.updateOne(
       { _id: existingBill._id },
-      { $set: updateData },
+      {
+        $set: {
+          status: "paid",
+          paymentId: payment[0]._id,
+          paidAt: new Date(),
+        },
+      },
       { session },
     );
 
@@ -1574,36 +1929,14 @@ export const markBillAsPaid = async (
         }
       }
 
-      // Mark installation fee as paid in billing cycle
-      if (existingBill.installationFee && existingBill.installationFee > 0) {
-        billingCycle.installationFeePaid = true;
-      }
-
       await billingCycle.save({ session });
-    }
-
-    // Update application installation fee paid status
-    if (
-      application &&
-      existingBill.installationFee &&
-      existingBill.installationFee > 0
-    ) {
-      await Application.updateOne(
-        { applicationId: application.applicationId },
-        { $set: { installationFeePaid: true } },
-        { session },
-      );
     }
 
     await session.commitTransaction();
 
     try {
       if (application && application.email) {
-        let emailBody = `<div><h2>Payment Confirmed!</h2><p>Dear ${application.firstName},</p><p>Your payment of ₱${existingBill.total.toLocaleString()} has been confirmed.</p>`;
-        if (existingBill.installationFee && existingBill.installationFee > 0) {
-          emailBody += `<p><strong>Installation Fee:</strong> ₱${existingBill.installationFee.toLocaleString()} has been paid.</p>`;
-        }
-        emailBody += `</div>`;
+        let emailBody = `<div><h2>Payment Confirmed!</h2><p>Dear ${application.firstName},</p><p>Your payment of ₱${existingBill.total.toLocaleString()} has been confirmed.</p></div>`;
         await emailService.sendEmail(
           application.email,
           `Payment Confirmation - ${existingBill.invoiceNumber}`,
@@ -1618,7 +1951,7 @@ export const markBillAsPaid = async (
 
     res.status(200).json({
       success: true,
-      message: `Bill ${existingBill.invoiceNumber} marked as paid${existingBill.installationFee > 0 ? ` (including installation fee of ₱${existingBill.installationFee.toLocaleString()})` : ""}`,
+      message: `Bill ${existingBill.invoiceNumber} marked as paid`,
       data: {
         billId: existingBill._id,
         invoiceNumber: existingBill.invoiceNumber,
@@ -1645,12 +1978,53 @@ export const getPendingProRatedBills = async (
     const pendingBills = await Billing.find({
       isProRated: true,
       status: "pending_confirmation",
+      isInstallationBill: false,
     })
       .sort({ createdAt: -1 })
       .lean();
 
     const enrichedBills = await Promise.all(
       pendingBills.map(async (bill) => {
+        const b = { ...bill };
+        if (b.applicationId) {
+          const application = await Application.findOne({
+            applicationId: b.applicationId,
+          })
+            .select("firstName lastName email applicationId phoneNumber")
+            .lean();
+          if (application) {
+            (b as any).applicationData = application;
+          }
+        }
+        return b;
+      }),
+    );
+
+    res.status(200).json({ success: true, data: enrichedBills });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ==================== GET PENDING INSTALLATION BILLS ====================
+export const getPendingInstallationBills = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  try {
+    const pendingInstallationBills = await Billing.find({
+      isInstallationBill: true,
+      installationFeePaid: false,
+      status: { $in: ["sent", "overdue"] },
+    })
+      .sort({ dueDate: 1 })
+      .lean();
+
+    const enrichedBills = await Promise.all(
+      pendingInstallationBills.map(async (bill) => {
         const b = { ...bill };
         if (b.applicationId) {
           const application = await Application.findOne({
@@ -1762,6 +2136,7 @@ export const confirmProRatedPayment = async (
       billingCycleId: billingCycle._id,
       isProRated: true,
       status: "pending_confirmation",
+      isInstallationBill: false,
     }).lean();
 
     if (!proRatedBill) {
@@ -1771,14 +2146,9 @@ export const confirmProRatedPayment = async (
         .json({ success: false, message: "Pro-rated bill not found" });
     }
 
-    const updateData: any = { status: "paid", paidAt: new Date() };
-    if (proRatedBill.installationFee && proRatedBill.installationFee > 0) {
-      updateData.installationFeePaid = true;
-    }
-
     await Billing.updateOne(
       { _id: proRatedBill._id },
-      { $set: updateData },
+      { $set: { status: "paid", paidAt: new Date() } },
       { session },
     );
 
@@ -1806,45 +2176,25 @@ export const confirmProRatedPayment = async (
       { session },
     );
 
-    const cycleUpdateData: any = {
-      proRatedPaid: true,
-      proRatedPaidAt: new Date(),
-      status: "active",
-    };
-
-    if (proRatedBill.installationFee && proRatedBill.installationFee > 0) {
-      cycleUpdateData.installationFeePaid = true;
-    }
-
     await BillingCycle.updateOne(
       { _id: billingCycle._id },
-      { $set: cycleUpdateData },
-      { session },
-    );
-
-    const appUpdateData: any = { billingStarted: true };
-    if (proRatedBill.installationFee && proRatedBill.installationFee > 0) {
-      appUpdateData.installationFeePaid = true;
-    }
-
-    await Application.updateOne(
-      { applicationId: application.applicationId },
-      { $set: appUpdateData },
+      {
+        $set: {
+          proRatedPaid: true,
+          proRatedPaidAt: new Date(),
+          status: "active",
+        },
+      },
       { session },
     );
 
     await session.commitTransaction();
 
     if (application.email) {
-      let emailBody = `<div><h2>Pro-rated Payment Confirmed!</h2><p>Dear ${application.firstName},</p><p>Your payment has been confirmed.</p>`;
-      if (proRatedBill.installationFee && proRatedBill.installationFee > 0) {
-        emailBody += `<p><strong>Installation Fee:</strong> ₱${proRatedBill.installationFee.toLocaleString()} has been paid.</p>`;
-      }
-      emailBody += `</div>`;
       await emailService.sendEmail(
         application.email,
         "Pro-rated Payment Confirmed",
-        emailBody,
+        `<div><h2>Pro-rated Payment Confirmed!</h2><p>Dear ${application.firstName},</p><p>Your payment has been confirmed.</p></div>`,
       );
     }
 
@@ -1933,33 +2283,18 @@ export const startMonthlyBilling = async (
     const plan = billingCycle.planId as any;
     const monthlyRate = plan.price;
 
-    const items: any[] = [
-      {
-        description: `Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}`,
-        quantity: 1,
-        rate: monthlyRate,
-        amount: monthlyRate,
-      },
-    ];
-
-    const billData: any = {
-      billingCycleId: billingCycle._id,
-      invoiceNumber: generateInvoiceNumber(),
-      billingPeriod: { start: billingStart, end: billingEnd },
-      dueDate,
-      items: items,
-      subtotal: monthlyRate,
-      tax: 0,
-      discount: 0,
-      total: monthlyRate,
-      status: "sent",
-      isProRated: false,
-      proRatedDays: 0,
-      notes: "First monthly bill",
-      applicationId: application.applicationId,
-    };
-
-    const firstMonthlyBill = await Billing.create([billData], { session });
+    const monthlyBill = await createMonthlyBill(
+      application,
+      billingCycle._id,
+      billingStart,
+      billingEnd,
+      monthlyRate,
+      settings,
+      false,
+      0,
+      0,
+      session,
+    );
 
     const nextDate = getStartOfNextMonth(billingStart);
 
@@ -1978,13 +2313,11 @@ export const startMonthlyBilling = async (
 
     await session.commitTransaction();
 
-    await sendInvoiceToApplication(application, firstMonthlyBill[0]);
-
     clearAllCache();
     res.status(200).json({
       success: true,
       message: "Monthly billing started",
-      data: { firstMonthlyBill: firstMonthlyBill[0] },
+      data: { firstMonthlyBill: monthlyBill },
     });
   } catch (error) {
     await session.abortTransaction();
@@ -2280,6 +2613,7 @@ export const autoGenerateMonthlyBills = async (
         applicationId: cycle.applicationId,
         billingCycleId: cycle._id,
         isProRated: false,
+        isInstallationBill: false,
       })
         .sort({ "billingPeriod.end": -1 })
         .lean();
@@ -2304,50 +2638,31 @@ export const autoGenerateMonthlyBills = async (
 
         const billingStart = new Date(currentDate);
         const billingEnd = getEndOfMonth(billingStart);
-        const dueDate = getDueDateForRegularMonthly(billingStart, settings);
 
         const existingBill = await Billing.findOne({
           applicationId: cycle.applicationId,
           billingCycleId: cycle._id,
           isProRated: false,
+          isInstallationBill: false,
           "billingPeriod.start": billingStart,
         }).lean();
 
         if (!existingBill) {
-          const billData: any = {
-            billingCycleId: cycle._id,
-            invoiceNumber: generateInvoiceNumber(),
-            billingPeriod: { start: billingStart, end: billingEnd },
-            dueDate,
-            items: [
-              {
-                description: `Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}`,
-                quantity: 1,
-                rate: plan.price,
-                amount: plan.price,
-              },
-            ],
-            subtotal: plan.price,
-            total: plan.price,
-            status: "sent",
-            isProRated: false,
-            applicationId: cycle.applicationId,
-          };
-
-          const bill = await Billing.create(billData);
+          const monthlyBill = await createMonthlyBill(
+            application,
+            cycle._id,
+            billingStart,
+            billingEnd,
+            plan.price,
+            settings,
+            false,
+            0,
+            0,
+          );
           billsGeneratedForThisCycle++;
-
-          try {
-            await sendInvoiceToApplication(application, bill);
-            console.log(
-              `✅ Generated missing bill for ${application.firstName} ${application.lastName} - Period: ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)} - Amount: ₱${plan.price}`,
-            );
-          } catch (e) {
-            console.error(
-              `❌ Failed to send email for ${application.email}:`,
-              e,
-            );
-          }
+          console.log(
+            `✅ Generated missing monthly bill for ${application.firstName} ${application.lastName} - Period: ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)} - Amount: ₱${plan.price}`,
+          );
         }
 
         currentDate.setMonth(currentDate.getMonth() + 1);
@@ -2377,7 +2692,7 @@ export const autoGenerateMonthlyBills = async (
 
     clearAllCache();
     console.log(
-      `🎉 Auto-generate complete: ${generatedCount} new bills generated, ${skippedCount} cycles skipped`,
+      `🎉 Auto-generate complete: ${generatedCount} new monthly bills generated, ${skippedCount} cycles skipped`,
     );
 
     if (res) {
@@ -2416,6 +2731,7 @@ export const autoSendReminders = async (req?: AuthRequest, res?: Response) => {
     const reminderDays = settings.reminderDays || [7, 3, 1];
     let remindersSent = 0;
 
+    // Reminders for monthly bills
     for (const days of reminderDays) {
       const targetDate = new Date(today);
       targetDate.setDate(targetDate.getDate() + days);
@@ -2432,6 +2748,7 @@ export const autoSendReminders = async (req?: AuthRequest, res?: Response) => {
         dueDate: { $lte: targetDate },
         [reminderField]: { $ne: true },
         applicationId: { $exists: true, $ne: null },
+        isInstallationBill: false,
       }).lean();
 
       for (const bill of bills) {
@@ -2442,20 +2759,10 @@ export const autoSendReminders = async (req?: AuthRequest, res?: Response) => {
         }).lean();
 
         if (application && application.email) {
-          let emailBody = `<div><h2>Payment Reminder</h2><p>Dear ${application.firstName || application.email},</p><p>Your bill of ₱${bill.total.toFixed(2)} is due soon.</p><p>Due Date: ${formatDateForDisplay(bill.dueDate)}</p>`;
-          if (
-            bill.installationFee &&
-            bill.installationFee > 0 &&
-            !bill.installationFeePaid
-          ) {
-            emailBody += `<p><strong>Note:</strong> This bill includes an installation fee of ₱${bill.installationFee.toLocaleString()}.</p>`;
-          }
-          emailBody += `</div>`;
-
           await emailService.sendEmail(
             application.email,
             `Payment Reminder - Invoice ${bill.invoiceNumber}`,
-            emailBody,
+            `<div><h2>Payment Reminder</h2><p>Dear ${application.firstName || application.email},</p><p>Your bill of ₱${bill.total.toFixed(2)} is due soon.</p><p>Due Date: ${formatDateForDisplay(bill.dueDate)}</p></div>`,
           );
           await Billing.updateOne(
             { _id: bill._id },
@@ -2464,6 +2771,40 @@ export const autoSendReminders = async (req?: AuthRequest, res?: Response) => {
           remindersSent++;
           console.log(`📧 Sent ${days}-day reminder to ${application.email}`);
         }
+      }
+    }
+
+    // Reminders for installation bills
+    const installationBills = await Billing.find({
+      isInstallationBill: true,
+      installationFeePaid: false,
+      status: "sent",
+      dueDate: { $lte: today },
+      reminder1DaySent: { $ne: true },
+      applicationId: { $exists: true, $ne: null },
+    }).lean();
+
+    for (const bill of installationBills) {
+      if (!bill.applicationId) continue;
+
+      const application = await Application.findOne({
+        applicationId: bill.applicationId,
+      }).lean();
+
+      if (application && application.email) {
+        await emailService.sendEmail(
+          application.email,
+          `Installation Fee Reminder - ${bill.invoiceNumber}`,
+          `<div><h2>Installation Fee Payment Reminder</h2><p>Dear ${application.firstName || application.email},</p><p>Your installation fee of ₱${bill.total.toFixed(2)} is due on ${formatDateForDisplay(bill.dueDate)}.</p><p>Please settle this amount to complete your installation.</p></div>`,
+        );
+        await Billing.updateOne(
+          { _id: bill._id },
+          { $set: { reminder1DaySent: true } },
+        );
+        remindersSent++;
+        console.log(
+          `📧 Sent installation fee reminder to ${application.email}`,
+        );
       }
     }
 
@@ -2501,16 +2842,17 @@ export const autoSuspendOverdue = async (req?: AuthRequest, res?: Response) => {
       gracePeriodDate.getDate() - settings.gracePeriodDays,
     );
 
-    const overdueBills = await Billing.find({
+    const overdueMonthlyBills = await Billing.find({
       status: "overdue",
       dueDate: { $lt: gracePeriodDate },
       suspensionNotified: { $ne: true },
       applicationId: { $exists: true, $ne: null },
+      isInstallationBill: false,
     }).lean();
 
     let suspendedCount = 0;
 
-    for (const bill of overdueBills) {
+    for (const bill of overdueMonthlyBills) {
       if (!bill.applicationId) continue;
 
       await Billing.updateOne(
@@ -2525,7 +2867,7 @@ export const autoSuspendOverdue = async (req?: AuthRequest, res?: Response) => {
 
       suspendedCount++;
       console.log(
-        `🚫 Suspended application ${bill.applicationId} for non-payment`,
+        `🚫 Suspended application ${bill.applicationId} for non-payment of monthly bill`,
       );
     }
 
@@ -2572,13 +2914,22 @@ export const getApplicationCurrentBilling = async (
       return res.status(200).json({ success: true, data: null });
     }
 
-    const currentBill = await Billing.findOne({
+    const currentMonthlyBill = await Billing.findOne({
       applicationId: applicationId,
       billingCycleId: billingCycle._id,
       status: { $in: ["sent", "overdue", "pending_confirmation"] },
+      isInstallationBill: false,
     })
       .sort({ dueDate: 1 })
       .lean();
+
+    const pendingInstallationBill = await Billing.findOne({
+      applicationId: applicationId,
+      billingCycleId: billingCycle._id,
+      isInstallationBill: true,
+      installationFeePaid: false,
+      status: { $in: ["sent", "overdue"] },
+    }).lean();
 
     const needsFirstPayment = billingCycle.proRatedPaid === false;
 
@@ -2586,9 +2937,11 @@ export const getApplicationCurrentBilling = async (
       success: true,
       data: {
         billingCycle,
-        currentBill,
+        currentMonthlyBill,
+        pendingInstallationBill,
         needsFirstPayment,
         isAfterCutoff: billingCycle.isAfterCutoff || false,
+        hasUnpaidInstallation: pendingInstallationBill !== null,
       },
     });
   } catch (error) {
@@ -2609,19 +2962,29 @@ export const getApplicationBillingHistory = async (
     const skip = (Number(page) - 1) * Number(limit);
 
     const [bills, total] = await Promise.all([
-      Billing.find({ applicationId, status: "paid" })
+      Billing.find({ applicationId, status: "paid", isInstallationBill: false })
         .sort({ updatedAt: -1 })
         .skip(skip)
         .limit(Number(limit))
         .populate("billingCycleId")
         .lean(),
-      Billing.countDocuments({ applicationId, status: "paid" }),
+      Billing.countDocuments({
+        applicationId,
+        status: "paid",
+        isInstallationBill: false,
+      }),
     ]);
+
+    const installationBills = await Billing.find({
+      applicationId,
+      isInstallationBill: true,
+    }).lean();
 
     res.status(200).json({
       success: true,
       data: {
         billingHistory: bills,
+        installationBills: installationBills,
         total,
         page: Number(page),
         pages: Math.ceil(total / Number(limit)),
@@ -2644,7 +3007,10 @@ export const submitProRatedPayment = async (
   try {
     const { billId, referenceNumber, notes } = req.body;
 
-    const bill = await Billing.findOne({ _id: billId });
+    const bill = await Billing.findOne({
+      _id: billId,
+      isInstallationBill: false,
+    });
     if (!bill)
       return res
         .status(404)
@@ -2708,6 +3074,82 @@ export const submitProRatedPayment = async (
   }
 };
 
+// ==================== SUBMIT INSTALLATION PAYMENT ====================
+export const submitInstallationPayment = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { billId, referenceNumber, notes } = req.body;
+
+    const bill = await Billing.findOne({
+      _id: billId,
+      isInstallationBill: true,
+    });
+    if (!bill)
+      return res
+        .status(404)
+        .json({ success: false, message: "Installation bill not found" });
+    if (bill.installationFeePaid)
+      return res
+        .status(400)
+        .json({ success: false, message: "Installation fee already paid" });
+
+    await Billing.updateOne(
+      { _id: bill._id },
+      { $set: { status: "pending_confirmation" } },
+      { session },
+    );
+
+    const payment = await Payment.create(
+      [
+        {
+          amount: bill.total,
+          paymentMethod: "manual",
+          paymentType: "installation",
+          status: "pending",
+          referenceNumber: referenceNumber || `INST-PAY-${Date.now()}`,
+          billingId: bill._id,
+          applicationId: bill.applicationId,
+          paymentDetails: {
+            gateway: "manual",
+            gatewayResponse: {
+              submittedAt: new Date(),
+              notes: notes || "Installation fee payment submitted",
+            },
+          },
+          paidAt: new Date(),
+        },
+      ],
+      { session },
+    );
+
+    await Billing.updateOne(
+      { _id: bill._id },
+      { $set: { paymentId: payment[0]._id } },
+      { session },
+    );
+    await session.commitTransaction();
+
+    clearAllCache();
+    res.status(200).json({
+      success: true,
+      message:
+        "Installation fee payment submitted! Awaiting admin confirmation.",
+      data: { status: "pending_confirmation" },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
 // ==================== SUBMIT MONTHLY PAYMENT ====================
 export const submitMonthlyPayment = submitProRatedPayment;
 
@@ -2733,19 +3175,29 @@ export const getApplicationBillingStatus = async (
       .populate("planId")
       .lean();
 
-    const bills = await Billing.find({
+    const monthlyBills = await Billing.find({
       applicationId: application.applicationId,
+      isInstallationBill: false,
     })
       .sort({ createdAt: -1 })
       .lean();
+
+    const installationBills = await Billing.find({
+      applicationId: application.applicationId,
+      isInstallationBill: true,
+    }).lean();
 
     res.status(200).json({
       success: true,
       data: {
         application,
         billingCycle,
-        bills,
+        monthlyBills,
+        installationBills,
         hasBillingStarted: !!billingCycle,
+        hasUnpaidInstallation: installationBills.some(
+          (b) => !b.installationFeePaid,
+        ),
       },
     });
   } catch (error) {
@@ -2803,6 +3255,7 @@ export const recoverMissingBills = async (
         applicationId: applicationId,
         status: "paid",
         isProRated: false,
+        isInstallationBill: false,
       }).sort({ "billingPeriod.end": -1 });
 
       if (lastPaidBill) {
@@ -2826,46 +3279,30 @@ export const recoverMissingBills = async (
       billingStart.setHours(0, 0, 0, 0);
 
       const billingEnd = getEndOfMonth(billingStart);
-      const dueDate = getDueDateForRegularMonthly(billingStart, settings);
 
       const existingBill = await Billing.findOne({
         applicationId: applicationId,
         billingCycleId: billingCycle._id,
         "billingPeriod.start": billingStart,
+        isInstallationBill: false,
       });
 
       if (!existingBill) {
-        const billData: any = {
-          billingCycleId: billingCycle._id,
-          invoiceNumber: generateInvoiceNumber(),
-          billingPeriod: { start: billingStart, end: billingEnd },
-          dueDate,
-          items: [
-            {
-              description: `Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}`,
-              quantity: 1,
-              rate: monthlyRate,
-              amount: monthlyRate,
-            },
-          ],
-          subtotal: monthlyRate,
-          total: monthlyRate,
-          status: "sent",
-          isProRated: false,
-          applicationId: applicationId,
-        };
-
-        const newBill = await Billing.create(billData);
-        missingBills.push(newBill);
-
-        try {
-          await sendInvoiceToApplication(application, newBill);
-          console.log(
-            `📧 Sent invoice for ${billingStart.toLocaleDateString()} to ${application.email}`,
-          );
-        } catch (emailError) {
-          console.error("Failed to send invoice email:", emailError);
-        }
+        const monthlyBill = await createMonthlyBill(
+          application,
+          billingCycle._id,
+          billingStart,
+          billingEnd,
+          monthlyRate,
+          settings,
+          false,
+          0,
+          0,
+        );
+        missingBills.push(monthlyBill);
+        console.log(
+          `📧 Sent invoice for ${billingStart.toLocaleDateString()} to ${application.email}`,
+        );
       }
 
       currentBillDate.setMonth(currentBillDate.getMonth() + 1);
@@ -2884,7 +3321,7 @@ export const recoverMissingBills = async (
 
     res.status(200).json({
       success: true,
-      message: `Recovered ${missingBills.length} missing bill(s) for ${application.firstName} ${application.lastName}`,
+      message: `Recovered ${missingBills.length} missing monthly bill(s) for ${application.firstName} ${application.lastName}`,
       data: {
         recoveredBills: missingBills,
         applicationName: `${application.firstName} ${application.lastName}`,
@@ -2916,10 +3353,24 @@ export const getUnpaidBillsReport = async (
       query.status = { $in: ["sent", "overdue", "pending_confirmation"] };
     }
 
-    const unpaidBills = await Billing.find(query).sort({ dueDate: 1 }).lean();
+    const unpaidMonthlyBills = await Billing.find({
+      ...query,
+      isInstallationBill: false,
+    })
+      .sort({ dueDate: 1 })
+      .lean();
+    const unpaidInstallationBills = await Billing.find({
+      ...query,
+      isInstallationBill: true,
+      installationFeePaid: false,
+    })
+      .sort({ dueDate: 1 })
+      .lean();
+
+    const allUnpaidBills = [...unpaidMonthlyBills, ...unpaidInstallationBills];
 
     const enrichedBills = await Promise.all(
-      unpaidBills.map(async (bill) => {
+      allUnpaidBills.map(async (bill) => {
         const b = { ...bill };
         if (b.applicationId) {
           const application = await Application.findOne({
@@ -2939,8 +3390,11 @@ export const getUnpaidBillsReport = async (
       totalUnpaidBills: enrichedBills.length,
       totalAmountDue: enrichedBills.reduce((sum, bill) => sum + bill.total, 0),
       totalInstallationFeesDue: enrichedBills
-        .filter((bill) => bill.installationFee && !bill.installationFeePaid)
+        .filter((bill) => bill.isInstallationBill && !bill.installationFeePaid)
         .reduce((sum, bill) => sum + (bill.installationFee || 0), 0),
+      totalMonthlyBillsDue: enrichedBills
+        .filter((bill) => !bill.isInstallationBill)
+        .reduce((sum, bill) => sum + bill.total, 0),
       byStatus: {
         sent: enrichedBills.filter((b) => b.status === "sent").length,
         overdue: enrichedBills.filter((b) => b.status === "overdue").length,
@@ -2948,10 +3402,13 @@ export const getUnpaidBillsReport = async (
           (b) => b.status === "pending_confirmation",
         ).length,
       },
+      byType: {
+        monthly: unpaidMonthlyBills.length,
+        installation: unpaidInstallationBills.length,
+      },
       byMonth: {} as any,
     };
 
-    // Group by month
     enrichedBills.forEach((bill) => {
       const monthKey = formatDateForDisplay(new Date(bill.billingPeriod.start));
       if (!summary.byMonth[monthKey]) {
@@ -2959,23 +3416,23 @@ export const getUnpaidBillsReport = async (
           count: 0,
           amount: 0,
           installationFees: 0,
+          monthlyBills: 0,
           bills: [],
         };
       }
       summary.byMonth[monthKey].count++;
       summary.byMonth[monthKey].amount += bill.total;
-      if (bill.installationFee && !bill.installationFeePaid) {
+      if (bill.isInstallationBill && !bill.installationFeePaid) {
         summary.byMonth[monthKey].installationFees += bill.installationFee;
+      } else if (!bill.isInstallationBill) {
+        summary.byMonth[monthKey].monthlyBills += bill.total;
       }
       summary.byMonth[monthKey].bills.push({
         invoiceNumber: bill.invoiceNumber,
         amount: bill.total,
         status: bill.status,
         dueDate: bill.dueDate,
-        hasInstallationFee: !!(
-          bill.installationFee && !bill.installationFeePaid
-        ),
-        installationFee: bill.installationFee,
+        isInstallationBill: bill.isInstallationBill,
       });
     });
 
@@ -3007,7 +3464,9 @@ export default {
   getAllBillingCycles,
   getAllBills,
   markBillAsPaid,
+  markInstallationBillAsPaid,
   getPendingProRatedBills,
+  getPendingInstallationBills,
   getPendingActivations,
   confirmProRatedPayment,
   startMonthlyBilling,
@@ -3017,6 +3476,7 @@ export default {
   getApplicationCurrentBilling,
   getApplicationBillingHistory,
   submitProRatedPayment,
+  submitInstallationPayment,
   submitMonthlyPayment,
   getApplicationBillingStatus,
   recoverMissingBills,

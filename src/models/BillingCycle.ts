@@ -35,8 +35,10 @@ export interface IBillingCycle extends Document {
     effectiveDate: Date;
     status: "pending" | "approved" | "rejected";
   };
+  // SEPARATE INSTALLATION FEE TRACKING
   installationFee: number;
   installationFeePaid: boolean;
+  installationFeeBillId?: mongoose.Types.ObjectId;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -87,8 +89,10 @@ const BillingCycleSchema = new Schema<IBillingCycle>(
         default: "pending",
       },
     },
+    // SEPARATE INSTALLATION FEE TRACKING
     installationFee: { type: Number, default: 0 },
     installationFeePaid: { type: Boolean, default: false },
+    installationFeeBillId: { type: Schema.Types.ObjectId, ref: "Billing" },
   },
   { timestamps: true },
 );

@@ -25,6 +25,9 @@ export interface IPayment extends Document {
     notes?: string;
     confirmedBy?: string;
     confirmedAt?: Date;
+    rejectionReason?: string;
+    rejectedAt?: Date;
+    rejectedBy?: string;
   };
   billingId: mongoose.Types.ObjectId;
   metadata: any;
@@ -78,6 +81,9 @@ const PaymentSchema: Schema = new Schema(
       notes: { type: String },
       confirmedBy: { type: String },
       confirmedAt: { type: Date },
+      rejectionReason: { type: String },
+      rejectedAt: { type: Date },
+      rejectedBy: { type: String },
     },
     billingId: { type: Schema.Types.ObjectId, ref: "Billing", required: true },
     metadata: { type: Schema.Types.Mixed },
@@ -106,10 +112,12 @@ PaymentSchema.pre("validate", function (next) {
   next();
 });
 
-// Add index for applicationId
+// Add indexes for better query performance
 PaymentSchema.index({ applicationId: 1 });
 PaymentSchema.index({ status: 1 });
 PaymentSchema.index({ createdAt: -1 });
 PaymentSchema.index({ paymentType: 1 });
+PaymentSchema.index({ billingId: 1 });
+PaymentSchema.index({ referenceNumber: 1 });
 
 export default mongoose.model<IPayment>("Payment", PaymentSchema);
