@@ -874,6 +874,7 @@ export const createManualCustomer = async (
       startBillingImmediately,
       installationDate,
       notes,
+      includeInstallationFee, // <-- ADDED THIS
     } = req.body;
 
     if (!firstName || !lastName || !email || !phoneNumber) {
@@ -989,6 +990,7 @@ export const createManualCustomer = async (
             userId: userDoc._id.toString(),
             startDate: installationDate,
             notes: notes || "Manual customer created by admin",
+            includeInstallationFee: includeInstallationFee !== false, // <-- ADDED THIS
           },
           user: req.user,
         } as any;
@@ -1081,7 +1083,7 @@ export const getCustomersWithoutAccounts = async (
   }
 };
 
-// ==================== CUSTOMER EMAIL ALERTS TOGGLE (UPDATED) ====================
+// ==================== CUSTOMER EMAIL ALERTS TOGGLE ====================
 export const toggleCustomerEmailAlerts = async (
   req: AuthRequest,
   res: Response,
@@ -1123,7 +1125,7 @@ export const toggleCustomerEmailAlerts = async (
   }
 };
 
-// ==================== GET CUSTOMER EMAIL ALERTS PREFERENCE (UPDATED) ====================
+// ==================== GET CUSTOMER EMAIL ALERTS PREFERENCE ====================
 export const getCustomerEmailAlertsPreference = async (
   req: AuthRequest,
   res: Response,
