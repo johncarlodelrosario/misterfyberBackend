@@ -688,75 +688,74 @@ export const getPendingPayments = async (
       .sort({ createdAt: -1 })
       .lean();
 
-    // Enrich payments with application data for frontend
-    const enrichedPayments = await Promise.all(
-      payments.map(async (payment) => {
-        const enriched: any = { ...payment };
+    // Get all unique application IDs
+    const applicationIds = payments
+      .filter((p) => p.applicationId)
+      .map((p) => p.applicationId)
+      .filter((value, index, self) => self.indexOf(value) === index);
 
-        // Fetch application data using string applicationId
-        if (payment.applicationId) {
-          const application = await Application.findOne({
-            applicationId: payment.applicationId,
-          })
-            .select(
-              "firstName lastName email applicationId phoneNumber status serviceStatus billingStarted installationFee installationFeePaid",
-            )
-            .lean();
+    // Fetch all applications in ONE query
+    const applications = await Application.find({
+      applicationId: { $in: applicationIds },
+    }).lean();
 
-          if (application) {
-            enriched.application = {
-              _id: application._id,
-              applicationId: application.applicationId,
-              firstName: application.firstName,
-              lastName: application.lastName,
-              email: application.email,
-              phoneNumber: application.phoneNumber,
-              status: application.status,
-              serviceStatus: (application as any).serviceStatus || "pending",
-              billingStarted: application.billingStarted,
-              installationFee: (application as any).installationFee || 0,
-              installationFeePaid:
-                (application as any).installationFeePaid || false,
-              applicantName:
-                `${application.firstName || ""} ${application.lastName || ""}`.trim(),
-            };
-            enriched.applicationId = application.applicationId;
-          }
-        }
+    const applicationMap = new Map();
+    applications.forEach((app) => {
+      applicationMap.set(app.applicationId, app);
+    });
 
-        // Add readable application ID from gateway response if available
-        if (
-          !enriched.application &&
-          payment.paymentDetails?.gatewayResponse?.applicationId
-        ) {
-          enriched.readableApplicationId =
-            payment.paymentDetails.gatewayResponse.applicationId;
-        }
+    // Enrich payments with application data
+    const enrichedPayments = payments.map((payment) => {
+      const enriched: any = { ...payment };
 
-        // Create user object if userId is populated
-        if (payment.userId && typeof payment.userId === "object") {
-          const user = payment.userId as any;
-          enriched.user = {
-            _id: user._id,
-            firstName: user.firstName,
-            lastName: user.lastName,
-            email: user.email,
-            phoneNumber: user.phoneNumber,
-            username: user.username,
-            status: user.status,
-          };
-        }
+      if (payment.applicationId && applicationMap.has(payment.applicationId)) {
+        const app = applicationMap.get(payment.applicationId);
+        enriched.application = {
+          _id: app._id,
+          applicationId: app.applicationId,
+          firstName: app.firstName,
+          lastName: app.lastName,
+          email: app.email,
+          phoneNumber: app.phoneNumber,
+          status: app.status,
+          serviceStatus: (app as any).serviceStatus || "pending",
+          billingStarted: app.billingStarted,
+          installationFee: (app as any).installationFee || 0,
+          installationFeePaid: (app as any).installationFeePaid || false,
+          applicantName: `${app.firstName || ""} ${app.lastName || ""}`.trim(),
+        };
+        enriched.applicationId = app.applicationId;
+      }
 
-        // Add flag for installation payment
-        enriched.isInstallationPayment =
-          payment.paymentType === "installation" ||
-          (payment.billingId &&
-            typeof payment.billingId === "object" &&
-            (payment.billingId as any).isInstallationBill);
+      if (
+        !enriched.application &&
+        payment.paymentDetails?.gatewayResponse?.applicationId
+      ) {
+        enriched.readableApplicationId =
+          payment.paymentDetails.gatewayResponse.applicationId;
+      }
 
-        return enriched;
-      }),
-    );
+      if (payment.userId && typeof payment.userId === "object") {
+        const user = payment.userId as any;
+        enriched.user = {
+          _id: user._id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          phoneNumber: user.phoneNumber,
+          username: user.username,
+          status: user.status,
+        };
+      }
+
+      enriched.isInstallationPayment =
+        payment.paymentType === "installation" ||
+        (payment.billingId &&
+          typeof payment.billingId === "object" &&
+          (payment.billingId as any).isInstallationBill);
+
+      return enriched;
+    });
 
     res.status(200).json({
       success: true,
@@ -767,7 +766,7 @@ export const getPendingPayments = async (
   }
 };
 
-// @desc    Get all payments with pagination (Admin)
+// @desc    Get all payments with pagination (Admin) - FIXED VERSION
 // @route   GET /api/payments/admin/all
 // @access  Private/Admin
 export const getAllPaymentsAdmin = async (
@@ -777,17 +776,17 @@ export const getAllPaymentsAdmin = async (
 ) => {
   try {
     const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 10;
+    const limit = parseInt(req.query.limit as string) || 100;
     const skip = (page - 1) * limit;
     const status = req.query.status as string;
     const paymentType = req.query.paymentType as string;
     const search = req.query.search as string;
 
     let query: any = {};
-    if (status && status !== "all") {
+    if (status && status !== "all" && status !== "") {
       query.status = status;
     }
-    if (paymentType && paymentType !== "all") {
+    if (paymentType && paymentType !== "all" && paymentType !== "") {
       query.paymentType = paymentType;
     }
 
@@ -881,62 +880,68 @@ export const getAllPaymentsAdmin = async (
       ]),
     ]);
 
+    // Get ALL unique application IDs from payments
+    const applicationIds = payments
+      .filter((p) => p.applicationId)
+      .map((p) => p.applicationId)
+      .filter((value, index, self) => self.indexOf(value) === index);
+
+    // Fetch all applications in ONE query (para mabilis)
+    let applicationMap = new Map();
+    if (applicationIds.length > 0) {
+      const applications = await Application.find({
+        applicationId: { $in: applicationIds },
+      }).lean();
+
+      applications.forEach((app) => {
+        applicationMap.set(app.applicationId, app);
+      });
+    }
+
     // Enrich payments with application data
-    const enrichedPayments = await Promise.all(
-      payments.map(async (payment) => {
-        const enriched: any = { ...payment };
+    const enrichedPayments = payments.map((payment) => {
+      const enriched: any = { ...payment };
 
-        if (payment.applicationId) {
-          const application = await Application.findOne({
-            applicationId: payment.applicationId,
-          })
-            .select(
-              "firstName lastName email applicationId phoneNumber status serviceStatus billingStarted installationFee installationFeePaid",
-            )
-            .lean();
+      // Get application data from map
+      if (payment.applicationId && applicationMap.has(payment.applicationId)) {
+        const app = applicationMap.get(payment.applicationId);
+        enriched.application = {
+          _id: app._id,
+          applicationId: app.applicationId,
+          firstName: app.firstName,
+          lastName: app.lastName,
+          email: app.email,
+          phoneNumber: app.phoneNumber,
+          status: app.status,
+          serviceStatus: (app as any).serviceStatus || "pending",
+          billingStarted: app.billingStarted,
+          installationFee: (app as any).installationFee || 0,
+          installationFeePaid: (app as any).installationFeePaid || false,
+          applicantName: `${app.firstName || ""} ${app.lastName || ""}`.trim(),
+        };
+      }
 
-          if (application) {
-            enriched.application = {
-              _id: application._id,
-              applicationId: application.applicationId,
-              firstName: application.firstName,
-              lastName: application.lastName,
-              email: application.email,
-              phoneNumber: application.phoneNumber,
-              status: application.status,
-              serviceStatus: (application as any).serviceStatus || "pending",
-              billingStarted: application.billingStarted,
-              installationFee: (application as any).installationFee || 0,
-              installationFeePaid:
-                (application as any).installationFeePaid || false,
-              applicantName:
-                `${application.firstName || ""} ${application.lastName || ""}`.trim(),
-            };
-          }
-        }
+      if (payment.userId && typeof payment.userId === "object") {
+        const user = payment.userId as any;
+        enriched.user = {
+          _id: user._id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          phoneNumber: user.phoneNumber,
+          username: user.username,
+          status: user.status,
+        };
+      }
 
-        if (payment.userId && typeof payment.userId === "object") {
-          const user = payment.userId as any;
-          enriched.user = {
-            _id: user._id,
-            firstName: user.firstName,
-            lastName: user.lastName,
-            email: user.email,
-            phoneNumber: user.phoneNumber,
-            username: user.username,
-            status: user.status,
-          };
-        }
+      enriched.isInstallationPayment =
+        payment.paymentType === "installation" ||
+        (payment.billingId &&
+          typeof payment.billingId === "object" &&
+          (payment.billingId as any).isInstallationBill);
 
-        enriched.isInstallationPayment =
-          payment.paymentType === "installation" ||
-          (payment.billingId &&
-            typeof payment.billingId === "object" &&
-            (payment.billingId as any).isInstallationBill);
-
-        return enriched;
-      }),
-    );
+      return enriched;
+    });
 
     res.status(200).json({
       success: true,
@@ -958,6 +963,7 @@ export const getAllPaymentsAdmin = async (
       },
     });
   } catch (error) {
+    console.error("Error in getAllPaymentsAdmin:", error);
     next(error);
   }
 };
