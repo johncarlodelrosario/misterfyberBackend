@@ -1699,12 +1699,10 @@ export const markInstallationBillAsPaid = async (
 
     if (!installationBill.isInstallationBill) {
       await session.abortTransaction();
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "This is not an installation fee bill",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "This is not an installation fee bill",
+      });
     }
 
     if (installationBill.status === "paid") {

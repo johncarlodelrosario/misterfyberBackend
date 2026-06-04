@@ -33,20 +33,28 @@ import BillingSettings from "./models/BillingSettings";
 dotenv.config({ path: path.join(__dirname, "../.env") });
 
 console.log("🔍 Environment Variables Load Check:");
-console.log("SMTP_HOST:", process.env.SMTP_HOST ? "✅ SET" : "❌ NOT SET");
 console.log("MONGODB_URI:", process.env.MONGODB_URI ? "✅ SET" : "❌ NOT SET");
+console.log("NODE_ENV:", process.env.NODE_ENV || "development");
+console.log("PORT:", process.env.PORT || 5000);
 console.log(
   "FRONTEND_URL:",
   process.env.FRONTEND_URL || "http://localhost:3000",
 );
 
+// Allowed origins with localhost for testing
 const allowedOrigins = [
   "http://localhost:3000",
+  "http://localhost:3001",
+  "http://localhost:3002",
   "http://localhost:5173",
   "http://localhost:5000",
+  "http://127.0.0.1:3000",
+  "http://127.0.0.1:5173",
+  "http://127.0.0.1:5000",
   "https://www.misterfyber.com",
   "https://misterfyber.com",
   "https://misterfyber.vercel.app",
+  "https://misterfyber-frontend.vercel.app",
   process.env.FRONTEND_URL || "",
 ].filter(Boolean);
 
@@ -71,15 +79,27 @@ app.use(
   }),
 );
 
+// Enhanced CORS configuration for localhost testing
 app.use(
   cors({
     origin: function (origin, callback) {
+      // Allow requests with no origin (like mobile apps or curl requests)
       if (!origin) return callback(null, true);
+
       if (allowedOrigins.indexOf(origin) !== -1) {
         callback(null, true);
       } else {
-        console.log("CORS blocked origin:", origin);
-        callback(null, true);
+        // For development, allow any localhost origin
+        if (
+          process.env.NODE_ENV === "development" &&
+          (origin.includes("localhost") || origin.includes("127.0.0.1"))
+        ) {
+          console.log("🟢 Development mode - allowing origin:", origin);
+          callback(null, true);
+        } else {
+          console.log("🔴 CORS blocked origin:", origin);
+          callback(new Error("Not allowed by CORS"));
+        }
       }
     },
     credentials: true,
@@ -161,6 +181,7 @@ app.get("/", (req: Request, res: Response) => {
     message: "MisterFyber API",
     version: "1.0.0",
     status: "running",
+    environment: process.env.NODE_ENV,
   });
 });
 
@@ -170,6 +191,7 @@ app.get("/health", (req: Request, res: Response) => {
     timestamp: new Date(),
     mongodb:
       mongoose.connection.readyState === 1 ? "connected" : "disconnected",
+    environment: process.env.NODE_ENV,
   });
 });
 
@@ -195,7 +217,7 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   res.status(status).json({
     success: false,
     message,
-    error: process.env.NODE_ENV === "development" ? err : {},
+    error: process.env.NODE_ENV === "development" ? err.message : {},
   });
 });
 
@@ -297,13 +319,13 @@ const start = async () => {
   server.listen(PORT, () => {
     console.log(`\n🚀 Server running on port ${PORT}`);
     console.log(`🌍 Environment: ${process.env.NODE_ENV || "development"}`);
+    console.log(`🌐 Base URL: http://localhost:${PORT}`);
     console.log(
       `✅ CORS enabled for: ${allowedOrigins.filter((o) => o).join(", ")}`,
     );
-    console.log(
-      `📡 API available at: ${process.env.BASE_URL || `http://localhost:${PORT}`}/api`,
-    );
-    console.log(`\n✅ All systems ready!\n`);
+    console.log(`📡 API available at: http://localhost:${PORT}/api`);
+    console.log(`🩺 Health check: http://localhost:${PORT}/health`);
+    console.log(`\n✅ All systems ready for localhost testing!\n`);
   });
 };
 
