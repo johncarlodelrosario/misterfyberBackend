@@ -21,6 +21,7 @@ import billingRoutes from "./routes/billingRoutes";
 import adminRoutes from "./routes/adminRoutes";
 import applicationRoutes from "./routes/applicationRoutes";
 import buildingRoutes from "./routes/buildingRoutes";
+import manualEmailRoutes from "./routes/manualEmailRoutes";
 
 import {
   autoGenerateMonthlyBills,
@@ -204,6 +205,7 @@ app.use("/api/billing", billingRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/applications", applicationRoutes);
 app.use("/api/buildings", buildingRoutes);
+app.use("/api/manual-email", manualEmailRoutes);
 
 // ==================== ERROR HANDLING ====================
 app.use((req: Request, res: Response) => {
@@ -325,6 +327,7 @@ const start = async () => {
     );
     console.log(`📡 API available at: http://localhost:${PORT}/api`);
     console.log(`🩺 Health check: http://localhost:${PORT}/health`);
+    console.log(`📧 Manual email routes available at: /api/manual-email`);
     console.log(`\n✅ All systems ready for localhost testing!\n`);
   });
 };
