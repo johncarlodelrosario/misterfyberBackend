@@ -947,6 +947,101 @@ class EmailService {
     );
   }
 
+  // ==================== DUE DATE REMINDER (CUSTOMER) - SENT ON ACTUAL DUE DATE ====================
+  async sendDueDateReminder(user: IUser, billing: any): Promise<void> {
+    const dueDate = billing.dueDate
+      ? new Date(billing.dueDate).toLocaleDateString()
+      : "N/A";
+    const amount = billing.total || billing.amount || 0;
+    const frontendUrl =
+      process.env.FRONTEND_URL || "https://www.misterfyber.com";
+
+    const isInstallationBill = billing.isInstallationBill;
+
+    let reminderMessage = "";
+    if (isInstallationBill) {
+      reminderMessage = `<p><strong>⚠️ IMPORTANT:</strong> This is your installation fee. Payment is due TODAY. Once paid, our team will schedule your installation.</p>`;
+    } else if (billing.isProRated) {
+      reminderMessage = `<p><strong>⚠️ IMPORTANT:</strong> This is your pro-rated first bill. Payment is due TODAY. Once paid, your service will be fully activated.</p>`;
+    } else {
+      reminderMessage = `<p><strong>⚠️ IMPORTANT:</strong> Your monthly subscription payment is due TODAY. Please pay immediately to avoid service interruption.</p>`;
+    }
+
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <meta charset="UTF-8">
+          <title>⚠️ PAYMENT DUE TODAY - Mister Fyber</title>
+          <style>
+              body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+              .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
+              .header { text-align: center; border-bottom: 2px solid #dc3545; padding-bottom: 20px; }
+              .header h1 { color: #dc3545; margin: 0; }
+              .content { padding: 20px 0; }
+              .bill-details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
+              .button { display: inline-block; background-color: #dc3545; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; }
+              .warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }
+              .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
+          </style>
+      </head>
+      <body>
+          <div class="container">
+              <div class="header">
+                  <h1>⚠️ PAYMENT DUE TODAY</h1>
+              </div>
+              <div class="content">
+                  <p>Hello ${user.firstName || user.email},</p>
+                  <p><strong>Your Mister Fyber payment is due TODAY.</strong> Please settle your bill immediately to avoid service interruption.</p>
+                  <div class="bill-details">
+                      <h3 style="margin-top: 0;">📋 Invoice Details</h3>
+                      <p><strong>Invoice Number:</strong> ${billing.invoiceNumber || billing._id}</p>
+                      <p><strong>Amount Due:</strong> <span style="color: #dc3545; font-size: 18px;">₱${safeToFixed(amount)}</span></p>
+                      <p><strong>Due Date:</strong> <span style="color: #dc3545; font-weight: bold;">${dueDate} (TODAY)</span></p>
+                      ${billing.isProRated ? `<p><strong>Bill Type:</strong> Pro-rated (First Bill)</p>` : `<p><strong>Bill Type:</strong> Monthly Subscription</p>`}
+                      ${billing.installationFee && billing.installationFee > 0 && billing.isInstallationBill ? `<p><strong>Installation Fee:</strong> ₱${billing.installationFee.toLocaleString()}</p>` : ""}
+                  </div>
+                  ${reminderMessage}
+                  <div class="warning">
+                      <strong>📌 After Today:</strong> If payment is not received, your account will enter a ${process.env.GRACE_PERIOD_DAYS || 5}-day grace period. After the grace period, your service will be suspended.
+                  </div>
+                  <div style="text-align: center; margin: 30px 0;">
+                      <a href="${frontendUrl}/billing" class="button">💰 PAY NOW</a>
+                  </div>
+                  <p><strong>Payment Methods Accepted:</strong> GCash, Maya, Bank Transfer, Over-the-Counter</p>
+                  <p>If you have already made the payment, please disregard this notice.</p>
+              </div>
+              <div class="footer">
+                  <p>Mister Fyber - Your trusted internet provider</p>
+                  <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
+                  <p><small>Late payments may incur service interruption after grace period.</small></p>
+              </div>
+          </div>
+      </body>
+      </html>
+    `;
+    await this.sendEmail(
+      user.email,
+      `⚠️ PAYMENT DUE TODAY - ${billing.invoiceNumber || billing._id}`,
+      html,
+      true,
+    );
+
+    const adminHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+          <h2 style="color: #dc3545;">⚠️ Due Date Reminder Sent</h2>
+          <p>A due date reminder has been sent to ${user.firstName || ""} ${user.lastName || ""} (${user.email}) for invoice ${billing.invoiceNumber || billing._id}.</p>
+          <p><strong>Amount:</strong> ₱${safeToFixed(amount)}</p>
+          <p><strong>Due Date:</strong> ${dueDate} (TODAY)</p>
+          <p><strong>Sent at:</strong> ${new Date().toLocaleString()}</p>
+      </div>
+    `;
+    await this.sendToAdmin(
+      `Due Date Reminder Sent: ${billing.invoiceNumber || billing._id} to ${user.email}`,
+      adminHtml,
+    );
+  }
+
   // ==================== PAYMENT CONFIRMATION (CUSTOMER) ====================
   async sendPaymentConfirmation(
     user: IUser,

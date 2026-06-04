@@ -2728,8 +2728,9 @@ export const autoSendReminders = async (req?: AuthRequest, res?: Response) => {
     today.setHours(0, 0, 0, 0);
     const reminderDays = settings.reminderDays || [7, 3, 1];
     let remindersSent = 0;
+    let dueDateRemindersSent = 0;
 
-    // Reminders for monthly bills
+    // Reminders for monthly bills (7, 3, 1 days before due date)
     for (const days of reminderDays) {
       const targetDate = new Date(today);
       targetDate.setDate(targetDate.getDate() + days);
@@ -2757,11 +2758,19 @@ export const autoSendReminders = async (req?: AuthRequest, res?: Response) => {
         }).lean();
 
         if (application && application.email) {
-          await emailService.sendEmail(
-            application.email,
-            `Payment Reminder - Invoice ${bill.invoiceNumber}`,
-            `<div><h2>Payment Reminder</h2><p>Dear ${application.firstName || application.email},</p><p>Your bill of ₱${bill.total.toFixed(2)} is due soon.</p><p>Due Date: ${formatDateForDisplay(bill.dueDate)}</p></div>`,
-          );
+          // Create a temporary user object for email service
+          const tempUser = {
+            _id: application.applicationId,
+            email: application.email,
+            firstName: application.firstName || "",
+            lastName: application.lastName || "",
+            username: application.email,
+            phoneNumber: application.phoneNumber || "",
+            status: "active",
+            role: "user",
+          } as any;
+
+          await emailService.sendPaymentReminder(tempUser, bill);
           await Billing.updateOne(
             { _id: bill._id },
             { $set: { [reminderField]: true } },
@@ -2769,6 +2778,48 @@ export const autoSendReminders = async (req?: AuthRequest, res?: Response) => {
           remindersSent++;
           console.log(`📧 Sent ${days}-day reminder to ${application.email}`);
         }
+      }
+    }
+
+    // ==================== DUE DATE REMINDERS (SENT ON ACTUAL DUE DATE) ====================
+    const dueDateBills = await Billing.find({
+      status: "sent",
+      dueDate: {
+        $gte: new Date(today.setHours(0, 0, 0, 0)),
+        $lte: new Date(today.setHours(23, 59, 59, 999)),
+      },
+      reminderDueDateSent: { $ne: true },
+      applicationId: { $exists: true, $ne: null },
+    }).lean();
+
+    for (const bill of dueDateBills) {
+      if (!bill.applicationId) continue;
+
+      const application = await Application.findOne({
+        applicationId: bill.applicationId,
+      }).lean();
+
+      if (application && application.email) {
+        const tempUser = {
+          _id: application.applicationId,
+          email: application.email,
+          firstName: application.firstName || "",
+          lastName: application.lastName || "",
+          username: application.email,
+          phoneNumber: application.phoneNumber || "",
+          status: "active",
+          role: "user",
+        } as any;
+
+        await emailService.sendDueDateReminder(tempUser, bill);
+        await Billing.updateOne(
+          { _id: bill._id },
+          { $set: { reminderDueDateSent: true } },
+        );
+        dueDateRemindersSent++;
+        console.log(
+          `📧 Sent DUE DATE reminder to ${application.email} for invoice ${bill.invoiceNumber}`,
+        );
       }
     }
 
@@ -2790,26 +2841,55 @@ export const autoSendReminders = async (req?: AuthRequest, res?: Response) => {
       }).lean();
 
       if (application && application.email) {
-        await emailService.sendEmail(
-          application.email,
-          `Installation Fee Reminder - ${bill.invoiceNumber}`,
-          `<div><h2>Installation Fee Payment Reminder</h2><p>Dear ${application.firstName || application.email},</p><p>Your installation fee of ₱${bill.total.toFixed(2)} is due on ${formatDateForDisplay(bill.dueDate)}.</p><p>Please settle this amount to complete your installation.</p></div>`,
-        );
-        await Billing.updateOne(
-          { _id: bill._id },
-          { $set: { reminder1DaySent: true } },
-        );
-        remindersSent++;
-        console.log(
-          `📧 Sent installation fee reminder to ${application.email}`,
-        );
+        const tempUser = {
+          _id: application.applicationId,
+          email: application.email,
+          firstName: application.firstName || "",
+          lastName: application.lastName || "",
+          username: application.email,
+          phoneNumber: application.phoneNumber || "",
+          status: "active",
+          role: "user",
+        } as any;
+
+        // Check if it's exactly the due date for installation bill
+        const dueDate = new Date(bill.dueDate);
+        dueDate.setHours(0, 0, 0, 0);
+        const isDueDate = dueDate.getTime() === today.getTime();
+
+        if (isDueDate && !bill.reminderDueDateSent) {
+          await emailService.sendDueDateReminder(tempUser, bill);
+          await Billing.updateOne(
+            { _id: bill._id },
+            { $set: { reminderDueDateSent: true } },
+          );
+          dueDateRemindersSent++;
+          console.log(
+            `📧 Sent DUE DATE reminder for installation fee to ${application.email}`,
+          );
+        } else if (!bill.reminder1DaySent) {
+          await emailService.sendPaymentReminder(tempUser, bill);
+          await Billing.updateOne(
+            { _id: bill._id },
+            { $set: { reminder1DaySent: true } },
+          );
+          remindersSent++;
+          console.log(
+            `📧 Sent installation fee reminder to ${application.email}`,
+          );
+        }
       }
     }
 
     if (res) {
-      res
-        .status(200)
-        .json({ success: true, message: `Sent ${remindersSent} reminders` });
+      res.status(200).json({
+        success: true,
+        message: `Sent ${remindersSent} advance reminders and ${dueDateRemindersSent} due date reminders`,
+        data: {
+          advanceReminders: remindersSent,
+          dueDateReminders: dueDateRemindersSent,
+        },
+      });
     }
   } catch (error) {
     console.error("Auto-send reminders error:", error);
