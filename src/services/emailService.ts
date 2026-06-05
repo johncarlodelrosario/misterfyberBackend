@@ -199,6 +199,19 @@ class EmailService {
     }
   }
 
+  // Force send email - bypasses customer email enabled check
+  async forceSendEmail(
+    to: string,
+    subject: string,
+    htmlContent: string,
+  ): Promise<boolean> {
+    console.log(
+      `📧 Force sending email to ${to} (bypassing customer email setting)...`,
+    );
+    // Call sendEmail with isCustomerEmail = false to bypass the check
+    return await this.sendEmail(to, subject, htmlContent, false);
+  }
+
   private async sendToAdmin(subject: string, html: string): Promise<boolean> {
     if (!this.adminEmail) {
       console.error("❌ Admin email not configured");

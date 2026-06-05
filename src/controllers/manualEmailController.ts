@@ -309,12 +309,11 @@ export const sendManualEmail = async (
       application,
     );
 
-    // Send to customer
-    const emailSent = await emailService.sendEmail(
+    // Send to customer - USE forceSendEmail to bypass customer email setting
+    const emailSent = await emailService.forceSendEmail(
       application.email,
       subject,
       emailHtml,
-      true, // isCustomerEmail
     );
 
     if (!emailSent) {
@@ -473,11 +472,11 @@ export const sendBulkEmails = async (
           application,
         );
 
-        const emailSent = await emailService.sendEmail(
+        // Use forceSendEmail for bulk emails as well
+        const emailSent = await emailService.forceSendEmail(
           application.email,
           subject,
           emailHtml,
-          true,
         );
 
         if (emailSent) {
@@ -781,11 +780,11 @@ export const sendReminderToUnpaid = async (
         application,
       );
 
-      const sent = await emailService.sendEmail(
+      // Use forceSendEmail for reminders as well
+      const sent = await emailService.forceSendEmail(
         application.email,
         `⚠️ Payment Reminder - ${customerBills.length} Unpaid Bill(s)`,
         emailHtml,
-        true,
       );
 
       if (sent) {
