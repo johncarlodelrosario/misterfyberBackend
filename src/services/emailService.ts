@@ -70,8 +70,17 @@ class EmailService {
       console.error("\n❌ BREVO_API_KEY is missing!");
       console.error("   Please add BREVO_API_KEY to your .env file");
     } else {
-      this.initialized = true;
-      console.log("✅ Brevo API email service ready!\n");
+      // Validate API key format
+      if (this.apiKey.startsWith("xkeysib-") && this.apiKey.length > 30) {
+        this.initialized = true;
+        console.log("✅ Brevo API email service ready!\n");
+      } else {
+        console.error("\n❌ BREVO_API_KEY format looks invalid!");
+        console.error(
+          "   API key should start with 'xkeysib-' and be at least 30 characters",
+        );
+        console.error(`   Current key: ${this.apiKey.substring(0, 20)}...`);
+      }
     }
   }
 
@@ -87,11 +96,10 @@ class EmailService {
         status: "active",
       }).sort({ role: 1 });
 
-      // Default to true if no admin found or setting is true
       return admin ? admin.customerEmailAlertsEnabled !== false : true;
     } catch (error) {
       console.error("Error checking customer email setting:", error);
-      return true; // Default to enabled on error
+      return true;
     }
   }
 
@@ -102,7 +110,6 @@ class EmailService {
     isCustomerEmail: boolean = true,
   ): Promise<boolean> {
     try {
-      // Check if this is a customer email and if customer emails are disabled
       if (isCustomerEmail) {
         const customerEmailsEnabled = await this.areCustomerEmailsEnabled();
         if (!customerEmailsEnabled) {
@@ -117,6 +124,15 @@ class EmailService {
         console.log(
           `⚠️ Email service not initialized - skipping email to ${to}`,
         );
+        // In development, log the email instead of failing
+        if (process.env.NODE_ENV === "development") {
+          console.log(`📧 [DEV MODE] Would send email to: ${to}`);
+          console.log(`   Subject: ${subject}`);
+          console.log(
+            `   Content preview: ${htmlContent.substring(0, 200)}...`,
+          );
+          return true;
+        }
         return false;
       }
 
@@ -132,6 +148,17 @@ class EmailService {
 
       console.log(`📧 Sending email via Brevo API to ${to}...`);
       console.log(`   Subject: ${subject}`);
+      console.log(`   Sender: Mister Fyber <${senderEmail}>`);
+
+      const requestBody = {
+        sender: {
+          name: "Mister Fyber",
+          email: senderEmail,
+        },
+        to: [{ email: to }],
+        subject: subject,
+        htmlContent: htmlContent,
+      };
 
       const response = await fetch("https://api.brevo.com/v3/smtp/email", {
         method: "POST",
@@ -140,15 +167,7 @@ class EmailService {
           "api-key": this.apiKey,
           "content-type": "application/json",
         },
-        body: JSON.stringify({
-          sender: {
-            name: "Mister Fyber",
-            email: senderEmail,
-          },
-          to: [{ email: to }],
-          subject: subject,
-          htmlContent: htmlContent,
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       if (response.ok) {
@@ -157,8 +176,21 @@ class EmailService {
         console.log(`   Message ID: ${data.messageId || "N/A"}`);
         return true;
       } else {
-        const error = await response.text();
-        console.error(`❌ Brevo API error: ${response.status} - ${error}`);
+        const errorText = await response.text();
+        console.error(`❌ Brevo API error: ${response.status} - ${errorText}`);
+
+        // Log more details for debugging
+        if (response.status === 401) {
+          console.error(
+            "   ⚠️ Authentication failed - Please check your BREVO_API_KEY",
+          );
+          console.error(
+            `   API Key (first 20 chars): ${this.apiKey.substring(0, 20)}...`,
+          );
+        } else if (response.status === 400) {
+          console.error("   ⚠️ Bad request - Check email format or content");
+        }
+
         return false;
       }
     } catch (error) {
@@ -172,13 +204,69 @@ class EmailService {
       console.error("❌ Admin email not configured");
       return false;
     }
-    // Admin emails are ALWAYS sent (no toggle for these)
     return await this.sendEmail(
       this.adminEmail,
       `[ADMIN] ${subject}`,
       html,
       false,
     );
+  }
+
+  // Test method to verify email configuration
+  async testEmailConfiguration(
+    testEmail?: string,
+  ): Promise<{ success: boolean; message: string; details?: any }> {
+    const emailTo = testEmail || this.adminEmail;
+
+    if (!emailTo) {
+      return {
+        success: false,
+        message: "No test email address provided",
+      };
+    }
+
+    if (!this.isConfigured()) {
+      return {
+        success: false,
+        message: "Email service is not configured. Please check BREVO_API_KEY.",
+      };
+    }
+
+    const testHtml = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Test Email</title>
+      </head>
+      <body>
+        <h1>✅ Test Email from Mister Fyber</h1>
+        <p>If you're reading this, your email configuration is working correctly!</p>
+        <p>Sent at: ${new Date().toLocaleString()}</p>
+      </body>
+      </html>
+    `;
+
+    try {
+      const result = await this.sendEmail(
+        emailTo,
+        "Test Email - Mister Fyber",
+        testHtml,
+        false,
+      );
+
+      return {
+        success: result,
+        message: result
+          ? "Test email sent successfully"
+          : "Failed to send test email",
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        message: `Error: ${error.message}`,
+        details: error,
+      };
+    }
   }
 
   // ==================== PASSWORD CHANGE NOTIFICATION (CUSTOMER) ====================
