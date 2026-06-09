@@ -156,9 +156,14 @@ export const submitApplication = async (
   res: Response,
   next: NextFunction,
 ) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({
         success: false,
         message: "Validation failed",
@@ -195,34 +200,48 @@ export const submitApplication = async (
       macAddress,
     });
 
+    // Validate required fields
     if (!buildingId || buildingId === "undefined" || buildingId === "null") {
+      await session.abortTransaction();
+      session.endSession();
       return res
         .status(400)
         .json({ success: false, message: "Building selection is required" });
     }
     if (!floor || floor === "undefined" || floor === "null") {
+      await session.abortTransaction();
+      session.endSession();
       return res
         .status(400)
         .json({ success: false, message: "Floor is required" });
     }
     if (!unitNumber || unitNumber === "undefined" || unitNumber === "null") {
+      await session.abortTransaction();
+      session.endSession();
       return res
         .status(400)
         .json({ success: false, message: "Unit number is required" });
     }
     if (!planId || planId === "undefined" || planId === "null") {
+      await session.abortTransaction();
+      session.endSession();
       return res
         .status(400)
         .json({ success: false, message: "Plan selection is required" });
     }
 
     const normalizedEmail = email?.trim().toLowerCase();
+    const normalizedPhoneNumber = phoneNumber?.trim();
 
+    // CHECK FOR DUPLICATE CUSTOMER - Enhanced duplicate prevention
+    // Check 1: Existing registered user with same email
     const existingUser = await User.findOne({
       email: normalizedEmail,
     }).lean();
 
     if (existingUser) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({
         success: false,
         message:
@@ -232,32 +251,89 @@ export const submitApplication = async (
       });
     }
 
-    const existingApplication = await Application.findOne({
+    // Check 2: Check for ANY existing application with same email (including all statuses)
+    const existingApplicationByEmail = await Application.findOne({
       email: normalizedEmail,
-      status: { $in: ["pending", "approved", "rejected"] },
     }).lean();
 
-    if (existingApplication) {
+    if (existingApplicationByEmail) {
       let message = "";
-      if (existingApplication.status === "pending") {
-        message =
-          "You already have a pending application. Please wait for approval.";
-      } else if (existingApplication.status === "approved") {
-        message =
-          "You already have an approved application. Please create your account using your Application ID.";
-      } else if (existingApplication.status === "rejected") {
-        message =
-          "Your previous application was rejected. Please contact support for assistance.";
+      let statusCode = 400;
+
+      switch (existingApplicationByEmail.status) {
+        case "pending":
+          message =
+            "You already have a pending application. Please wait for approval.";
+          break;
+        case "approved":
+          message =
+            "You already have an approved application. Please create your account using your Application ID.";
+          statusCode = 409;
+          break;
+        case "rejected":
+          message =
+            "Your previous application was rejected. Please contact support for assistance.";
+          statusCode = 403;
+          break;
+        case "active":
+          message =
+            "You already have an active service. Please login to your account.";
+          statusCode = 409;
+          break;
+        case "suspended":
+          message = "Your account is suspended. Please contact support.";
+          statusCode = 403;
+          break;
+        default:
+          message =
+            "You already have an existing application. Please check your status.";
       }
 
-      return res.status(400).json({
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(statusCode).json({
         success: false,
         message: message,
-        applicationId: existingApplication.applicationId,
-        status: existingApplication.status,
+        applicationId: existingApplicationByEmail.applicationId,
+        status: existingApplicationByEmail.status,
       });
     }
 
+    // Check 3: Check for duplicate phone number
+    const existingApplicationByPhone = await Application.findOne({
+      phoneNumber: normalizedPhoneNumber,
+    }).lean();
+
+    if (existingApplicationByPhone) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({
+        success: false,
+        message:
+          "This phone number is already associated with an existing application.",
+        applicationId: existingApplicationByPhone.applicationId,
+        status: existingApplicationByPhone.status,
+      });
+    }
+
+    // Check 4: Check if the same unit already has active service in the building
+    const existingActiveService = await Application.findOne({
+      buildingId: new mongoose.Types.ObjectId(buildingId),
+      floor: floor?.toString().trim(),
+      unitNumber: unitNumber?.toString().trim(),
+      status: { $in: ["approved", "active"] },
+    }).lean();
+
+    if (existingActiveService) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(409).json({
+        success: false,
+        message: `Unit ${floor}-${unitNumber} already has an active or approved service. Please contact support for assistance.`,
+      });
+    }
+
+    // Fetch building and plan
     const [building, plan] = await Promise.all([
       Building.findById(buildingId)
         .lean()
@@ -268,11 +344,15 @@ export const submitApplication = async (
     ]);
 
     if (!building) {
+      await session.abortTransaction();
+      session.endSession();
       return res
         .status(404)
         .json({ success: false, message: "Building not found" });
     }
     if (!building.isActive) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({
         success: false,
         message: "This building is not currently accepting applications",
@@ -280,6 +360,8 @@ export const submitApplication = async (
     }
 
     if (!plan) {
+      await session.abortTransaction();
+      session.endSession();
       return res
         .status(404)
         .json({ success: false, message: "Plan not found" });
@@ -295,11 +377,12 @@ export const submitApplication = async (
       }
     }
 
+    // Create application
     const applicationData = {
       firstName: firstName?.trim(),
       lastName: lastName?.trim(),
       email: normalizedEmail,
-      phoneNumber: phoneNumber?.trim(),
+      phoneNumber: normalizedPhoneNumber,
       buildingId: building._id,
       buildingName: building.buildingName,
       floor: floor?.toString().trim(),
@@ -314,16 +397,21 @@ export const submitApplication = async (
     };
 
     const application = new Application(applicationData);
-    await application.save();
+    await application.save({ session });
 
     const populatedApplication = await Application.findById(application._id)
       .populate("planId")
       .populate("buildingId")
+      .session(session)
       .lean();
+
+    await session.commitTransaction();
+    session.endSession();
 
     const fullImageUrl = getImageUrl(application.idImage);
     const populatedPlan = populatedApplication?.planId as any;
 
+    // Send emails (outside transaction)
     try {
       console.log("📧 Sending application received email to client...");
       await emailService.sendApplicationReceived(application, populatedPlan);
@@ -364,7 +452,10 @@ export const submitApplication = async (
       },
     });
   } catch (error: any) {
+    await session.abortTransaction();
+    session.endSession();
     console.error("Application submission error:", error);
+
     if (error.name === "ValidationError") {
       return res.status(400).json({
         success: false,
@@ -375,7 +466,8 @@ export const submitApplication = async (
     if (error.code === 11000) {
       return res.status(400).json({
         success: false,
-        message: "Duplicate application detected. Please try again.",
+        message:
+          "Duplicate application detected. This email or application ID already exists.",
       });
     }
     next(error);
@@ -544,11 +636,15 @@ export const approveApplication = async (
     );
 
     if (!application) {
+      await session.abortTransaction();
+      session.endSession();
       return res
         .status(404)
         .json({ success: false, message: "Application not found" });
     }
     if (application.status !== "pending") {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({
         success: false,
         message: `Application already ${application.status}`,
@@ -563,12 +659,14 @@ export const approveApplication = async (
           adminNotes: adminNotes || "",
           reviewedBy: req.user?._id || null,
           reviewedAt: new Date(),
+          approvalEmailSent: true,
         },
       },
       { session },
     );
 
     await session.commitTransaction();
+    session.endSession();
 
     const plan = application.planId as any;
     await emailService.sendApplicationApproved(application, plan);
@@ -587,10 +685,9 @@ export const approveApplication = async (
     });
   } catch (error) {
     await session.abortTransaction();
+    session.endSession();
     console.error("Error in approveApplication:", error);
     next(error);
-  } finally {
-    session.endSession();
   }
 };
 
@@ -599,6 +696,9 @@ export const rejectApplication = async (
   res: Response,
   next: NextFunction,
 ) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
     const { adminNotes } = req.body;
 
@@ -607,11 +707,15 @@ export const rejectApplication = async (
     );
 
     if (!application) {
+      await session.abortTransaction();
+      session.endSession();
       return res
         .status(404)
         .json({ success: false, message: "Application not found" });
     }
     if (application.status !== "pending") {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({
         success: false,
         message: `Application already ${application.status}`,
@@ -628,7 +732,11 @@ export const rejectApplication = async (
           reviewedAt: new Date(),
         },
       },
+      { session },
     );
+
+    await session.commitTransaction();
+    session.endSession();
 
     await emailService.sendApplicationRejected(
       application,
@@ -644,6 +752,8 @@ export const rejectApplication = async (
       },
     });
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
     console.error("Error in rejectApplication:", error);
     next(error);
   }
@@ -669,6 +779,7 @@ export const startBillingForApplication = async (
       console.log(`📌 Attempt 1: Find by MongoDB _id: ${applicationId}`);
       application = await Application.findById(applicationId)
         .populate("planId")
+        .session(session)
         .lean();
     }
 
@@ -680,28 +791,23 @@ export const startBillingForApplication = async (
         applicationId: applicationId,
       })
         .populate("planId")
+        .session(session)
         .lean();
     }
 
     if (!application) {
-      console.log(`📌 Attempt 3: Find by any matching field`);
+      console.log(`📌 Attempt 3: Find by email or phone`);
       application = await Application.findOne({
-        $or: [
-          {
-            _id: mongoose.Types.ObjectId.isValid(applicationId)
-              ? new mongoose.Types.ObjectId(applicationId)
-              : null,
-          },
-          { applicationId: applicationId },
-          { email: applicationId },
-          { phoneNumber: applicationId },
-        ].filter(Boolean),
+        $or: [{ email: applicationId }, { phoneNumber: applicationId }],
       })
         .populate("planId")
+        .session(session)
         .lean();
     }
 
     if (!application) {
+      await session.abortTransaction();
+      session.endSession();
       console.error(`❌ Application NOT FOUND for ID: ${applicationId}`);
       return res.status(404).json({
         success: false,
@@ -714,6 +820,8 @@ export const startBillingForApplication = async (
     );
 
     if (application.status !== "approved") {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({
         success: false,
         message: `Cannot start billing for application with status: ${application.status}. Only approved applications can start billing.`,
@@ -722,9 +830,13 @@ export const startBillingForApplication = async (
 
     const existingBillingCycle = await BillingCycle.findOne({
       applicationId: application.applicationId,
-    }).lean();
+    })
+      .session(session)
+      .lean();
 
     if (existingBillingCycle) {
+      await session.abortTransaction();
+      session.endSession();
       const statusMessages: Record<string, string> = {
         active: "active and running",
         paused: "paused",
@@ -746,9 +858,13 @@ export const startBillingForApplication = async (
 
     const existingBills = await Billing.findOne({
       applicationId: application.applicationId,
-    }).lean();
+    })
+      .session(session)
+      .lean();
 
     if (existingBills) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({
         success: false,
         message:
@@ -941,12 +1057,14 @@ export const startBillingForApplication = async (
         $set: {
           billingStarted: true,
           billingCycleId: billingCycle[0]._id,
+          serviceStatus: "pending",
         },
       },
       { session },
     );
 
     await session.commitTransaction();
+    session.endSession();
 
     await emailService.sendBillWithoutAccount(application, bill[0], plan);
 
@@ -972,10 +1090,9 @@ export const startBillingForApplication = async (
     });
   } catch (error) {
     await session.abortTransaction();
+    session.endSession();
     console.error("Error in startBillingForApplication:", error);
     next(error);
-  } finally {
-    session.endSession();
   }
 };
 

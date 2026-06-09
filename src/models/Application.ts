@@ -64,8 +64,8 @@ const ApplicationSchema: Schema = new Schema(
     },
     firstName: { type: String, required: true },
     lastName: { type: String, required: true },
-    email: { type: String, required: true, lowercase: true },
-    phoneNumber: { type: String, required: true },
+    email: { type: String, required: true, lowercase: true, index: true },
+    phoneNumber: { type: String, required: true, index: true },
     buildingId: {
       type: Schema.Types.ObjectId,
       ref: "Building",
@@ -88,6 +88,7 @@ const ApplicationSchema: Schema = new Schema(
       type: String,
       enum: ["pending", "approved", "rejected", "suspended", "active"],
       default: "pending",
+      index: true,
     },
     serviceStatus: {
       type: String,
@@ -97,7 +98,7 @@ const ApplicationSchema: Schema = new Schema(
     adminNotes: { type: String, default: "" },
     reviewedBy: { type: Schema.Types.ObjectId, ref: "User" },
     reviewedAt: { type: Date },
-    registeredUserId: { type: Schema.Types.ObjectId, ref: "User" },
+    registeredUserId: { type: Schema.Types.ObjectId, ref: "User", index: true },
     billingStarted: { type: Boolean, default: false },
     billingCycleId: { type: Schema.Types.ObjectId, ref: "BillingCycle" },
     approvalEmailSent: { type: Boolean, default: false },
@@ -107,12 +108,9 @@ const ApplicationSchema: Schema = new Schema(
   { timestamps: true },
 );
 
-ApplicationSchema.index({ applicationId: 1 });
-ApplicationSchema.index({ email: 1 });
-ApplicationSchema.index({ status: 1 });
-ApplicationSchema.index({ registeredUserId: 1 });
-ApplicationSchema.index({ billingCycleId: 1 });
-ApplicationSchema.index({ installationFeePaid: 1 });
-ApplicationSchema.index({ serviceStatus: 1 });
+// Compound indexes for duplicate prevention
+ApplicationSchema.index({ buildingId: 1, floor: 1, unitNumber: 1, status: 1 });
+ApplicationSchema.index({ email: 1, status: 1 });
+ApplicationSchema.index({ phoneNumber: 1, status: 1 });
 
 export default mongoose.model<IApplication>("Application", ApplicationSchema);
