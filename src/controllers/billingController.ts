@@ -105,13 +105,17 @@ function formatDateForDisplay(date: Date): string {
   return `${month}/${day}/${year}`;
 }
 
-// REGULAR MONTHLY DUE DATE: 5th of NEXT month
+// REGULAR MONTHLY DUE DATE: 5th of CURRENT month (PREPAID)
 function getDueDateForMonthly(billingPeriodStart: Date, settings: any): Date {
   const dueDay = settings.monthlyDueDay || 5;
   const dueDate = new Date(billingPeriodStart);
-  dueDate.setUTCMonth(dueDate.getUTCMonth() + 1);
   dueDate.setUTCDate(dueDay);
   dueDate.setUTCHours(23, 59, 59, 999);
+
+  // If due date is before period start (e.g., period starts on 6th, due on 5th is in next month)
+  if (dueDate < billingPeriodStart) {
+    dueDate.setUTCMonth(dueDate.getUTCMonth() + 1);
+  }
 
   const lastDayOfMonth = new Date(
     Date.UTC(dueDate.getUTCFullYear(), dueDate.getUTCMonth() + 1, 0),
@@ -270,7 +274,7 @@ async function createInstallationBill(
   return installationBill[0];
 }
 
-// ==================== CREATE REGULAR MONTHLY BILL ====================
+// ==================== CREATE REGULAR MONTHLY BILL (PREPAID - due on 5th of CURRENT month) ====================
 async function createMonthlyBill(
   application: any,
   billingCycleId: mongoose.Types.ObjectId,
@@ -289,7 +293,7 @@ async function createMonthlyBill(
     dueDate: dueDate,
     items: [
       {
-        description: `Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}`,
+        description: `Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)} (PREPAID)`,
         quantity: 1,
         rate: monthlyRate,
         amount: monthlyRate,
@@ -305,14 +309,13 @@ async function createMonthlyBill(
     isInstallationBill: false,
     installationFee: 0,
     installationFeePaid: false,
-    notes: "Monthly subscription - Due on 5th of next month",
+    notes: "Monthly subscription - PREPAID: Due on 5th of current month",
     applicationId: application.applicationId,
   };
 
   const bill = session
     ? await Billing.create([billData], { session })
     : await Billing.create([billData]);
-
   const createdBill = session ? bill[0] : bill;
 
   try {
@@ -385,7 +388,6 @@ async function createProRatedBill(
   const bill = session
     ? await Billing.create([billData], { session })
     : await Billing.create([billData]);
-
   const createdBill = session ? bill[0] : bill;
 
   try {
@@ -574,14 +576,11 @@ export const initializeBackdatedBilling = async (
           isProRatedFlag = true;
           proRatedDaysCount = daysUsed;
 
-          // Determine due date based on installation day
           if (isAfterCutoff) {
-            // Installation on 25-end of month: due on 5th of NEXT month
             const nextMonthStart = getStartOfNextMonth(startDate);
             dueDate = getDueDateForMonthly(nextMonthStart, settings);
             description = `Pro-rated payment from ${formatDateForDisplay(startDate)} to ${formatDateForDisplay(billingEnd)} (${daysUsed} days) - Due on 5th of next month`;
           } else {
-            // Installation on 1-24: due on 25th of CURRENT month
             dueDate = getDueDateForProRatedBeforeCutoff(startDate, settings);
             description = `Pro-rated payment from ${formatDateForDisplay(startDate)} to ${formatDateForDisplay(billingEnd)} (${daysUsed} days) - Due on 25th of current month`;
           }
@@ -595,7 +594,7 @@ export const initializeBackdatedBilling = async (
         } else if (currentBillDate < today) {
           isMissingBill = true;
           dueDate = getDueDateForMonthly(billingStart, settings);
-          description = `[MISSING BILL - BACKDATED] Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}`;
+          description = `[MISSING BILL - BACKDATED] Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)} (PREPAID)`;
           items.push({
             description: description,
             quantity: 1,
@@ -604,7 +603,7 @@ export const initializeBackdatedBilling = async (
           });
         } else {
           dueDate = getDueDateForMonthly(billingStart, settings);
-          description = `Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}`;
+          description = `Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)} (PREPAID)`;
           items.push({
             description: description,
             quantity: 1,
@@ -631,8 +630,8 @@ export const initializeBackdatedBilling = async (
           notes:
             notes ||
             (isMissingBill
-              ? `MISSING BILL - Generated from backdated billing. Original period: ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}. Customer started service on ${formatDateForDisplay(startDate)}.`
-              : `Generated from backdated billing starting ${formatDateForDisplay(startDate)}.`),
+              ? `MISSING BILL - Generated from backdated billing. Original period: ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}. Customer started service on ${formatDateForDisplay(startDate)}. PREPAID: Due on 5th of current month.`
+              : `Generated from backdated billing starting ${formatDateForDisplay(startDate)}. PREPAID: Due on 5th of current month.`),
         };
 
         const newBill = await Billing.create([billData], { session });
@@ -884,7 +883,6 @@ export const startBilling = async (
         { session },
       );
 
-      // Create pro-rated bill (due on 25th of CURRENT month)
       createdProRatedBill = await createProRatedBill(
         application,
         billingCycle[0]._id,
@@ -929,7 +927,7 @@ export const startBilling = async (
       if (createdInstallationBill) {
         message += ` Installation fee of ₱${installationFee.toFixed(2)} billed separately (Invoice: ${createdInstallationBill.invoiceNumber}, due on ${formatDateForDisplay(createdInstallationBill.dueDate)}).`;
       }
-      message += ` Regular monthly billing will start next month on 1st.`;
+      message += ` Regular monthly billing will start next month on 1st with due date on 5th of that month.`;
 
       res.status(200).json({
         success: true,
@@ -969,7 +967,6 @@ export const startBilling = async (
       const nextFullMonthEnd = getEndOfMonth(nextFullMonthStart);
       const nextBillingDate = getStartOfNextMonth(nextFullMonthStart);
 
-      // Due date for both bills is 5th of NEXT month
       const combinedDueDate = getDueDateForMonthly(
         nextFullMonthStart,
         settings,
@@ -997,7 +994,6 @@ export const startBilling = async (
         { session },
       );
 
-      // Create pro-rated bill (due on 5th of NEXT month)
       createdProRatedBill = await createProRatedBill(
         application,
         billingCycle[0]._id,
@@ -1011,7 +1007,6 @@ export const startBilling = async (
         session,
       );
 
-      // Create regular monthly bill (due on 5th of NEXT month - same due date)
       const monthlyBillData = {
         billingCycleId: billingCycle[0]._id,
         invoiceNumber: generateInvoiceNumber(),
@@ -1019,7 +1014,7 @@ export const startBilling = async (
         dueDate: combinedDueDate,
         items: [
           {
-            description: `Monthly Subscription - ${formatDateForDisplay(nextFullMonthStart)} to ${formatDateForDisplay(nextFullMonthEnd)}`,
+            description: `Monthly Subscription - ${formatDateForDisplay(nextFullMonthStart)} to ${formatDateForDisplay(nextFullMonthEnd)} (PREPAID)`,
             quantity: 1,
             rate: monthlyRate,
             amount: monthlyRate,
@@ -1035,7 +1030,7 @@ export const startBilling = async (
         isInstallationBill: false,
         installationFee: 0,
         installationFeePaid: false,
-        notes: `Regular monthly subscription - Due on 5th of next month together with pro-rated bill.`,
+        notes: `Regular monthly subscription - PREPAID: Due on 5th of current month (${formatDateForDisplay(nextFullMonthStart)} to ${formatDateForDisplay(nextFullMonthEnd)})`,
         applicationId: application.applicationId,
       };
 
@@ -1505,10 +1500,9 @@ export const pauseBilling = async (
     const { applicationId, reason, pauseUntilDate } = req.body;
 
     if (!applicationId) {
-      return res.status(400).json({
-        success: false,
-        message: "applicationId is required",
-      });
+      return res
+        .status(400)
+        .json({ success: false, message: "applicationId is required" });
     }
 
     const application = await Application.findOne({ applicationId }).lean();
@@ -1526,10 +1520,12 @@ export const pauseBilling = async (
 
     if (!billingCycle) {
       await session.abortTransaction();
-      return res.status(404).json({
-        success: false,
-        message: "No active billing cycle found to pause.",
-      });
+      return res
+        .status(404)
+        .json({
+          success: false,
+          message: "No active billing cycle found to pause.",
+        });
     }
 
     const unpaidMonthlyBills = await Billing.find({
@@ -1617,10 +1613,9 @@ export const resumeBilling = async (
     const { applicationId } = req.body;
 
     if (!applicationId) {
-      return res.status(400).json({
-        success: false,
-        message: "applicationId is required",
-      });
+      return res
+        .status(400)
+        .json({ success: false, message: "applicationId is required" });
     }
 
     const application = await Application.findOne({ applicationId })
@@ -1641,10 +1636,12 @@ export const resumeBilling = async (
 
     if (!billingCycle) {
       await session.abortTransaction();
-      return res.status(404).json({
-        success: false,
-        message: "No paused billing cycle found for this customer.",
-      });
+      return res
+        .status(404)
+        .json({
+          success: false,
+          message: "No paused billing cycle found for this customer.",
+        });
     }
 
     const pendingMonthlyBills = await Billing.find({
@@ -1747,18 +1744,22 @@ export const markInstallationBillAsPaid = async (
 
     if (!installationBill.isInstallationBill) {
       await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: "This is not an installation fee bill",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "This is not an installation fee bill",
+        });
     }
 
     if (installationBill.status === "paid") {
       await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: `Installation bill ${installationBill.invoiceNumber} is already paid`,
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: `Installation bill ${installationBill.invoiceNumber} is already paid`,
+        });
     }
 
     let application = null;
@@ -1890,19 +1891,23 @@ export const markBillAsPaid = async (
 
     if (existingBill.isInstallationBill) {
       await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message:
-          "Please use the installation bill payment endpoint for installation fees",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message:
+            "Please use the installation bill payment endpoint for installation fees",
+        });
     }
 
     if (existingBill.status === "paid") {
       await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: `Bill ${existingBill.invoiceNumber} is already paid`,
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: `Bill ${existingBill.invoiceNumber} is already paid`,
+        });
     }
 
     let application = null;
@@ -2142,10 +2147,9 @@ export const confirmProRatedPayment = async (
     const { applicationId, paymentDetails } = req.body;
 
     if (!applicationId) {
-      return res.status(400).json({
-        success: false,
-        message: "applicationId is required",
-      });
+      return res
+        .status(400)
+        .json({ success: false, message: "applicationId is required" });
     }
 
     const application = await Application.findOne({ applicationId }).lean();
@@ -2165,10 +2169,9 @@ export const confirmProRatedPayment = async (
 
     if (!billingCycle) {
       await session.abortTransaction();
-      return res.status(404).json({
-        success: false,
-        message: "Billing cycle not found",
-      });
+      return res
+        .status(404)
+        .json({ success: false, message: "Billing cycle not found" });
     }
 
     const proRatedBill = await Billing.findOne({
@@ -2265,10 +2268,9 @@ export const startMonthlyBilling = async (
     const { applicationId } = req.body;
 
     if (!applicationId) {
-      return res.status(400).json({
-        success: false,
-        message: "applicationId is required",
-      });
+      return res
+        .status(400)
+        .json({ success: false, message: "applicationId is required" });
     }
 
     const application = await Application.findOne({ applicationId })
@@ -2292,10 +2294,9 @@ export const startMonthlyBilling = async (
 
     if (!billingCycle) {
       await session.abortTransaction();
-      return res.status(404).json({
-        success: false,
-        message: "Billing cycle not found",
-      });
+      return res
+        .status(404)
+        .json({ success: false, message: "Billing cycle not found" });
     }
 
     const settings = await getOrCreateSettings();
@@ -2366,10 +2367,9 @@ export const stopBilling = async (
     const { applicationId, reason } = req.body;
 
     if (!applicationId) {
-      return res.status(400).json({
-        success: false,
-        message: "applicationId is required",
-      });
+      return res
+        .status(400)
+        .json({ success: false, message: "applicationId is required" });
     }
 
     const application = await Application.findOne({ applicationId }).lean();
@@ -2440,10 +2440,9 @@ export const disconnectClient = async (
     const { applicationId } = req.body;
 
     if (!applicationId) {
-      return res.status(400).json({
-        success: false,
-        message: "applicationId is required",
-      });
+      return res
+        .status(400)
+        .json({ success: false, message: "applicationId is required" });
     }
 
     const application = await Application.findOne({ applicationId }).lean();
@@ -2487,10 +2486,9 @@ export const reconnectClient = async (
     const { applicationId } = req.body;
 
     if (!applicationId) {
-      return res.status(400).json({
-        success: false,
-        message: "applicationId is required",
-      });
+      return res
+        .status(400)
+        .json({ success: false, message: "applicationId is required" });
     }
 
     const application = await Application.findOne({ applicationId }).lean();
@@ -2707,11 +2705,13 @@ export const autoGenerateMonthlyBills = async (
   } catch (error) {
     console.error("Auto-generate monthly bills error:", error);
     if (res) {
-      res.status(500).json({
-        success: false,
-        message: "Failed to generate bills",
-        error: String(error),
-      });
+      res
+        .status(500)
+        .json({
+          success: false,
+          message: "Failed to generate bills",
+          error: String(error),
+        });
     }
   }
 };
@@ -2937,10 +2937,12 @@ export const autoSuspendOverdue = async (req?: AuthRequest, res?: Response) => {
 
     clearAllCache();
     if (res) {
-      res.status(200).json({
-        success: true,
-        message: `Suspended ${suspendedCount} customers`,
-      });
+      res
+        .status(200)
+        .json({
+          success: true,
+          message: `Suspended ${suspendedCount} customers`,
+        });
     }
   } catch (error) {
     console.error("Auto-suspend overdue error:", error);
@@ -3292,18 +3294,19 @@ export const recoverMissingBills = async (
     }).populate("planId");
 
     if (!billingCycle) {
-      return res.status(404).json({
-        success: false,
-        message: "No active billing cycle found for this application",
-      });
+      return res
+        .status(404)
+        .json({
+          success: false,
+          message: "No active billing cycle found for this application",
+        });
     }
 
     const application = await Application.findOne({ applicationId }).lean();
     if (!application) {
-      return res.status(404).json({
-        success: false,
-        message: "Application not found",
-      });
+      return res
+        .status(404)
+        .json({ success: false, message: "Application not found" });
     }
 
     const plan = billingCycle.planId as any;
