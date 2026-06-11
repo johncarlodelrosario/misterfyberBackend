@@ -105,7 +105,7 @@ function formatDateForDisplay(date: Date): string {
   return `${month}/${day}/${year}`;
 }
 
-// FIXED: Due date for pro-rated billing - on the 25th of the CURRENT month (PREPAID)
+// PRO-RATED DUE DATE: 25th of CURRENT month (PREPAID)
 function getDueDateForProRated(installationDate: Date, settings: any): Date {
   const dueDay = settings.proRatedDueDay || 25;
   const year = installationDate.getUTCFullYear();
@@ -116,25 +116,20 @@ function getDueDateForProRated(installationDate: Date, settings: any): Date {
     targetDay = lastDayOfMonth;
   }
   const dueDate = new Date(Date.UTC(year, month, targetDay, 23, 59, 59, 999));
-  // If due date is before installation date, use end of month
   if (dueDate < installationDate) {
     return new Date(Date.UTC(year, month, lastDayOfMonth, 23, 59, 59, 999));
   }
   return dueDate;
 }
 
-// FIXED: Due date for monthly billing - on the 5th day of the CURRENT month (PREPAID)
+// REGULAR MONTHLY DUE DATE: 5th of NEXT month (unchanged)
 function getDueDateForMonthly(billingPeriodStart: Date, settings: any): Date {
   const dueDay = settings.monthlyDueDay || 5;
-  // Monthly bills are PREPAID - due on the 5th of the CURRENT month
+  // Regular monthly bills are due on the 5th of the NEXT month
   const dueDate = new Date(billingPeriodStart);
+  dueDate.setUTCMonth(dueDate.getUTCMonth() + 1);
   dueDate.setUTCDate(dueDay);
   dueDate.setUTCHours(23, 59, 59, 999);
-
-  // If due date is before period start (e.g., period starts on 6th, due on 5th is in next month)
-  if (dueDate < billingPeriodStart) {
-    dueDate.setUTCMonth(dueDate.getUTCMonth() + 1);
-  }
 
   const lastDayOfMonth = new Date(
     Date.UTC(dueDate.getUTCFullYear(), dueDate.getUTCMonth() + 1, 0),
@@ -147,7 +142,6 @@ function getDueDateForMonthly(billingPeriodStart: Date, settings: any): Date {
 
   dueDate.setUTCDate(targetDay);
   dueDate.setUTCHours(23, 59, 59, 999);
-
   return dueDate;
 }
 
@@ -274,7 +268,7 @@ async function createInstallationBill(
   return installationBill[0];
 }
 
-// ==================== CREATE MONTHLY BILL (PREPAID - due on 5th of CURRENT month) ====================
+// ==================== CREATE REGULAR MONTHLY BILL (due on 5th of NEXT month) ====================
 async function createMonthlyBill(
   application: any,
   billingCycleId: mongoose.Types.ObjectId,
@@ -287,7 +281,7 @@ async function createMonthlyBill(
   proRatedAmount: number = 0,
   session?: mongoose.ClientSession,
 ): Promise<any> {
-  // FIXED: Due date is on the 5th of the CURRENT month (PREPAID)
+  // Regular monthly bill: due on 5th of NEXT month
   const dueDate = getDueDateForMonthly(billingStart, settings);
   let amount = monthlyRate;
   let description = `Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}`;
@@ -327,9 +321,7 @@ async function createMonthlyBill(
     isInstallationBill: false,
     installationFee: 0,
     installationFeePaid: false,
-    notes: isProRated
-      ? "Pro-rated payment for partial month - Due on 25th of current month"
-      : "Monthly subscription - PREPAID: Due on 5th of current month",
+    notes: "Monthly subscription - Due on 5th of next month",
     applicationId: application.applicationId,
   };
 
@@ -348,7 +340,7 @@ async function createMonthlyBill(
   return createdBill;
 }
 
-// ==================== CREATE PRO-RATED BILL (PREPAID - due on 25th of CURRENT month) ====================
+// ==================== CREATE PRO-RATED BILL (due on 25th of CURRENT month) ====================
 async function createProRatedBill(
   application: any,
   billingCycleId: mongoose.Types.ObjectId,
@@ -360,12 +352,12 @@ async function createProRatedBill(
   settings: any,
   session?: mongoose.ClientSession,
 ): Promise<any> {
-  // FIXED: Pro-rated bill due on 25th of CURRENT month (PREPAID)
+  // PRO-RATED BILL: due on 25th of CURRENT month
   const dueDate = getDueDateForProRated(installationDate, settings);
 
   const items: any[] = [
     {
-      description: `Pro-rated payment from ${formatDateForDisplay(installationDate)} to ${formatDateForDisplay(billingEnd)} (${proRatedDays} days) - PREPAID: Due on 25th of current month`,
+      description: `Pro-rated payment from ${formatDateForDisplay(installationDate)} to ${formatDateForDisplay(billingEnd)} (${proRatedDays} days) - Due on 25th of current month`,
       quantity: proRatedDays,
       rate: dailyRate,
       amount: proRatedAmount,
@@ -388,7 +380,7 @@ async function createProRatedBill(
     isInstallationBill: false,
     installationFee: 0,
     installationFeePaid: false,
-    notes: `Pro-rated bill - PREPAID: Due on ${formatDateForDisplay(dueDate)}. Next billing starts on 1st of next month.`,
+    notes: `Pro-rated bill - Due on ${formatDateForDisplay(dueDate)}. Next billing starts on 1st of next month.`,
     applicationId: application.applicationId,
   };
 
@@ -441,8 +433,7 @@ export const initializeBackdatedBilling = async (
       await session.abortTransaction();
       return res.status(400).json({
         success: false,
-        message:
-          "serviceStartDate is required (when customer started using service)",
+        message: "serviceStartDate is required",
       });
     }
 
@@ -561,7 +552,6 @@ export const initializeBackdatedBilling = async (
         let isMissingBill = false;
         let items: any[] = [];
 
-        // Check if this is the first month (pro-rated)
         if (
           currentBillDate.getTime() ===
             new Date(
@@ -579,7 +569,7 @@ export const initializeBackdatedBilling = async (
           const daysUsed = daysInMonth - startDate.getUTCDate() + 1;
           const dailyRate = (actualMonthlyRate * 12) / 365;
           amount = Math.round(dailyRate * daysUsed * 100) / 100;
-          description = `Pro-rated payment from ${formatDateForDisplay(startDate)} to ${formatDateForDisplay(billingEnd)} (${daysUsed} days) - PREPAID: Due on 25th of current month`;
+          description = `Pro-rated payment from ${formatDateForDisplay(startDate)} to ${formatDateForDisplay(billingEnd)} (${daysUsed} days) - Due on 25th of current month`;
           isProRatedFlag = true;
           proRatedDaysCount = daysUsed;
           items.push({
@@ -590,7 +580,7 @@ export const initializeBackdatedBilling = async (
           });
         } else if (currentBillDate < today) {
           isMissingBill = true;
-          description = `[MISSING BILL - BACKDATED] Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)} - PREPAID`;
+          description = `[MISSING BILL - BACKDATED] Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}`;
           items.push({
             description: description,
             quantity: 1,
@@ -624,8 +614,8 @@ export const initializeBackdatedBilling = async (
           notes:
             notes ||
             (isMissingBill
-              ? `MISSING BILL - Generated from backdated billing. Original period: ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}. Customer started service on ${formatDateForDisplay(startDate)}. PREPAID: Due on 5th of current month.`
-              : `Generated from backdated billing starting ${formatDateForDisplay(startDate)}. PREPAID: Due on 5th of current month.`),
+              ? `MISSING BILL - Generated from backdated billing. Original period: ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}. Customer started service on ${formatDateForDisplay(startDate)}. Due on 5th of next month.`
+              : `Generated from backdated billing starting ${formatDateForDisplay(startDate)}. Due on 5th of next month.`),
         };
 
         const newBill = await Billing.create([billData], { session });
@@ -839,19 +829,24 @@ export const startBilling = async (
 
     let createdInstallationBill: any = null;
     let createdProRatedBill: any = null;
+    let createdMonthlyBill: any = null;
     let billingStatus = "active";
 
-    // FIXED: CORRECT PRO-RATED LOGIC WITH PREPAID
+    // ==================== PRO-RATED LOGIC ====================
+    // Pag installation date ay 1-24: mag bill ng pro-rated (installation date hanggang katapusan) due on 25th of same month
+    // Pag installation date ay 25-end of month: mag bill ng regular monthly (next month) due on 5th of next month
+    // Kasama na ang regular monthly bill
+
     if (!isAfterCutoff) {
       // CASE 1: Installation on days 1-24 (before or on cutoff)
       // Customer pays pro-rated amount for current month (installation date to end of month)
-      // Due date is on the 25th of the SAME month (PREPAID)
+      // Due date is on the 25th of the SAME month
+      // Regular monthly bill for next month will be generated separately on next billing cycle
 
       const proRatedAmount =
         Math.round(dailyRate * actualBillableDays * 100) / 100;
       const finalProRatedAmount = customAmount ? customAmount : proRatedAmount;
 
-      // Pro-rated period: from installation date to end of current month
       const proRatedStartDate = installationDate;
       const proRatedEndDate = currentMonthEnd;
 
@@ -883,7 +878,7 @@ export const startBilling = async (
         { session },
       );
 
-      // Create pro-rated bill for current month (PREPAID - due on 25th)
+      // Create pro-rated bill for current month (due on 25th of CURRENT month)
       createdProRatedBill = await createProRatedBill(
         application,
         billingCycle[0]._id,
@@ -924,10 +919,11 @@ export const startBilling = async (
 
       clearAllCache();
 
-      let message = `Installation on day ${installationDay} (on/before cutoff). Pro-rated amount of ₱${finalProRatedAmount.toFixed(2)} for ${actualBillableDays} days PREPAID due on ${formatDateForDisplay(createdProRatedBill.dueDate)}.`;
+      let message = `Installation on day ${installationDay} (on/before cutoff). Pro-rated amount of ₱${finalProRatedAmount.toFixed(2)} for ${actualBillableDays} days due on ${formatDateForDisplay(createdProRatedBill.dueDate)}.`;
       if (createdInstallationBill) {
         message += ` Installation fee of ₱${installationFee.toFixed(2)} billed separately (Invoice: ${createdInstallationBill.invoiceNumber}, due on ${formatDateForDisplay(createdInstallationBill.dueDate)}).`;
       }
+      message += ` Regular monthly billing will start next month on 1st.`;
 
       res.status(200).json({
         success: true,
@@ -953,7 +949,7 @@ export const startBilling = async (
       });
     } else {
       // CASE 2: Installation on days 25-last day (after cutoff)
-      // Customer's FIRST bill will be the regular monthly bill for NEXT month (PREPAID - due on 5th of that month)
+      // Customer's FIRST bill will be the regular monthly bill for NEXT month (due on 5th of that month)
       // No pro-rated bill for current month
 
       const nextFullMonthStart = getStartOfNextMonth(installationDate);
@@ -967,7 +963,7 @@ export const startBilling = async (
             planId: plan._id,
             monthlyRate: monthlyRate,
             currentProRatedAmount: 0,
-            proRatedPaid: true, // No pro-rated needed
+            proRatedPaid: true,
             actualBillableDays: 0,
             isAfterCutoff: true,
             cutoffDayUsed: billingCutoffDay,
@@ -983,8 +979,8 @@ export const startBilling = async (
         { session },
       );
 
-      // Create regular monthly bill for next month (PREPAID - due on 5th)
-      const monthlyBill = await createMonthlyBill(
+      // Create regular monthly bill for next month (due on 5th of NEXT month)
+      createdMonthlyBill = await createMonthlyBill(
         application,
         billingCycle[0]._id,
         nextFullMonthStart,
@@ -1025,7 +1021,7 @@ export const startBilling = async (
 
       clearAllCache();
 
-      let message = `Installation on day ${installationDay} (after cutoff). First monthly bill of ₱${monthlyRate.toFixed(2)} for period ${formatDateForDisplay(nextFullMonthStart)} to ${formatDateForDisplay(nextFullMonthEnd)} PREPAID due on ${formatDateForDisplay(monthlyBill.dueDate)}.`;
+      let message = `Installation on day ${installationDay} (after cutoff). First monthly bill of ₱${monthlyRate.toFixed(2)} for period ${formatDateForDisplay(nextFullMonthStart)} to ${formatDateForDisplay(nextFullMonthEnd)} due on ${formatDateForDisplay(createdMonthlyBill.dueDate)}.`;
       if (createdInstallationBill) {
         message += ` Installation fee of ₱${installationFee.toFixed(2)} billed separately (Invoice: ${createdInstallationBill.invoiceNumber}, due on ${formatDateForDisplay(createdInstallationBill.dueDate)}).`;
       }
@@ -1035,7 +1031,7 @@ export const startBilling = async (
         message: message,
         data: {
           billingCycle: billingCycle[0],
-          monthlyBill: monthlyBill,
+          monthlyBill: createdMonthlyBill,
           installationBill: createdInstallationBill,
           proRatedAmount: 0,
           dailyRate: dailyRate,
@@ -1045,7 +1041,7 @@ export const startBilling = async (
           installationDay: installationDay,
           billingCutoffDay: billingCutoffDay,
           isAfterCutoff: true,
-          dueDate: monthlyBill.dueDate,
+          dueDate: createdMonthlyBill.dueDate,
           nextBillingDate: nextBillingDate,
           applicationId: application.applicationId,
           installationFee: installationFee,
@@ -2639,7 +2635,7 @@ export const autoGenerateMonthlyBills = async (
           );
           billsGeneratedForThisCycle++;
           console.log(
-            `✅ Generated missing monthly bill for ${application.firstName} ${application.lastName} - Period: ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)} - Amount: ₱${plan.price} - PREPAID Due: ${formatDateForDisplay(monthlyBill.dueDate)}`,
+            `✅ Generated missing monthly bill for ${application.firstName} ${application.lastName} - Period: ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)} - Amount: ₱${plan.price} - Due: ${formatDateForDisplay(monthlyBill.dueDate)}`,
           );
         }
 
