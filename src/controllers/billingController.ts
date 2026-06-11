@@ -102,21 +102,78 @@ function formatDateForDisplay(date: Date): string {
   return `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
 }
 
-function getDueDateForMonthly(billingStartDate: Date, settings: any): Date {
+// FIXED: Due date for monthly billing - on the 5th day of the CURRENT month (pre-payment)
+function getDueDateForMonthly(billingPeriodStart: Date, settings: any): Date {
   const dueDay = settings.monthlyDueDay || 5;
-  const dueDate = new Date(billingStartDate);
-  dueDate.setMonth(dueDate.getMonth() + 1);
-  let targetDay = dueDay;
+  const dueDate = new Date(billingPeriodStart);
+
   const lastDayOfMonth = new Date(
     dueDate.getFullYear(),
     dueDate.getMonth() + 1,
     0,
   ).getDate();
+
+  let targetDay = dueDay;
   if (targetDay > lastDayOfMonth) {
     targetDay = lastDayOfMonth;
   }
+
   dueDate.setDate(targetDay);
   dueDate.setHours(23, 59, 59, 999);
+
+  if (dueDate < billingPeriodStart) {
+    dueDate.setMonth(dueDate.getMonth() + 1);
+    const newLastDay = new Date(
+      dueDate.getFullYear(),
+      dueDate.getMonth() + 1,
+      0,
+    ).getDate();
+    let newTargetDay = dueDay;
+    if (newTargetDay > newLastDay) {
+      newTargetDay = newLastDay;
+    }
+    dueDate.setDate(newTargetDay);
+  }
+
+  return dueDate;
+}
+
+// FIXED: For regular monthly billing - due date on the 5th of the CURRENT month
+function getDueDateForRegularMonthly(
+  billingPeriodStart: Date,
+  settings: any,
+): Date {
+  const dueDay = settings.monthlyDueDay || 5;
+  const dueDate = new Date(billingPeriodStart);
+
+  const lastDayOfMonth = new Date(
+    dueDate.getFullYear(),
+    dueDate.getMonth() + 1,
+    0,
+  ).getDate();
+
+  let targetDay = dueDay;
+  if (targetDay > lastDayOfMonth) {
+    targetDay = lastDayOfMonth;
+  }
+
+  dueDate.setDate(targetDay);
+  dueDate.setHours(23, 59, 59, 999);
+
+  if (dueDate < billingPeriodStart) {
+    dueDate.setMonth(dueDate.getMonth() + 1);
+    const newLastDay = new Date(
+      dueDate.getFullYear(),
+      dueDate.getMonth() + 1,
+      0,
+    ).getDate();
+    let newTargetDay = dueDay;
+    if (newTargetDay > newLastDay) {
+      newTargetDay = newLastDay;
+    }
+    dueDate.setDate(newTargetDay);
+  }
+
   return dueDate;
 }
 
@@ -133,24 +190,6 @@ function getDueDateForProRated(installationDate: Date, settings: any): Date {
   if (dueDate < installationDate) {
     return new Date(year, month, lastDayOfMonth, 23, 59, 59, 999);
   }
-  return dueDate;
-}
-
-function getDueDateForRegularMonthly(currentDate: Date, settings: any): Date {
-  const dueDay = settings.monthlyDueDay || 5;
-  const dueDate = new Date(currentDate);
-  dueDate.setMonth(dueDate.getMonth() + 1);
-  let targetDay = dueDay;
-  const lastDayOfMonth = new Date(
-    dueDate.getFullYear(),
-    dueDate.getMonth() + 1,
-    0,
-  ).getDate();
-  if (targetDay > lastDayOfMonth) {
-    targetDay = lastDayOfMonth;
-  }
-  dueDate.setDate(targetDay);
-  dueDate.setHours(23, 59, 59, 999);
   return dueDate;
 }
 
@@ -261,14 +300,12 @@ async function createInstallationBill(
     session,
   });
 
-  // Update billing cycle with installation bill reference
   await BillingCycle.updateOne(
     { _id: billingCycleId },
     { $set: { installationFeeBillId: installationBill[0]._id } },
     { session },
   );
 
-  // Send installation fee invoice email
   try {
     await sendInvoiceToApplication(application, installationBill[0]);
     console.log(`📧 Sent installation fee invoice to ${application.email}`);
@@ -292,6 +329,7 @@ async function createMonthlyBill(
   proRatedAmount: number = 0,
   session?: mongoose.ClientSession,
 ): Promise<any> {
+  // FIXED: Use the fixed due date function that puts due date on 5th of current month
   const dueDate = getDueDateForRegularMonthly(billingStart, settings);
   let amount = monthlyRate;
   let description = `Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}`;
@@ -333,7 +371,7 @@ async function createMonthlyBill(
     installationFeePaid: false,
     notes: isProRated
       ? "Pro-rated payment for partial month"
-      : "Monthly subscription",
+      : "Monthly subscription - Please pay on or before due date",
     applicationId: application.applicationId,
   };
 
@@ -343,7 +381,6 @@ async function createMonthlyBill(
 
   const createdBill = session ? bill[0] : bill;
 
-  // Send email
   try {
     await sendInvoiceToApplication(application, createdBill);
   } catch (emailError) {
@@ -486,11 +523,11 @@ export const initializeBackdatedBilling = async (
     currentBillDate.setHours(0, 0, 0, 0);
     let totalMonthlyAmount = 0;
     const unpaidMonths = [];
-    let isFirstBill = true;
 
     while (currentBillDate <= today) {
       const billingStart = new Date(currentBillDate);
       const billingEnd = getEndOfMonth(billingStart);
+      // FIXED: Use getDueDateForRegularMonthly for consistent due date calculation
       const dueDate = getDueDateForRegularMonthly(billingStart, settings);
 
       const existingBill = await Billing.findOne({
@@ -503,8 +540,8 @@ export const initializeBackdatedBilling = async (
       if (!existingBill) {
         let amount = actualMonthlyRate;
         let description = `Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}`;
-        let isProRated = false;
-        let proRatedDays = 0;
+        let isProRatedFlag = false;
+        let proRatedDaysCount = 0;
         let isMissingBill = false;
         let items: any[] = [];
 
@@ -526,8 +563,8 @@ export const initializeBackdatedBilling = async (
           const dailyRate = (actualMonthlyRate * 12) / 365;
           amount = Math.round(dailyRate * daysUsed * 100) / 100;
           description = `Pro-rated payment from ${formatDateForDisplay(startDate)} to ${formatDateForDisplay(billingEnd)} (${daysUsed} days)`;
-          isProRated = true;
-          proRatedDays = daysUsed;
+          isProRatedFlag = true;
+          proRatedDaysCount = daysUsed;
           items.push({
             description: description,
             quantity: daysUsed,
@@ -561,8 +598,8 @@ export const initializeBackdatedBilling = async (
           subtotal: amount,
           total: amount,
           status: "sent",
-          isProRated: isProRated,
-          proRatedDays: proRatedDays,
+          isProRated: isProRatedFlag,
+          proRatedDays: proRatedDaysCount,
           isInstallationBill: false,
           installationFee: 0,
           installationFeePaid: false,
@@ -570,8 +607,8 @@ export const initializeBackdatedBilling = async (
           notes:
             notes ||
             (isMissingBill
-              ? `MISSING BILL - Generated from backdated billing. Original period: ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}. Customer started service on ${formatDateForDisplay(startDate)}.`
-              : `Generated from backdated billing starting ${formatDateForDisplay(startDate)}`),
+              ? `MISSING BILL - Generated from backdated billing. Original period: ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}. Customer started service on ${formatDateForDisplay(startDate)}. Please pay on or before ${formatDateForDisplay(dueDate)}.`
+              : `Generated from backdated billing starting ${formatDateForDisplay(startDate)}. Please pay on or before ${formatDateForDisplay(dueDate)}.`),
         };
 
         const newBill = await Billing.create([billData], { session });
@@ -608,7 +645,6 @@ export const initializeBackdatedBilling = async (
       currentBillDate.setMonth(currentBillDate.getMonth() + 1);
     }
 
-    // Create SEPARATE installation bill if applicable
     let installationBill = null;
     if (installationFee > 0) {
       installationBill = await createInstallationBill(
@@ -829,7 +865,6 @@ export const startBilling = async (
         { session },
       );
 
-      // Create monthly bill (combined pro-rated + full month)
       const totalMonthlyAmount = monthlyRate + proRatedAmount;
       const dueDate = getDueDateForMonthly(billingStartDateForCycle, settings);
 
@@ -870,7 +905,6 @@ export const startBilling = async (
 
       createdMonthlyBill = await Billing.create([billData], { session });
 
-      // Create SEPARATE installation bill
       if (installationFee > 0) {
         createdInstallationBill = await createInstallationBill(
           application,
@@ -959,7 +993,6 @@ export const startBilling = async (
         { session },
       );
 
-      // Create pro-rated monthly bill
       const dueDate = getDueDateForProRated(installationDate, settings);
 
       const items: any[] = [
@@ -995,7 +1028,6 @@ export const startBilling = async (
 
       createdMonthlyBill = await Billing.create([billData], { session });
 
-      // Create SEPARATE installation bill
       if (installationFee > 0) {
         createdInstallationBill = await createInstallationBill(
           application,
@@ -2266,17 +2298,7 @@ export const startMonthlyBilling = async (
 
     const billingEnd = getEndOfMonth(billingStart);
 
-    const dueDate = new Date(billingStart);
-    dueDate.setMonth(dueDate.getMonth() + 1);
-    let targetDay = monthlyDueDay;
-    const lastDayOfMonth = new Date(
-      dueDate.getFullYear(),
-      dueDate.getMonth() + 1,
-      0,
-    ).getDate();
-    if (targetDay > lastDayOfMonth) targetDay = lastDayOfMonth;
-    dueDate.setDate(targetDay);
-    dueDate.setHours(23, 59, 59, 999);
+    const dueDate = getDueDateForMonthly(billingStart, settings);
 
     const plan = billingCycle.planId as any;
     const monthlyRate = plan.price;
@@ -2659,7 +2681,7 @@ export const autoGenerateMonthlyBills = async (
           );
           billsGeneratedForThisCycle++;
           console.log(
-            `✅ Generated missing monthly bill for ${application.firstName} ${application.lastName} - Period: ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)} - Amount: ₱${plan.price}`,
+            `✅ Generated missing monthly bill for ${application.firstName} ${application.lastName} - Period: ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)} - Amount: ₱${plan.price} - Due: ${formatDateForDisplay(monthlyBill.dueDate)}`,
           );
         }
 
@@ -2730,7 +2752,6 @@ export const autoSendReminders = async (req?: AuthRequest, res?: Response) => {
     let remindersSent = 0;
     let dueDateRemindersSent = 0;
 
-    // Reminders for monthly bills (7, 3, 1 days before due date)
     for (const days of reminderDays) {
       const targetDate = new Date(today);
       targetDate.setDate(targetDate.getDate() + days);
@@ -2758,7 +2779,6 @@ export const autoSendReminders = async (req?: AuthRequest, res?: Response) => {
         }).lean();
 
         if (application && application.email) {
-          // Create a temporary user object for email service
           const tempUser = {
             _id: application.applicationId,
             email: application.email,
@@ -2781,7 +2801,6 @@ export const autoSendReminders = async (req?: AuthRequest, res?: Response) => {
       }
     }
 
-    // ==================== DUE DATE REMINDERS (SENT ON ACTUAL DUE DATE) ====================
     const dueDateBills = await Billing.find({
       status: "sent",
       dueDate: {
@@ -2823,7 +2842,6 @@ export const autoSendReminders = async (req?: AuthRequest, res?: Response) => {
       }
     }
 
-    // Reminders for installation bills
     const installationBills = await Billing.find({
       isInstallationBill: true,
       installationFeePaid: false,
@@ -2852,7 +2870,6 @@ export const autoSendReminders = async (req?: AuthRequest, res?: Response) => {
           role: "user",
         } as any;
 
-        // Check if it's exactly the due date for installation bill
         const dueDate = new Date(bill.dueDate);
         dueDate.setHours(0, 0, 0, 0);
         const isDueDate = dueDate.getTime() === today.getTime();
