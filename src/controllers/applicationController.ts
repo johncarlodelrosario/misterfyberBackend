@@ -234,7 +234,6 @@ export const submitApplication = async (
     const normalizedPhoneNumber = phoneNumber?.trim();
 
     // CHECK FOR DUPLICATE CUSTOMER - Enhanced duplicate prevention
-    // Check 1: Existing registered user with same email
     const existingUser = await User.findOne({
       email: normalizedEmail,
     }).lean();
@@ -251,7 +250,6 @@ export const submitApplication = async (
       });
     }
 
-    // Check 2: Check for ANY existing application with same email (including all statuses)
     const existingApplicationByEmail = await Application.findOne({
       email: normalizedEmail,
     }).lean();
@@ -299,7 +297,6 @@ export const submitApplication = async (
       });
     }
 
-    // Check 3: Check for duplicate phone number
     const existingApplicationByPhone = await Application.findOne({
       phoneNumber: normalizedPhoneNumber,
     }).lean();
@@ -316,7 +313,6 @@ export const submitApplication = async (
       });
     }
 
-    // Check 4: Check if the same unit already has active service in the building
     const existingActiveService = await Application.findOne({
       buildingId: new mongoose.Types.ObjectId(buildingId),
       floor: floor?.toString().trim(),
@@ -333,7 +329,6 @@ export const submitApplication = async (
       });
     }
 
-    // Fetch building and plan
     const [building, plan] = await Promise.all([
       Building.findById(buildingId)
         .lean()
@@ -377,7 +372,6 @@ export const submitApplication = async (
       }
     }
 
-    // Create application
     const applicationData = {
       firstName: firstName?.trim(),
       lastName: lastName?.trim(),
@@ -411,7 +405,6 @@ export const submitApplication = async (
     const fullImageUrl = getImageUrl(application.idImage);
     const populatedPlan = populatedApplication?.planId as any;
 
-    // Send emails (outside transaction)
     try {
       console.log("📧 Sending application received email to client...");
       await emailService.sendApplicationReceived(application, populatedPlan);
@@ -483,7 +476,7 @@ export const checkApplicationStatus = async (
     const { applicationId } = req.params;
     const application = await Application.findOne({ applicationId })
       .select(
-        "applicationId status idImage floor unitNumber notes createdAt adminNotes billingStarted billingCycleId registeredUserId firstName lastName email phoneNumber idType idNumber macAddress buildingId",
+        "applicationId status idImage floor unitNumber notes createdAt adminNotes billingStarted billingCycleId registeredUserId firstName lastName email phoneNumber idType idNumber macAddress buildingId buildingName",
       )
       .populate("planId", "name price speed")
       .populate(
@@ -514,6 +507,7 @@ export const checkApplicationStatus = async (
         macAddress: application.macAddress || "",
         plan: application.planId,
         building: application.buildingId,
+        buildingName: application.buildingName,
         floor: application.floor,
         unitNumber: application.unitNumber,
         notes: application.notes,
@@ -550,10 +544,13 @@ export const getAllApplications = async (
       Application.countDocuments(query),
       Application.find(query)
         .select(
-          "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber floor unitNumber macAddress",
+          "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber floor unitNumber macAddress buildingId buildingName",
         )
         .populate("planId", "name price speed")
-        .populate("buildingId", "buildingName streetAddress city")
+        .populate(
+          "buildingId",
+          "buildingName streetAddress city barangay region province zipCode isActive",
+        )
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limitNum)
@@ -566,6 +563,8 @@ export const getAllApplications = async (
       idImageUrl: getImageUrl(app.idImage),
       hasAccount: !!app.registeredUserId,
       macAddress: app.macAddress || "",
+      // Map buildingId to building for frontend compatibility
+      building: app.buildingId,
     }));
 
     res.status(200).json({
@@ -593,7 +592,7 @@ export const getApplication = async (
       .populate("planId", "name price speed duration features")
       .populate(
         "buildingId",
-        "buildingName streetAddress region province city barangay zipCode",
+        "buildingName streetAddress region province city barangay zipCode isActive",
       )
       .populate("reviewedBy", "firstName lastName email")
       .lean()
@@ -612,6 +611,7 @@ export const getApplication = async (
         ...application,
         idImageUrl,
         macAddress: application.macAddress || "",
+        building: application.buildingId,
       },
     });
   } catch (error) {
