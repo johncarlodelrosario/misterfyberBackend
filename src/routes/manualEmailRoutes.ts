@@ -9,6 +9,8 @@ import {
   deleteEmailTemplate,
   previewEmail,
   sendReminderToUnpaid,
+  getSentRecords,
+  deleteSentRecord,
 } from "../controllers/manualEmailController";
 import { protect, adminMiddleware } from "../middleware/auth";
 
@@ -31,6 +33,10 @@ router.post("/send-reminder-unpaid", sendReminderToUnpaid);
 router.get("/templates", getEmailTemplates);
 router.post("/templates", saveEmailTemplate);
 router.delete("/templates/:templateId", deleteEmailTemplate);
+
+// Sent records
+router.get("/sent-records", getSentRecords);
+router.delete("/sent-records/:recordId", deleteSentRecord);
 
 // Preview
 router.post("/preview", previewEmail);

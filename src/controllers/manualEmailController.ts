@@ -4,6 +4,7 @@ import Application from "../models/Application";
 import User from "../models/User";
 import Billing from "../models/Billing";
 import BillingCycle from "../models/BillingCycle";
+import EmailSentRecord from "../models/EmailSentRecord";
 import emailService from "../services/emailService";
 import { IUser } from "../models/User";
 
@@ -104,7 +105,6 @@ function generateEmailPreview(
           <p><small>Need help? Contact us at <a href="mailto:support@misterfyber.com">support@misterfyber.com</a></small></p>
         </div>
       </div>
-    </body>
     </html>
   `;
 }
@@ -284,8 +284,10 @@ export const sendManualEmail = async (
     }
 
     let billingData = null;
+    let selectedBillId = null;
     if (includeBilling && billId) {
       billingData = await Billing.findById(billId).lean();
+      selectedBillId = billId;
       if (!billingData) {
         await session.abortTransaction();
         return res.status(404).json({
@@ -316,18 +318,8 @@ export const sendManualEmail = async (
       emailHtml,
     );
 
-    if (!emailSent) {
-      await session.abortTransaction();
-      return res.status(500).json({
-        success: false,
-        message:
-          "Failed to send email. Please check email service configuration.",
-      });
-    }
-
-    // Send copy to admin if requested
     let adminCopySent = false;
-    if (sendCopyToAdmin) {
+    if (emailSent && sendCopyToAdmin) {
       const adminEmail = process.env.ADMIN_EMAIL || process.env.EMAIL_FROM;
       if (adminEmail) {
         const adminHtml = `
@@ -364,9 +356,35 @@ export const sendManualEmail = async (
       }
     }
 
-    // Log the email in database (optional - you can create an EmailLog model)
-    // For now, we'll just log to console
-    console.log(`📧 Manual email sent to ${application.email}: ${subject}`);
+    // Save sent record
+    const sentRecord = new EmailSentRecord({
+      applicationId: application.applicationId,
+      customerName: `${application.firstName} ${application.lastName}`,
+      customerEmail: application.email,
+      subject,
+      message,
+      sentAt: new Date(),
+      status: emailSent ? "sent" : "failed",
+      isBulk: false,
+      recipientCount: 1,
+      includeBilling: includeBilling || false,
+      billId: selectedBillId,
+      error: emailSent ? undefined : "Failed to send email",
+      sentBy: req.user?.username || req.user?.email || "Admin",
+      sentByEmail: req.user?.email || "admin@misterfyber.com",
+      adminCopySent: adminCopySent || false,
+    });
+
+    await sentRecord.save({ session });
+
+    if (!emailSent) {
+      await session.abortTransaction();
+      return res.status(500).json({
+        success: false,
+        message:
+          "Failed to send email. Please check email service configuration.",
+      });
+    }
 
     await session.commitTransaction();
 
@@ -379,6 +397,7 @@ export const sendManualEmail = async (
         subject,
         sentAt: new Date().toISOString(),
         adminCopySent,
+        recordId: sentRecord._id,
       },
     });
   } catch (error) {
@@ -428,6 +447,7 @@ export const sendBulkEmails = async (
     const results = [];
     let successCount = 0;
     let failCount = 0;
+    const sentRecords = [];
 
     for (const applicationId of applicationIds) {
       try {
@@ -443,6 +463,9 @@ export const sendBulkEmails = async (
         }
 
         let billingData = null;
+        let selectedBillId = null;
+        let selectedBillType = billType;
+
         if (includeBilling) {
           let billQuery: any = { applicationId: application.applicationId };
           if (billType === "unpaid") {
@@ -462,6 +485,13 @@ export const sendBulkEmails = async (
           if (!billingData && billType !== "latest") {
             billingData = await Billing.findOne(billQuery).lean();
           }
+
+          if (billingData) {
+            selectedBillId = billingData._id;
+            const frontendUrl =
+              process.env.FRONTEND_URL || "https://www.misterfyber.com";
+            billingData.paymentLink = `${frontendUrl}/billing/${billingData._id}`;
+          }
         }
 
         const emailHtml = generateEmailPreview(
@@ -479,6 +509,27 @@ export const sendBulkEmails = async (
           emailHtml,
         );
 
+        const record = new EmailSentRecord({
+          applicationId: application.applicationId,
+          customerName: `${application.firstName} ${application.lastName}`,
+          customerEmail: application.email,
+          subject,
+          message,
+          sentAt: new Date(),
+          status: emailSent ? "sent" : "failed",
+          isBulk: true,
+          recipientCount: 1,
+          includeBilling: includeBilling || false,
+          billType: selectedBillType,
+          billId: selectedBillId,
+          error: emailSent ? undefined : "Failed to send email",
+          sentBy: req.user?.username || req.user?.email || "Admin",
+          sentByEmail: req.user?.email || "admin@misterfyber.com",
+          adminCopySent: false,
+        });
+
+        await record.save();
+
         if (emailSent) {
           successCount++;
           results.push({
@@ -487,6 +538,7 @@ export const sendBulkEmails = async (
             name: `${application.firstName} ${application.lastName}`,
             success: true,
           });
+          sentRecords.push(record);
         } else {
           failCount++;
           results.push({
@@ -735,6 +787,7 @@ export const sendReminderToUnpaid = async (
 
     const results = [];
     let sentCount = 0;
+    const sentRecords = [];
 
     for (const applicationId of uniqueApplicationIds) {
       if (!applicationId) continue;
@@ -750,7 +803,6 @@ export const sendReminderToUnpaid = async (
         0,
       );
 
-      // Fix: Properly find the earliest due date
       let earliestDueDate: Date | null = null;
       for (const bill of customerBills) {
         if (bill.dueDate) {
@@ -776,16 +828,36 @@ export const sendReminderToUnpaid = async (
         "Payment Reminder - Unpaid Bill(s)",
         reminderMessage,
         true,
-        customerBills[0], // Show the most urgent bill
+        customerBills[0],
         application,
       );
 
-      // Use forceSendEmail for reminders as well
       const sent = await emailService.forceSendEmail(
         application.email,
         `⚠️ Payment Reminder - ${customerBills.length} Unpaid Bill(s)`,
         emailHtml,
       );
+
+      const record = new EmailSentRecord({
+        applicationId: application.applicationId,
+        customerName: `${application.firstName} ${application.lastName}`,
+        customerEmail: application.email,
+        subject: `⚠️ Payment Reminder - ${customerBills.length} Unpaid Bill(s)`,
+        message: reminderMessage,
+        sentAt: new Date(),
+        status: sent ? "sent" : "failed",
+        isBulk: true,
+        recipientCount: 1,
+        includeBilling: true,
+        billType: "unpaid",
+        billId: customerBills[0]?._id,
+        error: sent ? undefined : "Failed to send reminder",
+        sentBy: req.user?.username || req.user?.email || "Admin",
+        sentByEmail: req.user?.email || "admin@misterfyber.com",
+        adminCopySent: false,
+      });
+
+      await record.save();
 
       if (sent) {
         sentCount++;
@@ -796,6 +868,7 @@ export const sendReminderToUnpaid = async (
           billsCount: customerBills.length,
           totalAmount,
         });
+        sentRecords.push(record);
       }
 
       await new Promise((resolve) => setTimeout(resolve, 500));
@@ -815,6 +888,99 @@ export const sendReminderToUnpaid = async (
   }
 };
 
+// ==================== GET SENT EMAIL RECORDS ====================
+export const getSentRecords = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  try {
+    const { applicationId, status, isBulk } = req.query;
+
+    let query: any = {};
+
+    if (applicationId) {
+      query.applicationId = applicationId;
+    }
+
+    if (status) {
+      query.status = status;
+    }
+
+    if (isBulk !== undefined) {
+      query.isBulk = isBulk === "true";
+    }
+
+    const records = await EmailSentRecord.find(query)
+      .sort({ sentAt: -1 })
+      .limit(200)
+      .lean();
+
+    // Transform to match frontend interface
+    const formattedRecords = records.map((record) => ({
+      id: record._id.toString(),
+      applicationId: record.applicationId,
+      customerName: record.customerName,
+      customerEmail: record.customerEmail,
+      subject: record.subject,
+      message: record.message,
+      sentAt: record.sentAt,
+      status: record.status,
+      isBulk: record.isBulk,
+      recipientCount: record.recipientCount || 1,
+      includeBilling: record.includeBilling,
+      billType: record.billType,
+      error: record.error,
+    }));
+
+    res.status(200).json({
+      success: true,
+      data: formattedRecords,
+      total: formattedRecords.length,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ==================== DELETE SENT RECORD ====================
+export const deleteSentRecord = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  try {
+    const { recordId } = req.params;
+
+    if (!recordId) {
+      return res.status(400).json({
+        success: false,
+        message: "Record ID is required",
+      });
+    }
+
+    const record = await EmailSentRecord.findByIdAndDelete(recordId);
+
+    if (!record) {
+      return res.status(404).json({
+        success: false,
+        message: "Sent record not found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Sent record deleted successfully",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export default {
   getCustomersForEmail,
   getCustomerBills,
@@ -825,4 +991,6 @@ export default {
   deleteEmailTemplate,
   previewEmail,
   sendReminderToUnpaid,
+  getSentRecords,
+  deleteSentRecord,
 };

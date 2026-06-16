@@ -98,6 +98,12 @@ function getStartOfNextMonth(date: Date): Date {
   return new Date(year, month + 1, 1, 0, 0, 0, 0);
 }
 
+function getFirstDayOfMonth(date: Date): Date {
+  const year = date.getFullYear();
+  const month = date.getMonth();
+  return new Date(year, month, 1, 0, 0, 0, 0);
+}
+
 function formatDateForDisplay(date: Date): string {
   const month = date.getUTCMonth() + 1;
   const day = date.getUTCDate();
@@ -105,7 +111,7 @@ function formatDateForDisplay(date: Date): string {
   return `${month}/${day}/${year}`;
 }
 
-// REGULAR MONTHLY DUE DATE: 5th of CURRENT month (PREPAID)
+// MODIFIED: REGULAR MONTHLY DUE DATE - Still 5th of the month
 function getDueDateForMonthly(billingPeriodStart: Date, settings: any): Date {
   const dueDay = settings.monthlyDueDay || 5;
   const dueDate = new Date(billingPeriodStart);
@@ -273,7 +279,7 @@ async function createInstallationBill(
   return installationBill[0];
 }
 
-// ==================== CREATE REGULAR MONTHLY BILL (PREPAID - due on 5th of CURRENT month) ====================
+// MODIFIED: CREATE REGULAR MONTHLY BILL (Generated on 1st, Due on 5th)
 async function createMonthlyBill(
   application: any,
   billingCycleId: mongoose.Types.ObjectId,
@@ -292,7 +298,7 @@ async function createMonthlyBill(
     dueDate: dueDate,
     items: [
       {
-        description: `Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)} (PREPAID)`,
+        description: `Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)} (PREPAID) - Generated on ${formatDateForDisplay(new Date())}`,
         quantity: 1,
         rate: monthlyRate,
         amount: monthlyRate,
@@ -308,17 +314,24 @@ async function createMonthlyBill(
     isInstallationBill: false,
     installationFee: 0,
     installationFeePaid: false,
-    notes: "Monthly subscription - PREPAID: Due on 5th of current month",
+    notes: `Monthly subscription - PREPAID: Generated on 1st of month, Due on 5th of ${formatDateForDisplay(billingStart)}`,
     applicationId: application.applicationId,
   };
 
-  const bill = session
-    ? await Billing.create([billData], { session })
-    : await Billing.create([billData]);
-  const createdBill = session ? bill[0] : bill;
+  let createdBill: any;
+
+  if (session) {
+    const bill = await Billing.create([billData], { session });
+    createdBill = bill[0];
+  } else {
+    createdBill = await Billing.create([billData]);
+  }
 
   try {
     await sendInvoiceToApplication(application, createdBill);
+    console.log(
+      `📧 Sent monthly invoice ${createdBill.invoiceNumber} to ${application.email}`,
+    );
   } catch (emailError) {
     console.error("Failed to send invoice email:", emailError);
   }
@@ -382,10 +395,14 @@ async function createProRatedBill(
     applicationId: application.applicationId,
   };
 
-  const bill = session
-    ? await Billing.create([billData], { session })
-    : await Billing.create([billData]);
-  const createdBill = session ? bill[0] : bill;
+  let createdBill: any;
+
+  if (session) {
+    const bill = await Billing.create([billData], { session });
+    createdBill = bill[0];
+  } else {
+    createdBill = await Billing.create([billData]);
+  }
 
   try {
     await sendInvoiceToApplication(application, createdBill);
@@ -496,7 +513,7 @@ export const initializeBackdatedBilling = async (
 
     const nextFullMonthStart = getStartOfNextMonth(startDate);
     const nextFullMonthEnd = getEndOfMonth(nextFullMonthStart);
-    const nextBillingDate = getStartOfNextMonth(nextFullMonthStart);
+    const nextBillingDate = getFirstDayOfMonth(nextFullMonthStart);
 
     const billingCycle = await BillingCycle.create(
       [
@@ -526,7 +543,7 @@ export const initializeBackdatedBilling = async (
     let totalMonthlyAmount = 0;
     const unpaidMonths = [];
 
-    // Generate pro-rated bill for the first month (from startDate to end of that month)
+    // Generate pro-rated bill for the first month
     if (startDate.getUTCDate() > 1) {
       const daysInMonth = new Date(
         Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth() + 1, 0),
@@ -619,7 +636,7 @@ export const initializeBackdatedBilling = async (
             {
               description: isMissingBill
                 ? `[MISSING BILL - BACKDATED] Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)} (PREPAID)`
-                : `Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)} (PREPAID)`,
+                : `Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)} (PREPAID) - Generated on ${formatDateForDisplay(new Date())}`,
               quantity: 1,
               rate: amount,
               amount: amount,
@@ -637,8 +654,8 @@ export const initializeBackdatedBilling = async (
           notes:
             notes ||
             (isMissingBill
-              ? `MISSING BILL - Generated from backdated billing. Original period: ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}. Customer started service on ${formatDateForDisplay(startDate)}. PREPAID: Due on 5th of current month.`
-              : `Generated from backdated billing starting ${formatDateForDisplay(startDate)}. PREPAID: Due on 5th of current month.`),
+              ? `MISSING BILL - Generated from backdated billing. Original period: ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}. Customer started service on ${formatDateForDisplay(startDate)}. PREPAID: Generated on 1st, Due on 5th.`
+              : `Generated from backdated billing starting ${formatDateForDisplay(startDate)}. PREPAID: Generated on 1st, Due on 5th.`),
         };
 
         const newBill = await Billing.create([billData], { session });
@@ -675,12 +692,14 @@ export const initializeBackdatedBilling = async (
       currentBillDate.setUTCMonth(currentBillDate.getUTCMonth() + 1);
     }
 
-    // Update next billing date
+    // Update next billing date to first day of next month
     const lastGeneratedMonth = new Date(currentBillDate);
     lastGeneratedMonth.setUTCMonth(lastGeneratedMonth.getUTCMonth() - 1);
     lastGeneratedMonth.setUTCDate(1);
 
-    const newNextBillingDate = getStartOfNextMonth(lastGeneratedMonth);
+    const newNextBillingDate = getFirstDayOfMonth(
+      getStartOfNextMonth(lastGeneratedMonth),
+    );
 
     await BillingCycle.updateOne(
       { _id: billingCycle[0]._id },
@@ -853,9 +872,6 @@ export const startBilling = async (
     let billingStatus = "active";
 
     if (!isAfterCutoff) {
-      // CASE 1: Installation on days 1-24
-      // Pro-rated bill due on 25th of CURRENT month
-
       const proRatedAmount =
         Math.round(dailyRate * actualBillableDays * 100) / 100;
       const finalProRatedAmount = customAmount ? customAmount : proRatedAmount;
@@ -865,7 +881,7 @@ export const startBilling = async (
 
       const nextFullMonthStart = getStartOfNextMonth(installationDate);
       const nextFullMonthEnd = getEndOfMonth(nextFullMonthStart);
-      const nextBillingDate = getStartOfNextMonth(nextFullMonthStart);
+      const nextBillingDate = getFirstDayOfMonth(nextFullMonthStart);
 
       const billingCycle = await BillingCycle.create(
         [
@@ -958,10 +974,6 @@ export const startBilling = async (
         },
       });
     } else {
-      // CASE 2: Installation on days 25-last day
-      // Pro-rated bill + Regular monthly bill
-      // BOTH due on 5th of NEXT month
-
       const proRatedAmount =
         Math.round(dailyRate * actualBillableDays * 100) / 100;
       const finalProRatedAmount = customAmount ? customAmount : proRatedAmount;
@@ -971,7 +983,7 @@ export const startBilling = async (
 
       const nextFullMonthStart = getStartOfNextMonth(installationDate);
       const nextFullMonthEnd = getEndOfMonth(nextFullMonthStart);
-      const nextBillingDate = getStartOfNextMonth(nextFullMonthStart);
+      const nextBillingDate = getFirstDayOfMonth(nextFullMonthStart);
 
       const combinedDueDate = getDueDateForMonthly(
         nextFullMonthStart,
@@ -1020,7 +1032,7 @@ export const startBilling = async (
         dueDate: combinedDueDate,
         items: [
           {
-            description: `Monthly Subscription - ${formatDateForDisplay(nextFullMonthStart)} to ${formatDateForDisplay(nextFullMonthEnd)} (PREPAID)`,
+            description: `Monthly Subscription - ${formatDateForDisplay(nextFullMonthStart)} to ${formatDateForDisplay(nextFullMonthEnd)} (PREPAID) - Generated on ${formatDateForDisplay(new Date())}`,
             quantity: 1,
             rate: monthlyRate,
             amount: monthlyRate,
@@ -1036,12 +1048,14 @@ export const startBilling = async (
         isInstallationBill: false,
         installationFee: 0,
         installationFeePaid: false,
-        notes: `Regular monthly subscription - PREPAID: Due on 5th of current month (${formatDateForDisplay(nextFullMonthStart)} to ${formatDateForDisplay(nextFullMonthEnd)})`,
+        notes: `Regular monthly subscription - PREPAID: Generated on 1st, Due on 5th of ${formatDateForDisplay(nextFullMonthStart)}`,
         applicationId: application.applicationId,
       };
 
-      createdMonthlyBill = await Billing.create([monthlyBillData], { session });
-      createdMonthlyBill = createdMonthlyBill[0];
+      const monthlyBillResult = await Billing.create([monthlyBillData], {
+        session,
+      });
+      createdMonthlyBill = monthlyBillResult[0];
 
       try {
         await sendInvoiceToApplication(application, createdMonthlyBill);
@@ -1665,7 +1679,7 @@ export const resumeBilling = async (
     }
 
     const resumeDate = new Date();
-    const nextBillingDate = getStartOfNextMonth(resumeDate);
+    const nextBillingDate = getFirstDayOfMonth(getStartOfNextMonth(resumeDate));
 
     await BillingCycle.updateOne(
       { _id: billingCycle._id },
@@ -2296,8 +2310,7 @@ export const startMonthlyBilling = async (
     const settings = await getOrCreateSettings();
 
     const today = new Date();
-    let billingStart = new Date(today);
-    billingStart.setUTCDate(1);
+    let billingStart = getFirstDayOfMonth(today);
     billingStart.setUTCHours(0, 0, 0, 0);
 
     const billingEnd = getEndOfMonth(billingStart);
@@ -2315,7 +2328,7 @@ export const startMonthlyBilling = async (
       session,
     );
 
-    const nextDate = getStartOfNextMonth(billingStart);
+    const nextDate = getFirstDayOfMonth(getStartOfNextMonth(billingStart));
 
     await BillingCycle.updateOne(
       { _id: billingCycle._id },
@@ -2566,7 +2579,7 @@ export const deleteBillingCycle = async (
   }
 };
 
-// ==================== AUTO-GENERATE MONTHLY BILLS ====================
+// ==================== MODIFIED: AUTO-GENERATE MONTHLY BILLS ON 1ST DAY OF MONTH ====================
 export const autoGenerateMonthlyBills = async (
   req?: AuthRequest,
   res?: Response,
@@ -2575,14 +2588,45 @@ export const autoGenerateMonthlyBills = async (
     const settings = await getOrCreateSettings();
     if (!settings.autoGenerateBills) {
       if (res)
-        return res
-          .status(200)
-          .json({ success: true, message: "Auto-generate bills is disabled" });
+        return res.status(200).json({
+          success: true,
+          message: "Auto-generate bills is disabled",
+        });
       return;
     }
 
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
+
+    // IMPORTANT: Only generate bills on the 1st day of the month
+    if (today.getUTCDate() !== 1) {
+      if (res) {
+        return res.status(200).json({
+          success: true,
+          message: "Bill generation only runs on the 1st day of each month",
+          data: {
+            generated: 0,
+            skipped: 0,
+            reason: "Not the 1st day of month",
+          },
+        });
+      }
+      return;
+    }
+
+    console.log(
+      `📅 Running monthly bill generation for ${formatDateForDisplay(today)} (1st day of month)`,
+    );
+
+    // Get the target month (current month since we're on the 1st)
+    const targetMonthStart = getFirstDayOfMonth(today); // e.g., July 1
+    const targetMonthEnd = getEndOfMonth(targetMonthStart); // e.g., July 31
+    const dueDate = getDueDateForMonthly(targetMonthStart, settings); // Due on July 5
+
+    console.log(
+      `🎯 Generating bills for: ${formatDateForDisplay(targetMonthStart)} to ${formatDateForDisplay(targetMonthEnd)}`,
+    );
+    console.log(`💰 Due date: ${formatDateForDisplay(dueDate)}`);
 
     const billingCycles = await BillingCycle.find({
       status: "active",
@@ -2616,84 +2660,52 @@ export const autoGenerateMonthlyBills = async (
         continue;
       }
 
-      const lastBill = await Billing.findOne({
+      // Check if bill for this month already exists
+      const existingBill = await Billing.findOne({
         applicationId: cycle.applicationId,
         billingCycleId: cycle._id,
         isProRated: false,
         isInstallationBill: false,
-      })
-        .sort({ "billingPeriod.end": -1 })
-        .lean();
+        "billingPeriod.start": targetMonthStart,
+      }).lean();
 
-      let startFromDate: Date;
-
-      if (lastBill) {
-        startFromDate = new Date(lastBill.billingPeriod.end);
-        startFromDate.setUTCDate(1);
-        startFromDate.setUTCMonth(startFromDate.getUTCMonth() + 1);
-      } else {
-        startFromDate = new Date(cycle.nextBillingDate);
-        startFromDate.setUTCDate(1);
-      }
-
-      let currentDate = new Date(startFromDate);
-      let billsGeneratedForThisCycle = 0;
-
-      while (currentDate <= today) {
-        currentDate.setUTCDate(1);
-        currentDate.setUTCHours(0, 0, 0, 0);
-
-        const billingStart = new Date(currentDate);
-        const billingEnd = getEndOfMonth(billingStart);
-
-        const existingBill = await Billing.findOne({
-          applicationId: cycle.applicationId,
-          billingCycleId: cycle._id,
-          isProRated: false,
-          isInstallationBill: false,
-          "billingPeriod.start": billingStart,
-        }).lean();
-
-        if (!existingBill) {
-          await createMonthlyBill(
-            application,
-            cycle._id,
-            billingStart,
-            billingEnd,
-            plan.price,
-            settings,
-          );
-          billsGeneratedForThisCycle++;
-        }
-
-        currentDate.setUTCMonth(currentDate.getUTCMonth() + 1);
-      }
-
-      if (billsGeneratedForThisCycle > 0) {
-        const lastGeneratedMonth = new Date(currentDate);
-        lastGeneratedMonth.setUTCMonth(lastGeneratedMonth.getUTCMonth() - 1);
-        lastGeneratedMonth.setUTCDate(1);
-
-        const newNextBillingDate = new Date(lastGeneratedMonth);
-        newNextBillingDate.setUTCMonth(newNextBillingDate.getUTCMonth() + 1);
-        newNextBillingDate.setUTCDate(1);
-
-        await BillingCycle.updateOne(
-          { _id: cycle._id },
-          { $set: { nextBillingDate: newNextBillingDate } },
+      if (!existingBill) {
+        await createMonthlyBill(
+          application,
+          cycle._id,
+          targetMonthStart,
+          targetMonthEnd,
+          plan.price,
+          settings,
         );
+        generatedCount++;
+        console.log(
+          `✅ Generated bill for ${application.firstName} ${application.lastName} - ${plan.price}`,
+        );
+      } else {
+        console.log(
+          `⏭️ Bill already exists for ${application.firstName} ${application.lastName}`,
+        );
+        skippedCount++;
       }
-
-      generatedCount += billsGeneratedForThisCycle;
     }
 
     clearAllCache();
+    console.log(
+      `📊 Bill generation complete: ${generatedCount} generated, ${skippedCount} skipped`,
+    );
 
     if (res) {
       res.status(200).json({
         success: true,
-        message: `Generated ${generatedCount} monthly bills for applications`,
-        data: { generated: generatedCount, skipped: skippedCount },
+        message: `Generated ${generatedCount} monthly bills for ${formatDateForDisplay(targetMonthStart)} (Due on ${formatDateForDisplay(dueDate)})`,
+        data: {
+          generated: generatedCount,
+          skipped: skippedCount,
+          billingMonth: formatDateForDisplay(targetMonthStart),
+          dueDate: formatDateForDisplay(dueDate),
+          generationDate: formatDateForDisplay(today),
+        },
       });
     }
   } catch (error) {
@@ -2708,7 +2720,7 @@ export const autoGenerateMonthlyBills = async (
   }
 };
 
-// ==================== AUTO SEND REMINDERS ====================
+// ==================== MODIFIED: AUTO SEND REMINDERS ====================
 export const autoSendReminders = async (req?: AuthRequest, res?: Response) => {
   try {
     const settings = await getOrCreateSettings();
@@ -3303,7 +3315,7 @@ export const recoverMissingBills = async (
     let startDate: Date;
     if (startFromDate) {
       startDate = new Date(startFromDate);
-      startDate.setUTCDate(1);
+      startDate = getFirstDayOfMonth(startDate);
       startDate.setUTCHours(0, 0, 0, 0);
     } else {
       const lastPaidBill = await Billing.findOne({
@@ -3315,20 +3327,19 @@ export const recoverMissingBills = async (
 
       if (lastPaidBill) {
         startDate = new Date(lastPaidBill.billingPeriod.end);
-        startDate.setUTCDate(1);
-        startDate.setUTCMonth(startDate.getUTCMonth() + 1);
+        startDate = getFirstDayOfMonth(getStartOfNextMonth(startDate));
       } else {
-        startDate = new Date(billingCycle.billingStartDate);
-        startDate.setUTCDate(1);
+        startDate = getFirstDayOfMonth(billingCycle.billingStartDate);
       }
     }
 
     const currentDate = new Date();
+    currentDate.setUTCHours(0, 0, 0, 0);
     const settings = await getOrCreateSettings();
     const missingBills = [];
     let currentBillDate = new Date(startDate);
 
-    while (currentBillDate < currentDate) {
+    while (currentBillDate <= currentDate) {
       const billingStart = new Date(currentBillDate);
       billingStart.setUTCDate(1);
       billingStart.setUTCHours(0, 0, 0, 0);
@@ -3357,9 +3368,7 @@ export const recoverMissingBills = async (
       currentBillDate.setUTCMonth(currentBillDate.getUTCMonth() + 1);
     }
 
-    const nextBilling = new Date(currentDate);
-    nextBilling.setUTCDate(1);
-    nextBilling.setUTCMonth(nextBilling.getUTCMonth() + 1);
+    const nextBilling = getFirstDayOfMonth(getStartOfNextMonth(currentDate));
 
     await BillingCycle.updateOne(
       { _id: billingCycle._id },
@@ -3497,6 +3506,117 @@ export const getUnpaidBillsReport = async (
   }
 };
 
+// ==================== MANUALLY TRIGGER BILL GENERATION FOR SPECIFIC MONTH ====================
+export const manuallyGenerateBillsForMonth = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  try {
+    const { year, month, applicationId } = req.body;
+
+    const targetDate = new Date();
+    if (year && month) {
+      targetDate.setUTCFullYear(year);
+      targetDate.setUTCMonth(month - 1);
+      targetDate.setUTCDate(1);
+    } else {
+      targetDate.setUTCDate(1);
+    }
+
+    targetDate.setUTCHours(0, 0, 0, 0);
+
+    const settings = await getOrCreateSettings();
+    const targetMonthStart = getFirstDayOfMonth(targetDate);
+    const targetMonthEnd = getEndOfMonth(targetMonthStart);
+    const dueDate = getDueDateForMonthly(targetMonthStart, settings);
+
+    let query: any = {
+      status: "active",
+      proRatedPaid: true,
+      applicationId: { $exists: true, $ne: null },
+    };
+
+    if (applicationId) {
+      query.applicationId = applicationId;
+    }
+
+    const billingCycles = await BillingCycle.find(query)
+      .populate("planId")
+      .lean();
+
+    let generatedCount = 0;
+    let skippedCount = 0;
+    const generatedBills = [];
+
+    for (const cycle of billingCycles) {
+      if (!cycle.applicationId) {
+        skippedCount++;
+        continue;
+      }
+
+      const application = await Application.findOne({
+        applicationId: cycle.applicationId,
+      }).lean();
+
+      if (!application) {
+        skippedCount++;
+        continue;
+      }
+
+      const plan = cycle.planId as any;
+      if (!plan) {
+        skippedCount++;
+        continue;
+      }
+
+      const existingBill = await Billing.findOne({
+        applicationId: cycle.applicationId,
+        billingCycleId: cycle._id,
+        isProRated: false,
+        isInstallationBill: false,
+        "billingPeriod.start": targetMonthStart,
+      }).lean();
+
+      if (!existingBill) {
+        const newBill = await createMonthlyBill(
+          application,
+          cycle._id,
+          targetMonthStart,
+          targetMonthEnd,
+          plan.price,
+          settings,
+        );
+        generatedCount++;
+        generatedBills.push(newBill);
+        console.log(
+          `✅ Manually generated bill for ${application.firstName} ${application.lastName}`,
+        );
+      } else {
+        skippedCount++;
+      }
+    }
+
+    clearAllCache();
+
+    res.status(200).json({
+      success: true,
+      message: `Generated ${generatedCount} bills for ${formatDateForDisplay(targetMonthStart)} (Due on ${formatDateForDisplay(dueDate)})`,
+      data: {
+        generated: generatedCount,
+        skipped: skippedCount,
+        billingMonth: formatDateForDisplay(targetMonthStart),
+        dueDate: formatDateForDisplay(dueDate),
+        generatedBills: generatedBills,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export default {
   startBilling,
   stopBilling,
@@ -3531,4 +3651,5 @@ export default {
   recoverMissingBills,
   initializeBackdatedBilling,
   getUnpaidBillsReport,
+  manuallyGenerateBillsForMonth,
 };
