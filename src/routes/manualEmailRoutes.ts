@@ -6,6 +6,7 @@ import {
   sendBulkEmails,
   saveEmailTemplate,
   getEmailTemplates,
+  updateEmailTemplate,
   deleteEmailTemplate,
   previewEmail,
   sendReminderToUnpaid,
@@ -32,6 +33,7 @@ router.post("/send-reminder-unpaid", sendReminderToUnpaid);
 // Template management
 router.get("/templates", getEmailTemplates);
 router.post("/templates", saveEmailTemplate);
+router.put("/templates/:templateId", updateEmailTemplate);
 router.delete("/templates/:templateId", deleteEmailTemplate);
 
 // Sent records

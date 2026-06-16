@@ -1,17 +1,13 @@
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import Application from "../models/Application";
-import User from "../models/User";
 import Billing from "../models/Billing";
 import BillingCycle from "../models/BillingCycle";
 import EmailSentRecord from "../models/EmailSentRecord";
+import EmailTemplate from "../models/EmailTemplate";
 import emailService from "../services/emailService";
-import { IUser } from "../models/User";
 
 type AuthRequest = Request & { user?: any };
-
-// Email templates storage (you can store these in database)
-const emailTemplates: Record<string, any> = {};
 
 // Check admin access
 function checkAdmin(req: AuthRequest, res: Response): boolean {
@@ -311,7 +307,7 @@ export const sendManualEmail = async (
       application,
     );
 
-    // Send to customer - USE forceSendEmail to bypass customer email setting
+    // Send to customer
     const emailSent = await emailService.forceSendEmail(
       application.email,
       subject,
@@ -502,7 +498,6 @@ export const sendBulkEmails = async (
           application,
         );
 
-        // Use forceSendEmail for bulk emails as well
         const emailSent = await emailService.forceSendEmail(
           application.email,
           subject,
@@ -643,22 +638,46 @@ export const saveEmailTemplate = async (
       });
     }
 
-    const templateId = name.toLowerCase().replace(/\s+/g, "_");
-    emailTemplates[templateId] = {
-      id: templateId,
+    // Check if template with same name exists
+    const existingTemplate = await EmailTemplate.findOne({ name });
+    if (existingTemplate) {
+      // Update existing template
+      existingTemplate.subject = subject;
+      existingTemplate.message = message;
+      existingTemplate.category = category || "general";
+      existingTemplate.includeBillingDefault = includeBillingDefault || false;
+      existingTemplate.updatedBy =
+        req.user?.username || req.user?.email || "Admin";
+      existingTemplate.updatedByEmail =
+        req.user?.email || "admin@misterfyber.com";
+      await existingTemplate.save();
+
+      return res.status(200).json({
+        success: true,
+        message: `Template "${name}" updated successfully`,
+        data: existingTemplate,
+      });
+    }
+
+    // Create new template
+    const newTemplate = new EmailTemplate({
       name,
       subject,
       message,
       category: category || "general",
       includeBillingDefault: includeBillingDefault || false,
-      createdAt: new Date().toISOString(),
-      updatedBy: req.user?.email || req.user?.username,
-    };
+      createdBy: req.user?.username || req.user?.email || "Admin",
+      createdByEmail: req.user?.email || "admin@misterfyber.com",
+      updatedBy: req.user?.username || req.user?.email || "Admin",
+      updatedByEmail: req.user?.email || "admin@misterfyber.com",
+    });
+
+    await newTemplate.save();
 
     res.status(200).json({
       success: true,
       message: `Template "${name}" saved successfully`,
-      data: emailTemplates[templateId],
+      data: newTemplate,
     });
   } catch (error) {
     next(error);
@@ -674,10 +693,104 @@ export const getEmailTemplates = async (
   if (!checkAdmin(req, res)) return;
 
   try {
-    const templates = Object.values(emailTemplates);
+    const { category, search } = req.query;
+
+    let query: any = {};
+
+    if (category && category !== "all") {
+      query.category = category;
+    }
+
+    if (search) {
+      query.$or = [
+        { name: { $regex: search, $options: "i" } },
+        { subject: { $regex: search, $options: "i" } },
+        { message: { $regex: search, $options: "i" } },
+      ];
+    }
+
+    const templates = await EmailTemplate.find(query)
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Format to match frontend interface
+    const formattedTemplates = templates.map((template) => ({
+      id: template._id.toString(),
+      name: template.name,
+      subject: template.subject,
+      message: template.message,
+      category: template.category,
+      includeBillingDefault: template.includeBillingDefault,
+      createdAt: template.createdAt.toISOString(),
+      updatedBy: template.updatedBy,
+      createdBy: template.createdBy,
+    }));
+
     res.status(200).json({
       success: true,
-      data: templates,
+      data: formattedTemplates,
+      total: formattedTemplates.length,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ==================== UPDATE EMAIL TEMPLATE ====================
+export const updateEmailTemplate = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  try {
+    const { templateId } = req.params;
+    const { name, subject, message, category, includeBillingDefault } =
+      req.body;
+
+    if (!templateId) {
+      return res.status(400).json({
+        success: false,
+        message: "Template ID is required",
+      });
+    }
+
+    const template = await EmailTemplate.findById(templateId);
+    if (!template) {
+      return res.status(404).json({
+        success: false,
+        message: "Template not found",
+      });
+    }
+
+    // Check if new name conflicts with existing template (excluding current)
+    if (name && name !== template.name) {
+      const existingTemplate = await EmailTemplate.findOne({ name });
+      if (existingTemplate && existingTemplate._id.toString() !== templateId) {
+        return res.status(400).json({
+          success: false,
+          message: `Template with name "${name}" already exists`,
+        });
+      }
+      template.name = name;
+    }
+
+    if (subject) template.subject = subject;
+    if (message) template.message = message;
+    if (category) template.category = category;
+    if (includeBillingDefault !== undefined) {
+      template.includeBillingDefault = includeBillingDefault;
+    }
+    template.updatedBy = req.user?.username || req.user?.email || "Admin";
+    template.updatedByEmail = req.user?.email || "admin@misterfyber.com";
+
+    await template.save();
+
+    res.status(200).json({
+      success: true,
+      message: `Template "${template.name}" updated successfully`,
+      data: template,
     });
   } catch (error) {
     next(error);
@@ -695,18 +808,25 @@ export const deleteEmailTemplate = async (
   try {
     const { templateId } = req.params;
 
-    if (!emailTemplates[templateId]) {
+    if (!templateId) {
+      return res.status(400).json({
+        success: false,
+        message: "Template ID is required",
+      });
+    }
+
+    const template = await EmailTemplate.findByIdAndDelete(templateId);
+
+    if (!template) {
       return res.status(404).json({
         success: false,
         message: "Template not found",
       });
     }
 
-    delete emailTemplates[templateId];
-
     res.status(200).json({
       success: true,
-      message: "Template deleted successfully",
+      message: `Template "${template.name}" deleted successfully`,
     });
   } catch (error) {
     next(error);
@@ -988,6 +1108,7 @@ export default {
   sendBulkEmails,
   saveEmailTemplate,
   getEmailTemplates,
+  updateEmailTemplate,
   deleteEmailTemplate,
   previewEmail,
   sendReminderToUnpaid,
