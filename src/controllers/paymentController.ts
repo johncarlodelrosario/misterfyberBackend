@@ -1,3 +1,5 @@
+// backend/src/controllers/paymentController.ts
+
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import Payment from "../models/Payment";
@@ -886,7 +888,7 @@ export const getAllPaymentsAdmin = async (
       .map((p) => p.applicationId)
       .filter((value, index, self) => self.indexOf(value) === index);
 
-    // Fetch all applications in ONE query (para mabilis)
+    // Fetch all applications in ONE query
     let applicationMap = new Map();
     if (applicationIds.length > 0) {
       const applications = await Application.find({
@@ -898,8 +900,8 @@ export const getAllPaymentsAdmin = async (
       });
     }
 
-    // Enrich payments with application data
-    const enrichedPayments = payments.map((payment) => {
+    // Helper function to enrich a single payment with application data
+    const enrichPaymentWithAppData = (payment: any) => {
       const enriched: any = { ...payment };
 
       // Get application data from map
@@ -908,30 +910,50 @@ export const getAllPaymentsAdmin = async (
         enriched.application = {
           _id: app._id,
           applicationId: app.applicationId,
-          firstName: app.firstName,
-          lastName: app.lastName,
-          email: app.email,
-          phoneNumber: app.phoneNumber,
-          status: app.status,
+          firstName: app.firstName || "",
+          lastName: app.lastName || "",
+          email: app.email || "",
+          phoneNumber: app.phoneNumber || "",
+          status: app.status || "",
           serviceStatus: (app as any).serviceStatus || "pending",
-          billingStarted: app.billingStarted,
+          billingStarted: app.billingStarted || false,
           installationFee: (app as any).installationFee || 0,
           installationFeePaid: (app as any).installationFeePaid || false,
           applicantName: `${app.firstName || ""} ${app.lastName || ""}`.trim(),
+          fullName: `${app.firstName || ""} ${app.lastName || ""}`.trim(),
         };
+        // Also set a clean customerName field for easy access
+        enriched.customerName =
+          `${app.firstName || ""} ${app.lastName || ""}`.trim();
+        enriched.customerEmail = app.email || "";
+        enriched.customerPhone = app.phoneNumber || "";
       }
 
-      if (payment.userId && typeof payment.userId === "object") {
+      // If we have userId but no application data, try to get name from user
+      if (
+        !enriched.application &&
+        payment.userId &&
+        typeof payment.userId === "object"
+      ) {
         const user = payment.userId as any;
         enriched.user = {
           _id: user._id,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          email: user.email,
-          phoneNumber: user.phoneNumber,
-          username: user.username,
-          status: user.status,
+          firstName: user.firstName || "",
+          lastName: user.lastName || "",
+          email: user.email || "",
+          phoneNumber: user.phoneNumber || "",
+          username: user.username || "",
+          status: user.status || "",
         };
+        enriched.customerName =
+          `${user.firstName || ""} ${user.lastName || ""}`.trim();
+        enriched.customerEmail = user.email || "";
+        enriched.customerPhone = user.phoneNumber || "";
+      }
+
+      // If still no name, use applicationId as last resort
+      if (!enriched.customerName || enriched.customerName === "") {
+        enriched.customerName = payment.applicationId || "Unknown Customer";
       }
 
       enriched.isInstallationPayment =
@@ -941,7 +963,10 @@ export const getAllPaymentsAdmin = async (
           (payment.billingId as any).isInstallationBill);
 
       return enriched;
-    });
+    };
+
+    // Enrich payments with application data (synchronous - no await needed)
+    const enrichedPayments = payments.map(enrichPaymentWithAppData);
 
     res.status(200).json({
       success: true,
@@ -1165,6 +1190,51 @@ export const getInstallationPaymentSummary = async (
   }
 };
 
+// @desc    Delete payment (Admin only)
+// @route   DELETE /api/payments/:id
+// @access  Private/Admin
+export const deletePayment = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid payment ID" });
+    }
+
+    const payment = await Payment.findById(id);
+
+    if (!payment) {
+      return res.status(404).json({ message: "Payment not found" });
+    }
+
+    // Store payment data for response before deletion
+    const paymentData = {
+      _id: payment._id,
+      amount: payment.amount,
+      referenceNumber: payment.referenceNumber,
+      status: payment.status,
+      paymentType: payment.paymentType,
+      createdAt: payment.createdAt,
+    };
+
+    // Delete the payment
+    await Payment.findByIdAndDelete(id);
+
+    res.status(200).json({
+      success: true,
+      message: `Payment ${paymentData.referenceNumber} deleted successfully`,
+      data: paymentData,
+    });
+  } catch (error) {
+    console.error("Error deleting payment:", error);
+    next(error);
+  }
+};
+
 export default {
   createPayment,
   getPayments,
@@ -1179,4 +1249,5 @@ export default {
   getPendingPayments,
   getAllPaymentsAdmin,
   getInstallationPaymentSummary,
+  deletePayment,
 };

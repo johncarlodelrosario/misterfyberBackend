@@ -14,6 +14,7 @@ import {
   getPendingPayments,
   getAllPaymentsAdmin,
   getInstallationPaymentSummary,
+  deletePayment,
 } from "../controllers/paymentController";
 import { protect, authorize } from "../middleware/auth";
 
@@ -86,6 +87,14 @@ router.post(
   protect,
   authorize("super_admin", "admin", "staff"),
   refundPayment,
+);
+
+// DELETE PAYMENT - Admin only
+router.delete(
+  "/:id",
+  protect,
+  authorize("super_admin", "admin", "staff"),
+  deletePayment,
 );
 
 export default router;
