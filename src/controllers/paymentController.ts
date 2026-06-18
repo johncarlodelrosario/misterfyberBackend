@@ -67,6 +67,14 @@ async function getPopulatedPayment(paymentId: string) {
           `${application.firstName || ""} ${application.lastName || ""}`.trim(),
       };
       result.applicationId = application.applicationId;
+
+      // Set customer name fields if not already set
+      if (!result.customerName) {
+        result.customerName =
+          `${application.firstName || ""} ${application.lastName || ""}`.trim();
+        result.customerEmail = application.email || "";
+        result.customerPhone = application.phoneNumber || "";
+      }
     }
   }
 
@@ -82,9 +90,65 @@ async function getPopulatedPayment(paymentId: string) {
       username: user.username,
       status: user.status,
     };
+
+    // Set customer name fields if not already set
+    if (!result.customerName) {
+      result.customerName =
+        `${user.firstName || ""} ${user.lastName || ""}`.trim();
+      result.customerEmail = user.email || "";
+      result.customerPhone = user.phoneNumber || "";
+    }
   }
 
   return result;
+}
+
+// Helper to extract customer info from various sources
+function extractCustomerInfo(
+  application: any,
+  user: any,
+  billing: any,
+  requestBody: any,
+): { name: string; email: string; phone: string } {
+  let name = "";
+  let email = "";
+  let phone = "";
+
+  // Try to get from application first
+  if (application) {
+    name =
+      `${application.firstName || ""} ${application.lastName || ""}`.trim();
+    email = application.email || "";
+    phone = application.phoneNumber || "";
+  }
+
+  // If no name from application, try user
+  if (!name && user) {
+    name = `${user.firstName || ""} ${user.lastName || ""}`.trim();
+    email = user.email || "";
+    phone = user.phoneNumber || "";
+  }
+
+  // If still no name, try request body
+  if (!name && requestBody) {
+    name = requestBody.customerName || requestBody.name || "";
+    email = requestBody.customerEmail || requestBody.email || "";
+    phone = requestBody.customerPhone || requestBody.phone || "";
+  }
+
+  // If still no name, try billing
+  if (!name && billing) {
+    name = billing.customerName || "";
+    email = billing.customerEmail || "";
+    phone = billing.customerPhone || "";
+  }
+
+  // If still no name, use application ID as fallback
+  if (!name && application?.applicationId) {
+    name = application.applicationId;
+  }
+
+  return { name, email, phone };
 }
 
 // @desc    Create payment (manual - pending status only)
@@ -103,6 +167,9 @@ export const createPayment = async (
       paymentType,
       referenceNumber,
       notes,
+      customerName,
+      customerEmail,
+      customerPhone,
     } = req.body;
     const userId = req.user._id;
 
@@ -114,9 +181,41 @@ export const createPayment = async (
       return res.status(400).json({ message: "Billing ID is required" });
     }
 
-    const billing = await Billing.findById(billingId);
+    const billing = await Billing.findById(billingId).populate("applicationId");
     if (!billing) {
       return res.status(404).json({ message: "Billing record not found" });
+    }
+
+    // Extract customer info
+    let customerNameFinal = customerName || "";
+    let customerEmailFinal = customerEmail || "";
+    let customerPhoneFinal = customerPhone || "";
+
+    // Try to get from application if billing has it
+    if (!customerNameFinal && (billing as any).applicationId) {
+      const app = (billing as any).applicationId;
+      if (app) {
+        customerNameFinal =
+          `${app.firstName || ""} ${app.lastName || ""}`.trim();
+        customerEmailFinal = app.email || "";
+        customerPhoneFinal = app.phoneNumber || "";
+      }
+    }
+
+    // Try to get from user
+    if (!customerNameFinal && userId) {
+      const user = await User.findById(userId);
+      if (user) {
+        customerNameFinal =
+          `${user.firstName || ""} ${user.lastName || ""}`.trim();
+        customerEmailFinal = user.email || "";
+        customerPhoneFinal = user.phoneNumber || "";
+      }
+    }
+
+    // If still no name, use application ID
+    if (!customerNameFinal && billing.applicationId) {
+      customerNameFinal = billing.applicationId.toString();
     }
 
     const paymentData: any = {
@@ -129,6 +228,9 @@ export const createPayment = async (
       status: "pending",
       referenceNumber: referenceNumber || `MANUAL-${Date.now()}`,
       billingId,
+      customerName: customerNameFinal,
+      customerEmail: customerEmailFinal,
+      customerPhone: customerPhoneFinal,
       paymentDetails: {
         gateway: "manual",
         gatewayResponse: null,
@@ -176,10 +278,16 @@ export const getPayments = async (
           const application = await Application.findOne({
             applicationId: payment.applicationId,
           })
-            .select("firstName lastName email applicationId")
+            .select("firstName lastName email applicationId phoneNumber")
             .lean();
           if (application) {
             enriched.application = application;
+            if (!enriched.customerName) {
+              enriched.customerName =
+                `${application.firstName || ""} ${application.lastName || ""}`.trim();
+              enriched.customerEmail = application.email || "";
+              enriched.customerPhone = application.phoneNumber || "";
+            }
           }
         }
         return enriched;
@@ -497,7 +605,7 @@ export const confirmPayment = async (
       payment.paymentType = paymentType;
     }
 
-    // Get readable application ID - fetch application using string ID
+    // Get readable application ID and customer info
     let readableApplicationId = "";
     let customerEmail = "";
     let customerName = "";
@@ -513,12 +621,23 @@ export const confirmPayment = async (
         customerEmail = application.email;
         customerName =
           `${application.firstName || ""} ${application.lastName || ""}`.trim();
+        // Update payment with customer info if not set
+        if (!payment.customerName) {
+          payment.customerName = customerName;
+          payment.customerEmail = customerEmail;
+          payment.customerPhone = application.phoneNumber || "";
+        }
       }
     } else if (payment.userId) {
       customer = payment.userId as any;
       customerEmail = customer.email;
       customerName =
         `${customer.firstName || ""} ${customer.lastName || ""}`.trim();
+      if (!payment.customerName) {
+        payment.customerName = customerName;
+        payment.customerEmail = customerEmail;
+        payment.customerPhone = customer.phoneNumber || "";
+      }
     }
 
     // Update payment status
@@ -532,6 +651,9 @@ export const confirmPayment = async (
         confirmedAt: new Date(),
         confirmationNotes: notes,
         applicationId: readableApplicationId,
+        customerName: payment.customerName,
+        customerEmail: payment.customerEmail,
+        customerPhone: payment.customerPhone,
       },
       notes: payment.paymentDetails?.notes,
     };
@@ -627,7 +749,7 @@ export const confirmPayment = async (
 
       let emailBody = `<div style="font-family: Arial, sans-serif; max-width: 600px;">
           <h2 style="color: #28a745;">✅ Payment Confirmed!</h2>
-          <p>Dear ${customerName},</p>
+          <p>Dear ${customerName || "Customer"},</p>
           <p>Your payment of <strong>₱${payment.amount.toLocaleString()}</strong> has been confirmed.</p>
           <div style="background: #f8f9fa; padding: 15px; border-radius: 5px;">
             <p><strong>Invoice:</strong> ${billing.invoiceNumber}</p>
@@ -727,6 +849,14 @@ export const getPendingPayments = async (
           applicantName: `${app.firstName || ""} ${app.lastName || ""}`.trim(),
         };
         enriched.applicationId = app.applicationId;
+
+        // Set customer name if not already set
+        if (!enriched.customerName) {
+          enriched.customerName =
+            `${app.firstName || ""} ${app.lastName || ""}`.trim();
+          enriched.customerEmail = app.email || "";
+          enriched.customerPhone = app.phoneNumber || "";
+        }
       }
 
       if (
@@ -748,6 +878,12 @@ export const getPendingPayments = async (
           username: user.username,
           status: user.status,
         };
+        if (!enriched.customerName) {
+          enriched.customerName =
+            `${user.firstName || ""} ${user.lastName || ""}`.trim();
+          enriched.customerEmail = user.email || "";
+          enriched.customerPhone = user.phoneNumber || "";
+        }
       }
 
       enriched.isInstallationPayment =
@@ -797,6 +933,8 @@ export const getAllPaymentsAdmin = async (
       query.$or = [
         { referenceNumber: { $regex: search, $options: "i" } },
         { applicationId: { $regex: search, $options: "i" } },
+        { customerName: { $regex: search, $options: "i" } },
+        { customerEmail: { $regex: search, $options: "i" } },
       ];
     }
 
@@ -922,11 +1060,13 @@ export const getAllPaymentsAdmin = async (
           applicantName: `${app.firstName || ""} ${app.lastName || ""}`.trim(),
           fullName: `${app.firstName || ""} ${app.lastName || ""}`.trim(),
         };
-        // Also set a clean customerName field for easy access
-        enriched.customerName =
-          `${app.firstName || ""} ${app.lastName || ""}`.trim();
-        enriched.customerEmail = app.email || "";
-        enriched.customerPhone = app.phoneNumber || "";
+        // Set customer name fields if not already set
+        if (!enriched.customerName || enriched.customerName === "") {
+          enriched.customerName =
+            `${app.firstName || ""} ${app.lastName || ""}`.trim();
+          enriched.customerEmail = app.email || "";
+          enriched.customerPhone = app.phoneNumber || "";
+        }
       }
 
       // If we have userId but no application data, try to get name from user
@@ -945,10 +1085,12 @@ export const getAllPaymentsAdmin = async (
           username: user.username || "",
           status: user.status || "",
         };
-        enriched.customerName =
-          `${user.firstName || ""} ${user.lastName || ""}`.trim();
-        enriched.customerEmail = user.email || "";
-        enriched.customerPhone = user.phoneNumber || "";
+        if (!enriched.customerName || enriched.customerName === "") {
+          enriched.customerName =
+            `${user.firstName || ""} ${user.lastName || ""}`.trim();
+          enriched.customerEmail = user.email || "";
+          enriched.customerPhone = user.phoneNumber || "";
+        }
       }
 
       // If still no name, use applicationId as last resort
@@ -1032,7 +1174,7 @@ export const rejectPayment = async (
     // Fetch customer data
     let customer = null;
     let customerEmail = "";
-    let customerName = "";
+    let customerName = payment.customerName || "";
 
     if (payment.applicationId) {
       const application = await Application.findOne({
@@ -1041,15 +1183,20 @@ export const rejectPayment = async (
       if (application) {
         customer = application;
         customerEmail = application.email;
-        customerName =
-          `${application.firstName || ""} ${application.lastName || ""}`.trim();
+        if (!customerName) {
+          customerName =
+            `${application.firstName || ""} ${application.lastName || ""}`.trim();
+        }
       }
     } else if (payment.userId) {
       const user = await User.findById(payment.userId).lean();
       if (user) {
         customer = user;
         customerEmail = user.email;
-        customerName = `${user.firstName || ""} ${user.lastName || ""}`.trim();
+        if (!customerName) {
+          customerName =
+            `${user.firstName || ""} ${user.lastName || ""}`.trim();
+        }
       }
     }
 
@@ -1077,7 +1224,7 @@ export const rejectPayment = async (
 
       let emailBody = `<div style="font-family: Arial, sans-serif; max-width: 600px;">
           <h2 style="color: #dc3545;">❌ Payment Verification Failed</h2>
-          <p>Dear ${customerName},</p>
+          <p>Dear ${customerName || "Customer"},</p>
           <p>Your payment of <strong>₱${payment.amount.toLocaleString()}</strong> could not be verified.</p>
           <p><strong>Reason:</strong> ${reason || "Please contact support for more information"}</p>`;
 
@@ -1109,6 +1256,9 @@ export const rejectPayment = async (
       status: updatedPayment?.status,
       referenceNumber: updatedPayment?.referenceNumber,
       paymentType: updatedPayment?.paymentType,
+      customerName: updatedPayment?.customerName,
+      customerEmail: updatedPayment?.customerEmail,
+      customerPhone: updatedPayment?.customerPhone,
       paymentDetails: updatedPayment?.paymentDetails,
       createdAt: updatedPayment?.createdAt,
     };
@@ -1218,6 +1368,8 @@ export const deletePayment = async (
       referenceNumber: payment.referenceNumber,
       status: payment.status,
       paymentType: payment.paymentType,
+      customerName: payment.customerName,
+      customerEmail: payment.customerEmail,
       createdAt: payment.createdAt,
     };
 

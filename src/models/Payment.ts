@@ -1,3 +1,5 @@
+// backend/src/models/Payment.ts
+
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IPayment extends Document {
@@ -17,6 +19,9 @@ export interface IPayment extends Document {
   status: "pending" | "processing" | "completed" | "failed" | "refunded";
   transactionId: string;
   referenceNumber: string;
+  customerName: string; // NEW: Direct customer name storage
+  customerEmail: string; // NEW: Direct customer email storage
+  customerPhone: string; // NEW: Direct customer phone storage
   paymentDetails: {
     gateway: string;
     gatewayResponse: any;
@@ -73,6 +78,9 @@ const PaymentSchema: Schema = new Schema(
     },
     transactionId: { type: String },
     referenceNumber: { type: String, unique: true },
+    customerName: { type: String, required: false, default: "" },
+    customerEmail: { type: String, required: false, default: "" },
+    customerPhone: { type: String, required: false, default: "" },
     paymentDetails: {
       gateway: { type: String, default: "manual" },
       gatewayResponse: { type: Schema.Types.Mixed },
@@ -119,5 +127,6 @@ PaymentSchema.index({ createdAt: -1 });
 PaymentSchema.index({ paymentType: 1 });
 PaymentSchema.index({ billingId: 1 });
 PaymentSchema.index({ referenceNumber: 1 });
+PaymentSchema.index({ customerName: 1 });
 
 export default mongoose.model<IPayment>("Payment", PaymentSchema);
