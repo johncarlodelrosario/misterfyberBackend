@@ -8,6 +8,7 @@ export interface IBuilding extends Document {
   barangay: string;
   streetAddress: string;
   zipCode?: string;
+  location: "breeze" | "sil" | "other" | "";
   isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -45,6 +46,12 @@ const BuildingSchema: Schema = new Schema(
       type: String,
       default: "",
     },
+    location: {
+      type: String,
+      enum: ["breeze", "sil", "other", ""],
+      default: "",
+      required: false,
+    },
     isActive: {
       type: Boolean,
       default: true,
@@ -58,5 +65,6 @@ const BuildingSchema: Schema = new Schema(
 BuildingSchema.index({ buildingName: 1 });
 BuildingSchema.index({ region: 1, province: 1, city: 1 });
 BuildingSchema.index({ isActive: 1 });
+BuildingSchema.index({ location: 1 });
 
 export default mongoose.model<IBuilding>("Building", BuildingSchema);

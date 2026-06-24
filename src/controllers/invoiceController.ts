@@ -1,5 +1,3 @@
-// backend/src/controllers/invoiceController.ts
-
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import Invoice from "../models/Invoice";

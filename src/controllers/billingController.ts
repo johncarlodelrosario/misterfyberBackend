@@ -9,7 +9,10 @@ import Plan from "../models/Plan";
 import Payment from "../models/Payment";
 import Application from "../models/Application";
 import Invoice from "../models/Invoice";
-import emailService from "../services/emailService";
+import emailService, {
+  getCollectionEmailByLocation,
+  getLocationFromEntity,
+} from "../services/emailService";
 import mikrotikService from "../services/mikrotikService";
 import mongoose from "mongoose";
 import { generateInvoicePDF } from "../services/pdfService";
@@ -217,7 +220,9 @@ async function sendInvoiceToApplication(
       save: async () => tempUser,
     } as any;
 
-    await emailService.sendInvoice(tempUser, bill);
+    // Get location for the email
+    const location = await getLocationFromEntity(application);
+    await emailService.sendInvoice(tempUser, bill, location);
   }
 }
 
@@ -332,6 +337,10 @@ async function createInvoiceFromBilling(
     // Get plan name
     const planName = plan?.name || "N/A";
 
+    // Get location for invoice
+    const location = await getLocationFromEntity(application);
+    const collectionEmail = getCollectionEmailByLocation(location);
+
     // Create invoice
     const invoiceData = {
       invoiceNumber: generateInvoiceNumber(),
@@ -350,7 +359,7 @@ async function createInvoiceFromBilling(
         "UNIT 6 BLDG 2 G/F EL PUEBLO CONDO, ANONAS ST., STA. MESA, MANILA",
       companyVat: "697-461-165-00000",
       companyContact: "0969-341-4876",
-      companyEmail: "collection.breeze@misterfyber.com",
+      companyEmail: collectionEmail,
 
       billingPeriod: {
         start: billing.billingPeriod?.start || new Date(),
@@ -383,6 +392,8 @@ async function createInvoiceFromBilling(
       notes: billing.notes || "",
       termsAndConditions:
         "Please be advised that failure to settle your account on or before the due date may result in temporary service interruption.",
+      location: location,
+      collectionEmail: collectionEmail,
     };
 
     const invoice = await Invoice.create(invoiceData);
@@ -400,6 +411,9 @@ async function sendInvoiceWithPDFAttachment(
   application: any,
 ): Promise<boolean> {
   try {
+    // Get location
+    const location = await getLocationFromEntity(application);
+
     // Generate PDF
     const pdfBuffer = await generateInvoicePDF(invoice);
 
@@ -421,11 +435,16 @@ async function sendInvoiceWithPDFAttachment(
       status: "sent",
     });
 
+    // Add location to invoice data
+    invoice.location = location;
+    invoice.collectionEmail = getCollectionEmailByLocation(location);
+
     // Send email with PDF attachment
     const emailSent = await emailService.sendInvoiceWithPDF(
       invoice,
       pdfBuffer,
       pdfFileName,
+      location,
     );
 
     return emailSent;
@@ -674,6 +693,92 @@ async function createProRatedBill(
 
   return createdBill;
 }
+
+// ==================== GET LOCATION EMAILS ====================
+export const getLocationEmails = async (req: AuthRequest, res: Response) => {
+  try {
+    const emails = {
+      breeze:
+        process.env.COLLECTION_EMAIL_BREEZE ||
+        "collection.breeze@misterfyber.com",
+      sil: process.env.COLLECTION_EMAIL_SIL || "collection.sil@misterfyber.com",
+      default:
+        process.env.COLLECTION_EMAIL_DEFAULT || "collection@misterfyber.com",
+    };
+
+    res.status(200).json({
+      success: true,
+      data: emails,
+    });
+  } catch (error: any) {
+    console.error("❌ Error getting location emails:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message || "Error getting location emails",
+    });
+  }
+};
+
+// ==================== TEST LOCATION EMAIL ====================
+export const testLocationEmail = async (req: AuthRequest, res: Response) => {
+  try {
+    const { location, email } = req.body;
+
+    if (!location) {
+      return res.status(400).json({
+        success: false,
+        message: "Location is required",
+      });
+    }
+
+    const collectionEmail = getCollectionEmailByLocation(location);
+
+    const result = await emailService.sendEmail(
+      email || collectionEmail,
+      `🧪 Test Email - Location: ${location}`,
+      `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>Test Email - ${location}</title>
+        </head>
+        <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <h1 style="color: #1a56db;">🧪 Test Email</h1>
+          <p>This is a test email sent to the collection team for location: <strong>${location}</strong></p>
+          <div style="background: #f3f4f6; padding: 15px; border-radius: 6px; margin: 15px 0;">
+            <p><strong>Location:</strong> ${location}</p>
+            <p><strong>Collection Email:</strong> ${collectionEmail}</p>
+            <p><strong>Timestamp:</strong> ${new Date().toLocaleString()}</p>
+            <p><strong>Status:</strong> ✅ Test successful</p>
+          </div>
+          <p style="color: #6b7280; font-size: 14px;">This is an automated test email from Mister Fyber billing system.</p>
+        </body>
+        </html>
+      `,
+      false,
+      location,
+      {
+        replyTo: process.env.SUPPORT_EMAIL || "admin@misterfyber.com",
+      },
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Test email sent successfully",
+      data: {
+        location,
+        collectionEmail,
+        result,
+      },
+    });
+  } catch (error: any) {
+    console.error("❌ Error sending test email:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message || "Error sending test email",
+    });
+  }
+};
 
 // ==================== INITIALIZE BACKDATED BILLING ====================
 export const initializeBackdatedBilling = async (
@@ -1724,7 +1829,9 @@ export const getAllBillingCycles = async (
           const application = await Application.findOne({
             applicationId: c.applicationId,
           })
-            .select("firstName lastName email applicationId phoneNumber")
+            .select(
+              "firstName lastName email applicationId phoneNumber location",
+            )
             .lean();
           if (application) {
             (c as any).applicationData = application;
@@ -1780,7 +1887,9 @@ export const getAllBills = async (
           const application = await Application.findOne({
             applicationId: b.applicationId,
           })
-            .select("firstName lastName email applicationId phoneNumber")
+            .select(
+              "firstName lastName email applicationId phoneNumber location",
+            )
             .lean();
           if (application) {
             (b as any).applicationData = application;
@@ -1879,11 +1988,16 @@ export const pauseBilling = async (
 
     await session.commitTransaction();
 
+    // Get location for email
+    const location = await getLocationFromEntity(application);
+
     try {
       await emailService.sendEmail(
         application.email,
         "Your Service Has Been Paused - Mister Fyber",
         `<div><h2>Service Paused</h2><p>Dear ${application.firstName} ${application.lastName},</p><p>Your internet service has been paused.</p></div>`,
+        true,
+        location,
       );
     } catch (emailError) {
       console.error("Failed to send pause notification email:", emailError);
@@ -1996,11 +2110,16 @@ export const resumeBilling = async (
 
     await session.commitTransaction();
 
+    // Get location for email
+    const location = await getLocationFromEntity(application);
+
     try {
       await emailService.sendEmail(
         application.email,
         "Your Service Has Been Resumed - Mister Fyber",
         `<div><h2>Service Resumed</h2><p>Dear ${application.firstName} ${application.lastName},</p><p>Your internet service has been resumed.</p></div>`,
+        true,
+        location,
       );
     } catch (emailError) {
       console.error("Failed to send resume notification email:", emailError);
@@ -2146,12 +2265,17 @@ export const markInstallationBillAsPaid = async (
 
     await session.commitTransaction();
 
+    // Get location for email
+    const location = await getLocationFromEntity(application);
+
     try {
       if (application && application.email) {
         await emailService.sendEmail(
           application.email,
           `Installation Fee Payment Confirmation - ${installationBill.invoiceNumber}`,
           `<div><h2>Installation Fee Payment Confirmed!</h2><p>Dear ${application.firstName},</p><p>Your installation fee payment of ₱${installationBill.total.toLocaleString()} has been confirmed.</p></div>`,
+          true,
+          location,
         );
       }
     } catch (emailError) {
@@ -2301,6 +2425,9 @@ export const markBillAsPaid = async (
 
     await session.commitTransaction();
 
+    // Get location for email
+    const location = await getLocationFromEntity(application);
+
     try {
       if (application && application.email) {
         let emailBody = `<div><h2>Payment Confirmed!</h2><p>Dear ${application.firstName},</p><p>Your payment of ₱${existingBill.total.toLocaleString()} has been confirmed.</p></div>`;
@@ -2308,6 +2435,8 @@ export const markBillAsPaid = async (
           application.email,
           `Payment Confirmation - ${existingBill.invoiceNumber}`,
           emailBody,
+          true,
+          location,
         );
       }
     } catch (emailError) {
@@ -2357,7 +2486,9 @@ export const getPendingProRatedBills = async (
           const application = await Application.findOne({
             applicationId: b.applicationId,
           })
-            .select("firstName lastName email applicationId phoneNumber")
+            .select(
+              "firstName lastName email applicationId phoneNumber location",
+            )
             .lean();
           if (application) {
             (b as any).applicationData = application;
@@ -2397,7 +2528,9 @@ export const getPendingInstallationBills = async (
           const application = await Application.findOne({
             applicationId: b.applicationId,
           })
-            .select("firstName lastName email applicationId phoneNumber")
+            .select(
+              "firstName lastName email applicationId phoneNumber location",
+            )
             .lean();
           if (application) {
             (b as any).applicationData = application;
@@ -2438,7 +2571,9 @@ export const getPendingActivations = async (
           const application = await Application.findOne({
             applicationId: c.applicationId,
           })
-            .select("firstName lastName email applicationId phoneNumber")
+            .select(
+              "firstName lastName email applicationId phoneNumber location",
+            )
             .lean();
           if (application) {
             (c as any).applicationData = application;
@@ -2565,11 +2700,16 @@ export const confirmProRatedPayment = async (
 
     await session.commitTransaction();
 
+    // Get location for email
+    const location = await getLocationFromEntity(application);
+
     if (application.email) {
       await emailService.sendEmail(
         application.email,
         "Pro-rated Payment Confirmed",
         `<div><h2>Pro-rated Payment Confirmed!</h2><p>Dear ${application.firstName},</p><p>Your payment has been confirmed.</p></div>`,
+        true,
+        location,
       );
     }
 
@@ -3102,7 +3242,9 @@ export const autoSendReminders = async (req?: AuthRequest, res?: Response) => {
             role: "user",
           } as any;
 
-          await emailService.sendPaymentReminder(tempUser, bill);
+          // Get location for email
+          const location = await getLocationFromEntity(application);
+          await emailService.sendPaymentReminder(tempUser, bill, location);
           await Billing.updateOne(
             { _id: bill._id },
             { $set: { [reminderField]: true } },
@@ -3141,7 +3283,9 @@ export const autoSendReminders = async (req?: AuthRequest, res?: Response) => {
           role: "user",
         } as any;
 
-        await emailService.sendDueDateReminder(tempUser, bill);
+        // Get location for email
+        const location = await getLocationFromEntity(application);
+        await emailService.sendDueDateReminder(tempUser, bill, location);
         await Billing.updateOne(
           { _id: bill._id },
           { $set: { reminderDueDateSent: true } },
@@ -3178,19 +3322,22 @@ export const autoSendReminders = async (req?: AuthRequest, res?: Response) => {
           role: "user",
         } as any;
 
+        // Get location for email
+        const location = await getLocationFromEntity(application);
+
         const dueDate = new Date(bill.dueDate);
         dueDate.setUTCHours(0, 0, 0, 0);
         const isDueDate = dueDate.getTime() === today.getTime();
 
         if (isDueDate && !bill.reminderDueDateSent) {
-          await emailService.sendDueDateReminder(tempUser, bill);
+          await emailService.sendDueDateReminder(tempUser, bill, location);
           await Billing.updateOne(
             { _id: bill._id },
             { $set: { reminderDueDateSent: true } },
           );
           dueDateRemindersSent++;
         } else if (!bill.reminder1DaySent) {
-          await emailService.sendPaymentReminder(tempUser, bill);
+          await emailService.sendPaymentReminder(tempUser, bill, location);
           await Billing.updateOne(
             { _id: bill._id },
             { $set: { reminder1DaySent: true } },
@@ -3556,7 +3703,9 @@ export const getApplicationBillingStatus = async (
   try {
     const { applicationId } = req.params;
 
-    const application = await Application.findOne({ applicationId }).lean();
+    const application = await Application.findOne({ applicationId })
+      .select("firstName lastName email applicationId phoneNumber location")
+      .lean();
     if (!application) {
       return res
         .status(404)
@@ -3581,6 +3730,10 @@ export const getApplicationBillingStatus = async (
       isInstallationBill: true,
     }).lean();
 
+    // Get location and collection email
+    const location = await getLocationFromEntity(application);
+    const collectionEmail = getCollectionEmailByLocation(location);
+
     res.status(200).json({
       success: true,
       data: {
@@ -3592,6 +3745,8 @@ export const getApplicationBillingStatus = async (
         hasUnpaidInstallation: installationBills.some(
           (b) => !b.installationFeePaid,
         ),
+        location: location,
+        collectionEmail: collectionEmail,
       },
     });
   } catch (error) {
@@ -3760,10 +3915,13 @@ export const getUnpaidBillsReport = async (
           const application = await Application.findOne({
             applicationId: b.applicationId,
           })
-            .select("firstName lastName email applicationId phoneNumber")
+            .select(
+              "firstName lastName email applicationId phoneNumber location",
+            )
             .lean();
           if (application) {
             (b as any).applicationData = application;
+            (b as any).location = application.location || "";
           }
         }
         return b;
@@ -3802,6 +3960,7 @@ export const getUnpaidBillsReport = async (
           installationFees: 0,
           monthlyBills: 0,
           bills: [],
+          location: (bill as any).location || "",
         };
       }
       summary.byMonth[monthKey].count++;
@@ -3817,6 +3976,7 @@ export const getUnpaidBillsReport = async (
         status: bill.status,
         dueDate: bill.dueDate,
         isInstallationBill: bill.isInstallationBill,
+        location: (bill as any).location || "",
       });
     });
 
@@ -3978,4 +4138,6 @@ export default {
   initializeBackdatedBilling,
   getUnpaidBillsReport,
   manuallyGenerateBillsForMonth,
+  getLocationEmails,
+  testLocationEmail,
 };

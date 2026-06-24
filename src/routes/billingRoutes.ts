@@ -1,5 +1,3 @@
-// backend/src/routes/billingRoutes.ts
-
 import express from "express";
 import { optionalAuth, adminMiddleware } from "../middleware/auth";
 import {
@@ -37,6 +35,8 @@ import {
   initializeBackdatedBilling,
   getUnpaidBillsReport,
   manuallyGenerateBillsForMonth,
+  getLocationEmails,
+  testLocationEmail,
 } from "../controllers/billingController";
 
 const router = express.Router();
@@ -53,6 +53,10 @@ router.get("/pending-pro-rated", getPendingProRatedBills);
 router.get("/pending-installation", getPendingInstallationBills);
 router.get("/pending-activations", getPendingActivations);
 router.get("/unpaid-bills-report", adminMiddleware, getUnpaidBillsReport);
+
+// ==================== LOCATION EMAIL ROUTES ====================
+router.get("/location/emails", adminMiddleware, getLocationEmails);
+router.post("/location/test", adminMiddleware, testLocationEmail);
 
 // ==================== ADMIN ROUTES (NEED ADMIN ROLE FOR ACTIONS) ====================
 router.put("/settings", adminMiddleware, updateBillingSettings);

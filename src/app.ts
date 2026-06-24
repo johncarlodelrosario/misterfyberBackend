@@ -83,17 +83,15 @@ app.use(
   }),
 );
 
-// Enhanced CORS configuration for localhost testing
+// Enhanced CORS configuration
 app.use(
   cors({
     origin: function (origin, callback) {
-      // Allow requests with no origin (like mobile apps or curl requests)
       if (!origin) return callback(null, true);
 
       if (allowedOrigins.indexOf(origin) !== -1) {
         callback(null, true);
       } else {
-        // For development, allow any localhost origin
         if (
           process.env.NODE_ENV === "development" &&
           (origin.includes("localhost") || origin.includes("127.0.0.1"))
@@ -211,7 +209,7 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/applications", applicationRoutes);
 app.use("/api/buildings", buildingRoutes);
 app.use("/api/manual-email", manualEmailRoutes);
-app.use("/api/invoices", invoiceRoutes);
+app.use("/api/invoices", invoiceRoutes); // <-- Make sure this line exists
 
 // ==================== ERROR HANDLING ====================
 app.use((req: Request, res: Response) => {

@@ -1,20 +1,6 @@
-// backend/src/routes/invoiceRoutes.ts
-
 import express from "express";
 import { body } from "express-validator";
-import {
-  createInvoiceFromBilling,
-  generateInvoicePDFController,
-  sendInvoiceWithPDF,
-  markInvoiceAsPaid,
-  getInvoices,
-  getInvoice,
-  getInvoicePDF,
-  getApplicationInvoices,
-  deleteInvoice,
-  updateInvoice,
-  getInvoiceStats,
-} from "../controllers/invoiceController";
+import * as invoiceController from "../controllers/invoiceController";
 import { protect, authorize } from "../middleware/auth";
 
 const router = express.Router();
@@ -34,21 +20,21 @@ router.post(
       .notEmpty()
       .withMessage("Billing ID is required"),
   ],
-  createInvoiceFromBilling,
+  invoiceController.createInvoiceFromBilling,
 );
 
 router.post(
   "/:invoiceId/generate-pdf",
   protect,
   authorize("super_admin", "admin", "staff"),
-  generateInvoicePDFController,
+  invoiceController.generateInvoicePDFController,
 );
 
 router.post(
   "/:invoiceId/send",
   protect,
   authorize("super_admin", "admin", "staff"),
-  sendInvoiceWithPDF,
+  invoiceController.sendInvoiceWithPDF,
 );
 
 router.put(
@@ -61,21 +47,21 @@ router.put(
       .notEmpty()
       .withMessage("Reference number is required"),
   ],
-  markInvoiceAsPaid,
+  invoiceController.markInvoiceAsPaid,
 );
 
 router.put(
   "/:invoiceId",
   protect,
   authorize("super_admin", "admin", "staff"),
-  updateInvoice,
+  invoiceController.updateInvoice,
 );
 
 router.delete(
   "/:invoiceId",
   protect,
   authorize("super_admin", "admin"),
-  deleteInvoice,
+  invoiceController.deleteInvoice,
 );
 
 // ==================== PUBLIC ROUTES (with authentication) ====================
@@ -83,35 +69,35 @@ router.get(
   "/",
   protect,
   authorize("super_admin", "admin", "staff"),
-  getInvoices,
+  invoiceController.getInvoices,
 );
 
 router.get(
   "/stats",
   protect,
   authorize("super_admin", "admin", "staff"),
-  getInvoiceStats,
+  invoiceController.getInvoiceStats,
 );
 
 router.get(
   "/:invoiceId",
   protect,
   authorize("super_admin", "admin", "staff"),
-  getInvoice,
+  invoiceController.getInvoice,
 );
 
 router.get(
   "/:invoiceId/pdf",
   protect,
   authorize("super_admin", "admin", "staff"),
-  getInvoicePDF,
+  invoiceController.getInvoicePDF,
 );
 
 router.get(
   "/application/:applicationId",
   protect,
   authorize("super_admin", "admin", "staff"),
-  getApplicationInvoices,
+  invoiceController.getApplicationInvoices,
 );
 
 export default router;
