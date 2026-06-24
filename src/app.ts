@@ -1,3 +1,5 @@
+// backend/src/app.ts
+
 import express, { Application, Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import cors from "cors";
@@ -22,6 +24,7 @@ import adminRoutes from "./routes/adminRoutes";
 import applicationRoutes from "./routes/applicationRoutes";
 import buildingRoutes from "./routes/buildingRoutes";
 import manualEmailRoutes from "./routes/manualEmailRoutes";
+import invoiceRoutes from "./routes/invoiceRoutes";
 
 import {
   autoGenerateMonthlyBills,
@@ -163,6 +166,7 @@ const ensureUploadDirectories = () => {
     "uploads/payments",
     "uploads/temp",
     "uploads/profiles",
+    "uploads/invoices",
   ];
   dirs.forEach((dir) => {
     const fullPath = path.join(__dirname, "../", dir);
@@ -196,6 +200,7 @@ app.get("/health", (req: Request, res: Response) => {
   });
 });
 
+// ==================== API ROUTES ====================
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/plans", planRoutes);
@@ -206,6 +211,7 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/applications", applicationRoutes);
 app.use("/api/buildings", buildingRoutes);
 app.use("/api/manual-email", manualEmailRoutes);
+app.use("/api/invoices", invoiceRoutes);
 
 // ==================== ERROR HANDLING ====================
 app.use((req: Request, res: Response) => {
@@ -266,6 +272,8 @@ const initializeDatabase = async () => {
         enableAutoBilling: true,
         sendInvoiceOnInstall: true,
         requireAdminActivation: false,
+        installationFee: 1500,
+        installationFeeDueDays: 7,
       });
       console.log("✅ Default billing settings initialized");
     }
@@ -328,8 +336,12 @@ const start = async () => {
     console.log(`📡 API available at: http://localhost:${PORT}/api`);
     console.log(`🩺 Health check: http://localhost:${PORT}/health`);
     console.log(`📧 Manual email routes available at: /api/manual-email`);
+    console.log(`📄 Invoice routes available at: /api/invoices`);
+    console.log(`📁 Uploads directory: ${uploadsPath}`);
     console.log(`\n✅ All systems ready for localhost testing!\n`);
   });
 };
 
 start();
+
+export { app, server, io };

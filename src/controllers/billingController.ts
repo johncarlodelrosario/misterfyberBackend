@@ -1,3 +1,5 @@
+// backend/src/controllers/billingController.ts
+
 import { Request, Response, NextFunction } from "express";
 import Billing from "../models/Billing";
 import BillingCycle from "../models/BillingCycle";
@@ -6,9 +8,13 @@ import User from "../models/User";
 import Plan from "../models/Plan";
 import Payment from "../models/Payment";
 import Application from "../models/Application";
+import Invoice from "../models/Invoice";
 import emailService from "../services/emailService";
 import mikrotikService from "../services/mikrotikService";
 import mongoose from "mongoose";
+import { generateInvoicePDF } from "../services/pdfService";
+import fs from "fs";
+import path from "path";
 
 type AuthRequest = Request & { user?: any };
 
@@ -215,6 +221,220 @@ async function sendInvoiceToApplication(
   }
 }
 
+// ==================== CREATE INVOICE FROM BILLING ====================
+async function createInvoiceFromBilling(
+  billing: any,
+  application: any,
+  settings: any,
+): Promise<any> {
+  try {
+    // Check if invoice already exists
+    const existingInvoice = await Invoice.findOne({
+      billingId: billing._id,
+    });
+
+    if (existingInvoice) {
+      return existingInvoice;
+    }
+
+    // Get plan
+    const plan = await Plan.findById(application.planId).lean();
+
+    // Calculate items
+    const items = [];
+    let subtotal = 0;
+    let isInstallationFee = false;
+    let isProRated = false;
+    let proRatedDays = 0;
+
+    // Add items from billing
+    if (billing.items && billing.items.length > 0) {
+      for (const item of billing.items) {
+        items.push({
+          description: item.description,
+          quantity: item.quantity || 1,
+          rate: item.rate,
+          amount: item.amount,
+          type: item.type || "subscription",
+        });
+        subtotal += item.amount;
+      }
+    }
+
+    // Set flags
+    isInstallationFee = billing.isInstallationBill || false;
+    isProRated = billing.isProRated || false;
+    proRatedDays = billing.proRatedDays || 0;
+
+    // If no items, create default
+    if (items.length === 0) {
+      // Add pro-rated if applicable
+      if (billing.isProRated && billing.proRatedDays) {
+        const dailyRate = ((plan?.price || 0) * 12) / 365;
+        const proRatedAmount =
+          Math.round(dailyRate * billing.proRatedDays * 100) / 100;
+        items.push({
+          description: `Pro-rated (${formatDateForDisplay(billing.billingPeriod.start)} - ${formatDateForDisplay(billing.billingPeriod.end)})`,
+          quantity: billing.proRatedDays,
+          rate: dailyRate,
+          amount: proRatedAmount,
+          type: "pro-rated",
+        });
+        subtotal += proRatedAmount;
+        isProRated = true;
+        proRatedDays = billing.proRatedDays;
+      }
+
+      // Add installation fee
+      if (billing.installationFee && billing.installationFee > 0) {
+        items.push({
+          description: "Installation Fee (One-time)",
+          quantity: 1,
+          rate: billing.installationFee,
+          amount: billing.installationFee,
+          type: "installation",
+        });
+        subtotal += billing.installationFee;
+        isInstallationFee = true;
+      }
+
+      // Add monthly subscription
+      if (!billing.isProRated || billing.isProRated === false) {
+        const monthlyRate = plan?.price || 0;
+        if (monthlyRate > 0) {
+          items.push({
+            description: `Monthly Subscription - ${formatDateForDisplay(billing.billingPeriod.start)} to ${formatDateForDisplay(billing.billingPeriod.end)}`,
+            quantity: 1,
+            rate: monthlyRate,
+            amount: monthlyRate,
+            type: "subscription",
+          });
+          subtotal += monthlyRate;
+        }
+      }
+    }
+
+    // Determine invoice type
+    let invoiceType = "monthly";
+    if (isInstallationFee && isProRated) {
+      invoiceType = "combined";
+    } else if (isInstallationFee) {
+      invoiceType = "installation";
+    } else if (isProRated) {
+      invoiceType = "pro-rated";
+    }
+
+    // Get customer address
+    const customerAddress = application.buildingName
+      ? `${application.buildingName}, ${application.buildingId?.streetAddress || ""}`
+      : application.address || "N/A";
+
+    // Get plan name
+    const planName = plan?.name || "N/A";
+
+    // Create invoice
+    const invoiceData = {
+      invoiceNumber: generateInvoiceNumber(),
+      invoiceType: invoiceType,
+      applicationId: application.applicationId,
+
+      customerName:
+        `${application.firstName || ""} ${application.lastName || ""}`.trim() ||
+        application.email,
+      customerAddress: customerAddress,
+      customerEmail: application.email,
+      customerPhone: application.phoneNumber || "",
+
+      companyName: "Fyberblizz Network Corporation",
+      companyAddress:
+        "UNIT 6 BLDG 2 G/F EL PUEBLO CONDO, ANONAS ST., STA. MESA, MANILA",
+      companyVat: "697-461-165-00000",
+      companyContact: "0969-341-4876",
+      companyEmail: "collection.breeze@misterfyber.com",
+
+      billingPeriod: {
+        start: billing.billingPeriod?.start || new Date(),
+        end: billing.billingPeriod?.end || new Date(),
+      },
+      dueDate: billing.dueDate || new Date(),
+      issuedDate: new Date(),
+
+      items: items,
+      subtotal: subtotal,
+      taxRate: 0,
+      taxAmount: 0,
+      discountAmount: 0,
+      total: subtotal,
+
+      bankName: "BDO",
+      accountName: "FYBERBLIZZ NETWORK CORPORATION",
+      accountNumber: "013448002421",
+
+      status: "draft",
+
+      billingId: billing._id,
+      billingCycleId: billing.billingCycleId,
+
+      isInstallationFee: isInstallationFee,
+      isProRated: isProRated,
+      proRatedDays: proRatedDays,
+      planName: planName,
+
+      notes: billing.notes || "",
+      termsAndConditions:
+        "Please be advised that failure to settle your account on or before the due date may result in temporary service interruption.",
+    };
+
+    const invoice = await Invoice.create(invoiceData);
+    console.log(`✅ Invoice created: ${invoice.invoiceNumber}`);
+    return invoice;
+  } catch (error) {
+    console.error("Error creating invoice from billing:", error);
+    return null;
+  }
+}
+
+// ==================== SEND INVOICE WITH PDF ====================
+async function sendInvoiceWithPDFAttachment(
+  invoice: any,
+  application: any,
+): Promise<boolean> {
+  try {
+    // Generate PDF
+    const pdfBuffer = await generateInvoicePDF(invoice);
+
+    // Save PDF to file
+    const pdfDir = path.join(__dirname, "../../uploads/invoices");
+    if (!fs.existsSync(pdfDir)) {
+      fs.mkdirSync(pdfDir, { recursive: true });
+    }
+
+    const pdfFileName = `${invoice.invoiceNumber}.pdf`;
+    const pdfPath = path.join(pdfDir, pdfFileName);
+    fs.writeFileSync(pdfPath, pdfBuffer);
+
+    // Update invoice with PDF URL
+    const pdfUrl = `/uploads/invoices/${pdfFileName}`;
+    await Invoice.findByIdAndUpdate(invoice._id, {
+      pdfUrl: pdfUrl,
+      pdfGeneratedAt: new Date(),
+      status: "sent",
+    });
+
+    // Send email with PDF attachment
+    const emailSent = await emailService.sendInvoiceWithPDF(
+      invoice,
+      pdfBuffer,
+      pdfFileName,
+    );
+
+    return emailSent;
+  } catch (error) {
+    console.error("Error sending invoice with PDF:", error);
+    return false;
+  }
+}
+
 // ==================== CREATE SEPARATE INSTALLATION BILL ====================
 async function createInstallationBill(
   application: any,
@@ -269,11 +489,27 @@ async function createInstallationBill(
     { session },
   );
 
-  try {
-    await sendInvoiceToApplication(application, installationBill[0]);
-    console.log(`📧 Sent installation fee invoice to ${application.email}`);
-  } catch (emailError) {
-    console.error("Failed to send installation fee invoice email:", emailError);
+  // Create invoice from installation bill
+  const invoice = await createInvoiceFromBilling(
+    installationBill[0],
+    application,
+    settings,
+  );
+
+  // Send invoice with PDF
+  if (invoice) {
+    await sendInvoiceWithPDFAttachment(invoice, application);
+  } else {
+    // Fallback to regular email
+    try {
+      await sendInvoiceToApplication(application, installationBill[0]);
+      console.log(`📧 Sent installation fee invoice to ${application.email}`);
+    } catch (emailError) {
+      console.error(
+        "Failed to send installation fee invoice email:",
+        emailError,
+      );
+    }
   }
 
   return installationBill[0];
@@ -327,13 +563,26 @@ async function createMonthlyBill(
     createdBill = await Billing.create([billData]);
   }
 
-  try {
-    await sendInvoiceToApplication(application, createdBill);
-    console.log(
-      `📧 Sent monthly invoice ${createdBill.invoiceNumber} to ${application.email}`,
-    );
-  } catch (emailError) {
-    console.error("Failed to send invoice email:", emailError);
+  // Create invoice from monthly bill
+  const invoice = await createInvoiceFromBilling(
+    createdBill,
+    application,
+    settings,
+  );
+
+  // Send invoice with PDF
+  if (invoice) {
+    await sendInvoiceWithPDFAttachment(invoice, application);
+  } else {
+    // Fallback to regular email
+    try {
+      await sendInvoiceToApplication(application, createdBill);
+      console.log(
+        `📧 Sent monthly invoice ${createdBill.invoiceNumber} to ${application.email}`,
+      );
+    } catch (emailError) {
+      console.error("Failed to send invoice email:", emailError);
+    }
   }
 
   return createdBill;
@@ -404,10 +653,23 @@ async function createProRatedBill(
     createdBill = await Billing.create([billData]);
   }
 
-  try {
-    await sendInvoiceToApplication(application, createdBill);
-  } catch (emailError) {
-    console.error("Failed to send invoice email:", emailError);
+  // Create invoice from pro-rated bill
+  const invoice = await createInvoiceFromBilling(
+    createdBill,
+    application,
+    settings,
+  );
+
+  // Send invoice with PDF
+  if (invoice) {
+    await sendInvoiceWithPDFAttachment(invoice, application);
+  } else {
+    // Fallback to regular email
+    try {
+      await sendInvoiceToApplication(application, createdBill);
+    } catch (emailError) {
+      console.error("Failed to send invoice email:", emailError);
+    }
   }
 
   return createdBill;
@@ -596,10 +858,20 @@ export const initializeBackdatedBilling = async (
       generatedBills.push(newBill[0]);
       totalMonthlyAmount += proRatedAmount;
 
-      try {
-        await sendInvoiceToApplication(application, newBill[0]);
-      } catch (emailError) {
-        console.error("Failed to send invoice email:", emailError);
+      // Create and send invoice
+      const invoice = await createInvoiceFromBilling(
+        newBill[0],
+        application,
+        settings,
+      );
+      if (invoice) {
+        await sendInvoiceWithPDFAttachment(invoice, application);
+      } else {
+        try {
+          await sendInvoiceToApplication(application, newBill[0]);
+        } catch (emailError) {
+          console.error("Failed to send invoice email:", emailError);
+        }
       }
     }
 
@@ -671,10 +943,20 @@ export const initializeBackdatedBilling = async (
           });
         }
 
-        try {
-          await sendInvoiceToApplication(application, newBill[0]);
-        } catch (emailError) {
-          console.error("Failed to send invoice email:", emailError);
+        // Create and send invoice
+        const invoice = await createInvoiceFromBilling(
+          newBill[0],
+          application,
+          settings,
+        );
+        if (invoice) {
+          await sendInvoiceWithPDFAttachment(invoice, application);
+        } else {
+          try {
+            await sendInvoiceToApplication(application, newBill[0]);
+          } catch (emailError) {
+            console.error("Failed to send invoice email:", emailError);
+          }
         }
       } else if (
         existingBill.status !== "paid" &&
@@ -1057,10 +1339,20 @@ export const startBilling = async (
       });
       createdMonthlyBill = monthlyBillResult[0];
 
-      try {
-        await sendInvoiceToApplication(application, createdMonthlyBill);
-      } catch (emailError) {
-        console.error("Failed to send invoice email:", emailError);
+      // Create and send invoice for monthly bill
+      const monthlyInvoice = await createInvoiceFromBilling(
+        createdMonthlyBill,
+        application,
+        settings,
+      );
+      if (monthlyInvoice) {
+        await sendInvoiceWithPDFAttachment(monthlyInvoice, application);
+      } else {
+        try {
+          await sendInvoiceToApplication(application, createdMonthlyBill);
+        } catch (emailError) {
+          console.error("Failed to send invoice email:", emailError);
+        }
       }
 
       if (installationFee > 0) {
@@ -1819,6 +2111,17 @@ export const markInstallationBillAsPaid = async (
       { session },
     );
 
+    // Update invoice if exists
+    const invoice = await Invoice.findOne({
+      billingId: installationBill._id,
+    }).session(session);
+    if (invoice) {
+      invoice.status = "paid";
+      invoice.paidAt = new Date();
+      invoice.paymentId = payment[0]._id;
+      await invoice.save({ session });
+    }
+
     const billingCycle = await BillingCycle.findById(
       installationBill.billingCycleId,
     ).session(session);
@@ -1962,6 +2265,17 @@ export const markBillAsPaid = async (
       },
       { session },
     );
+
+    // Update invoice if exists
+    const invoice = await Invoice.findOne({
+      billingId: existingBill._id,
+    }).session(session);
+    if (invoice) {
+      invoice.status = "paid";
+      invoice.paidAt = new Date();
+      invoice.paymentId = payment[0]._id;
+      await invoice.save({ session });
+    }
 
     const billingCycle = await BillingCycle.findById(
       existingBill.billingCycleId,
@@ -2202,6 +2516,16 @@ export const confirmProRatedPayment = async (
       { $set: { status: "paid", paidAt: new Date() } },
       { session },
     );
+
+    // Update invoice if exists
+    const invoice = await Invoice.findOne({
+      billingId: proRatedBill._id,
+    }).session(session);
+    if (invoice) {
+      invoice.status = "paid";
+      invoice.paidAt = new Date();
+      await invoice.save({ session });
+    }
 
     const paymentData: any = {
       amount: proRatedBill.total,
@@ -2554,6 +2878,8 @@ export const deleteBillingCycle = async (
         .json({ success: false, message: "Billing cycle not found" });
     }
 
+    // Delete related invoices
+    await Invoice.deleteMany({ billingCycleId: billingCycle._id }, { session });
     await Billing.deleteMany({ billingCycleId: billingCycle._id }, { session });
     await BillingCycle.deleteOne({ _id: billingCycle._id }, { session });
 

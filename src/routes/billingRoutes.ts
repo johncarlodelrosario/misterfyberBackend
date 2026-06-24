@@ -1,3 +1,5 @@
+// backend/src/routes/billingRoutes.ts
+
 import express from "express";
 import { optionalAuth, adminMiddleware } from "../middleware/auth";
 import {
@@ -34,6 +36,7 @@ import {
   recoverMissingBills,
   initializeBackdatedBilling,
   getUnpaidBillsReport,
+  manuallyGenerateBillsForMonth,
 } from "../controllers/billingController";
 
 const router = express.Router();
@@ -78,6 +81,11 @@ router.post(
   "/initialize-backdated",
   adminMiddleware,
   initializeBackdatedBilling,
+);
+router.post(
+  "/manually-generate-month",
+  adminMiddleware,
+  manuallyGenerateBillsForMonth,
 );
 
 // ==================== APPLICATION ROUTES ====================

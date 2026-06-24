@@ -1,3 +1,5 @@
+// backend/src/services/emailService.ts
+
 import { IUser } from "../models/User";
 import Admin from "../models/Admin";
 import dotenv from "dotenv";
@@ -279,6 +281,245 @@ class EmailService {
         message: `Error: ${error.message}`,
         details: error,
       };
+    }
+  }
+
+  // ==================== SEND INVOICE WITH PDF ATTACHMENT ====================
+  async sendInvoiceWithPDF(
+    invoiceData: any,
+    pdfBuffer: Buffer,
+    pdfFileName: string,
+  ): Promise<boolean> {
+    try {
+      const customerEmailsEnabled = await this.areCustomerEmailsEnabled();
+      if (!customerEmailsEnabled) {
+        console.log(
+          `📧 CUSTOMER EMAILS ARE DISABLED. Skipping invoice to ${invoiceData.customerEmail}`,
+        );
+        return false;
+      }
+
+      if (!this.initialized || !this.apiKey) {
+        console.log(
+          `⚠️ Email service not initialized - skipping invoice to ${invoiceData.customerEmail}`,
+        );
+        if (process.env.NODE_ENV === "development") {
+          console.log(
+            `📧 [DEV MODE] Would send invoice to: ${invoiceData.customerEmail}`,
+          );
+          console.log(`   Invoice: ${invoiceData.invoiceNumber}`);
+          return true;
+        }
+        return false;
+      }
+
+      const dueDate = invoiceData.dueDate
+        ? new Date(invoiceData.dueDate).toLocaleDateString()
+        : "N/A";
+      const amount = invoiceData.total || 0;
+      const frontendUrl =
+        process.env.FRONTEND_URL || "https://www.misterfyber.com";
+
+      // Build invoice items table for email
+      let itemsHtml = "";
+      if (invoiceData.items && invoiceData.items.length > 0) {
+        itemsHtml = `<table style="width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 13px;">
+          <thead>
+            <tr style="background-color: #1a237e; color: white;">
+              <th style="padding: 10px; text-align: left; border: 1px solid #ddd;">Description</th>
+              <th style="padding: 10px; text-align: center; border: 1px solid #ddd;">Qty</th>
+              <th style="padding: 10px; text-align: right; border: 1px solid #ddd;">Rate</th>
+              <th style="padding: 10px; text-align: right; border: 1px solid #ddd;">Amount</th>
+            </tr>
+          </thead>
+          <tbody>`;
+
+        for (const item of invoiceData.items) {
+          itemsHtml += `<tr>
+            <td style="padding: 8px; border: 1px solid #ddd;">${item.description}</td>
+            <td style="padding: 8px; text-align: center; border: 1px solid #ddd;">${item.quantity || 1}</td>
+            <td style="padding: 8px; text-align: right; border: 1px solid #ddd;">₱${safeToFixed(item.rate)}</td>
+            <td style="padding: 8px; text-align: right; border: 1px solid #ddd;">₱${safeToFixed(item.amount)}</td>
+          </tr>`;
+        }
+
+        // Add totals
+        itemsHtml += `<tr style="font-weight: bold; background-color: #f8f9fa;">
+          <td colspan="3" style="padding: 10px; text-align: right; border: 1px solid #ddd;">Subtotal:</td>
+          <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">₱${safeToFixed(invoiceData.subtotal)}</td>
+        </tr>`;
+
+        if (invoiceData.discountAmount > 0) {
+          itemsHtml += `<tr style="background-color: #f8f9fa;">
+            <td colspan="3" style="padding: 10px; text-align: right; border: 1px solid #ddd;">Discount:</td>
+            <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">-₱${safeToFixed(invoiceData.discountAmount)}</td>
+          </tr>`;
+        }
+
+        if (invoiceData.taxAmount > 0) {
+          itemsHtml += `<tr style="background-color: #f8f9fa;">
+            <td colspan="3" style="padding: 10px; text-align: right; border: 1px solid #ddd;">Tax (${invoiceData.taxRate}%):</td>
+            <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">₱${safeToFixed(invoiceData.taxAmount)}</td>
+          </tr>`;
+        }
+
+        itemsHtml += `<tr style="font-weight: bold; background-color: #1a237e; color: white;">
+          <td colspan="3" style="padding: 12px; text-align: right; border: 1px solid #1a237e;">TOTAL:</td>
+          <td style="padding: 12px; text-align: right; border: 1px solid #1a237e;">₱${safeToFixed(amount)}</td>
+        </tr>`;
+
+        itemsHtml += `</tbody></table>`;
+      }
+
+      // Build payment instructions
+      let paymentInstructions = "";
+      if (
+        invoiceData.bankName &&
+        invoiceData.accountName &&
+        invoiceData.accountNumber
+      ) {
+        paymentInstructions = `
+          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+            <h4 style="margin-top: 0; color: #1a237e;">Payment Method (Bank Transfer):</h4>
+            <p><strong>Bank Name:</strong> ${invoiceData.bankName}</p>
+            <p><strong>Account Name:</strong> ${invoiceData.accountName}</p>
+            <p><strong>Account Number:</strong> ${invoiceData.accountNumber}</p>
+            <p style="font-size: 12px; color: #666; margin-top: 10px;">
+              Kindly send your proof of payment via Viber ${invoiceData.companyContact || "0969-341-4876"} or at ${invoiceData.companyEmail || "collection.breeze@misterfyber.com"} after completing the transaction.
+            </p>
+          </div>
+        `;
+      }
+
+      const html = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <title>Your Mister Fyber Invoice</title>
+            <style>
+                body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+                .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
+                .header { text-align: center; border-bottom: 2px solid #1a237e; padding-bottom: 20px; }
+                .header h1 { color: #1a237e; margin: 0; font-size: 24px; }
+                .header p { color: #666; margin: 5px 0; }
+                .content { padding: 20px 0; }
+                .bill-details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
+                .button { display: inline-block; background-color: #1a237e; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; }
+                .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
+                .warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }
+                .company-info { text-align: center; font-size: 12px; color: #666; margin: 10px 0; }
+                .invoice-type { display: inline-block; background: #1a237e; color: white; padding: 3px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>FYBERBLIZZ NETWORK CORPORATION</h1>
+                    <p>UNIT 6 BLDG 2 G/F EL PUEBLO CONDO, ANONAS ST., STA. MESA, MANILA</p>
+                    <p>VAT-REG.: 697-461-165-00000 | CONTACT NO.: 0969-341-4876</p>
+                    <h2 style="color: #1a237e; margin-top: 15px;">MISTER FYBER</h2>
+                    <h3 style="color: #1a237e; margin: 5px 0;">INVOICE</h3>
+                    <p><span class="invoice-type">${invoiceData.invoiceType || "Monthly"}</span></p>
+                </div>
+                <div class="content">
+                    <p><strong>Subscriber's Name:</strong> ${invoiceData.customerName}</p>
+                    <p><strong>Address:</strong> ${invoiceData.customerAddress}</p>
+                    
+                    ${invoiceData.planName ? `<p><strong>Plan Rate:</strong> ${invoiceData.planName}</p>` : ""}
+                    
+                    <div class="bill-details">
+                        <p><strong>Invoice Number:</strong> ${invoiceData.invoiceNumber}</p>
+                        <p><strong>Billing Period:</strong> ${formatDateForDisplay(invoiceData.billingPeriod?.start)} - ${formatDateForDisplay(invoiceData.billingPeriod?.end)}</p>
+                        <p><strong>Issue Date:</strong> ${formatDateForDisplay(invoiceData.issuedDate)}</p>
+                        <p><strong>Due Date:</strong> ${dueDate}</p>
+                        ${invoiceData.isProRated ? `<p><strong>Pro-rated Days:</strong> ${invoiceData.proRatedDays || 0} days</p>` : ""}
+                        ${invoiceData.isInstallationFee ? `<p><strong>Includes Installation Fee</strong></p>` : ""}
+                    </div>
+
+                    ${itemsHtml}
+
+                    ${paymentInstructions}
+
+                    ${invoiceData.notes ? `<div style="background: #e7f3ff; padding: 15px; border-radius: 5px; margin: 20px 0;"><p><strong>Notes:</strong><br>${invoiceData.notes}</p></div>` : ""}
+                    
+                    <div class="warning">
+                        <strong>IMPORTANT NOTICE:</strong> Please be advised that failure to settle your account on or before the due date may result in temporary service interruption.
+                    </div>
+                    
+                    <div style="text-align: center; margin: 30px 0;">
+                        <a href="${frontendUrl}/invoices" class="button">📄 View All Invoices</a>
+                    </div>
+                    
+                    <p>Should you have any questions or need clarification, feel free to reach out.</p>
+                    <p><strong>Thank you for choosing our service!</strong></p>
+                    <p><strong>Best regards,</strong><br>Mister Fyber Admin</p>
+                </div>
+                <div class="footer">
+                    <p>Mister Fyber - Your trusted internet provider</p>
+                    <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
+                    <p><small>This is a computer-generated invoice. No signature required.</small></p>
+                </div>
+            </div>
+        </body>
+        </html>
+      `;
+
+      let senderEmail = "admin@misterfyber.com";
+      if (this.emailFrom) {
+        const match = this.emailFrom.match(/<(.+)>/);
+        if (match) {
+          senderEmail = match[1];
+        } else if (this.emailFrom.includes("@")) {
+          senderEmail = this.emailFrom;
+        }
+      }
+
+      // Convert PDF buffer to base64 for API
+      const pdfBase64 = pdfBuffer.toString("base64");
+
+      const requestBody = {
+        sender: {
+          name: "Mister Fyber",
+          email: senderEmail,
+        },
+        to: [{ email: invoiceData.customerEmail }],
+        subject: `🧾 Invoice #${invoiceData.invoiceNumber} - Mister Fyber`,
+        htmlContent: html,
+        attachment: [
+          {
+            name: pdfFileName,
+            content: pdfBase64,
+          },
+        ],
+      };
+
+      const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          "api-key": this.apiKey,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
+      });
+
+      if (response.ok) {
+        const data: any = await response.json();
+        console.log(`✅ Invoice sent with PDF to ${invoiceData.customerEmail}`);
+        console.log(`   Invoice: ${invoiceData.invoiceNumber}`);
+        console.log(`   Message ID: ${data.messageId || "N/A"}`);
+        return true;
+      } else {
+        const errorText = await response.text();
+        console.error(
+          `❌ Failed to send invoice with PDF: ${response.status} - ${errorText}`,
+        );
+        return false;
+      }
+    } catch (error) {
+      console.error(`❌ Error sending invoice with PDF:`, error);
+      return false;
     }
   }
 
@@ -1492,6 +1733,17 @@ class EmailService {
     `;
     await this.sendToAdmin(`Service Interruption: ${user.email}`, adminHtml);
   }
+}
+
+// Helper function for formatting dates
+function formatDateForDisplay(date: any): string {
+  if (!date) return "N/A";
+  const d = new Date(date);
+  if (isNaN(d.getTime())) return "N/A";
+  const month = d.getMonth() + 1;
+  const day = d.getDate();
+  const year = d.getFullYear();
+  return `${month}/${day}/${year}`;
 }
 
 export default new EmailService();
