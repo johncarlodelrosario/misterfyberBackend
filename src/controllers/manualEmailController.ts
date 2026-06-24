@@ -307,48 +307,60 @@ export const sendManualEmail = async (
       application,
     );
 
-    // Send to customer
-    const emailSent = await emailService.forceSendEmail(
-      application.email,
-      subject,
-      emailHtml,
-    );
+    // Send to customer with better error handling
+    let emailSent = false;
+    let emailError = null;
+
+    try {
+      emailSent = await emailService.forceSendEmail(
+        application.email,
+        subject,
+        emailHtml,
+      );
+    } catch (error: any) {
+      emailError = error.message || "Email service error";
+      console.error("Email sending error:", error);
+    }
 
     let adminCopySent = false;
     if (emailSent && sendCopyToAdmin) {
       const adminEmail = process.env.ADMIN_EMAIL || process.env.EMAIL_FROM;
       if (adminEmail) {
-        const adminHtml = `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-            <h2 style="color: #007bff;">📧 Admin Copy - Manual Email Sent</h2>
-            <p><strong>Sent To:</strong> ${application.firstName} ${application.lastName} (${application.email})</p>
-            <p><strong>Subject:</strong> ${subject}</p>
-            <p><strong>Sent At:</strong> ${new Date().toLocaleString()}</p>
-            <p><strong>Sent By:</strong> ${req.user?.email || req.user?.username || "Admin"}</p>
-            <hr>
-            <div style="background: #f8f9fa; padding: 15px; border-radius: 5px;">
-              <h3>Message Content:</h3>
-              <div>${message.replace(/\n/g, "<br>")}</div>
-            </div>
-            ${
-              includeBilling && billingData
-                ? `
-              <div style="margin-top: 20px; padding: 15px; background: #e7f3ff; border-radius: 5px;">
-                <h3>Billing Information Included:</h3>
-                <p><strong>Invoice:</strong> ${billingData.invoiceNumber}</p>
-                <p><strong>Amount:</strong> ₱${(billingData.total || 0).toLocaleString()}</p>
+        try {
+          const adminHtml = `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+              <h2 style="color: #007bff;">📧 Admin Copy - Manual Email Sent</h2>
+              <p><strong>Sent To:</strong> ${application.firstName} ${application.lastName} (${application.email})</p>
+              <p><strong>Subject:</strong> ${subject}</p>
+              <p><strong>Sent At:</strong> ${new Date().toLocaleString()}</p>
+              <p><strong>Sent By:</strong> ${req.user?.email || req.user?.username || "Admin"}</p>
+              <hr>
+              <div style="background: #f8f9fa; padding: 15px; border-radius: 5px;">
+                <h3>Message Content:</h3>
+                <div>${message.replace(/\n/g, "<br>")}</div>
               </div>
-            `
-                : ""
-            }
-          </div>
-        `;
-        adminCopySent = await emailService.sendEmail(
-          adminEmail,
-          `[ADMIN COPY] ${subject}`,
-          adminHtml,
-          false,
-        );
+              ${
+                includeBilling && billingData
+                  ? `
+                <div style="margin-top: 20px; padding: 15px; background: #e7f3ff; border-radius: 5px;">
+                  <h3>Billing Information Included:</h3>
+                  <p><strong>Invoice:</strong> ${billingData.invoiceNumber}</p>
+                  <p><strong>Amount:</strong> ₱${(billingData.total || 0).toLocaleString()}</p>
+                </div>
+              `
+                  : ""
+              }
+            </div>
+          `;
+          adminCopySent = await emailService.sendEmail(
+            adminEmail,
+            `[ADMIN COPY] ${subject}`,
+            adminHtml,
+            false,
+          );
+        } catch (adminError) {
+          console.error("Failed to send admin copy:", adminError);
+        }
       }
     }
 
@@ -365,7 +377,7 @@ export const sendManualEmail = async (
       recipientCount: 1,
       includeBilling: includeBilling || false,
       billId: selectedBillId,
-      error: emailSent ? undefined : "Failed to send email",
+      error: emailError || (emailSent ? undefined : "Failed to send email"),
       sentBy: req.user?.username || req.user?.email || "Admin",
       sentByEmail: req.user?.email || "admin@misterfyber.com",
       adminCopySent: adminCopySent || false,
@@ -373,16 +385,20 @@ export const sendManualEmail = async (
 
     await sentRecord.save({ session });
 
+    await session.commitTransaction();
+
     if (!emailSent) {
-      await session.abortTransaction();
       return res.status(500).json({
         success: false,
         message:
+          emailError ||
           "Failed to send email. Please check email service configuration.",
+        details: {
+          error: emailError,
+          customerEmail: application.email,
+        },
       });
     }
-
-    await session.commitTransaction();
 
     res.status(200).json({
       success: true,
@@ -444,6 +460,7 @@ export const sendBulkEmails = async (
     let successCount = 0;
     let failCount = 0;
     const sentRecords = [];
+    const failedEmails = [];
 
     for (const applicationId of applicationIds) {
       try {
@@ -498,11 +515,19 @@ export const sendBulkEmails = async (
           application,
         );
 
-        const emailSent = await emailService.forceSendEmail(
-          application.email,
-          subject,
-          emailHtml,
-        );
+        let emailSent = false;
+        let emailError = null;
+
+        try {
+          emailSent = await emailService.forceSendEmail(
+            application.email,
+            subject,
+            emailHtml,
+          );
+        } catch (error: any) {
+          emailError = error.message || "Email service error";
+          console.error(`Failed to send email to ${application.email}:`, error);
+        }
 
         const record = new EmailSentRecord({
           applicationId: application.applicationId,
@@ -517,7 +542,7 @@ export const sendBulkEmails = async (
           includeBilling: includeBilling || false,
           billType: selectedBillType,
           billId: selectedBillId,
-          error: emailSent ? undefined : "Failed to send email",
+          error: emailError || (emailSent ? undefined : "Failed to send email"),
           sentBy: req.user?.username || req.user?.email || "Admin",
           sentByEmail: req.user?.email || "admin@misterfyber.com",
           adminCopySent: false,
@@ -536,11 +561,17 @@ export const sendBulkEmails = async (
           sentRecords.push(record);
         } else {
           failCount++;
+          failedEmails.push({
+            applicationId,
+            email: application.email,
+            name: `${application.firstName} ${application.lastName}`,
+            error: emailError || "Email sending failed",
+          });
           results.push({
             applicationId,
             email: application.email,
             success: false,
-            error: "Email sending failed",
+            error: emailError || "Email sending failed",
           });
         }
 
@@ -560,47 +591,47 @@ export const sendBulkEmails = async (
     if (sendCopyToAdmin && successCount > 0) {
       const adminEmail = process.env.ADMIN_EMAIL || process.env.EMAIL_FROM;
       if (adminEmail) {
-        const summaryHtml = `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-            <h2>📧 Bulk Email Summary</h2>
-            <p><strong>Subject:</strong> ${subject}</p>
-            <p><strong>Sent At:</strong> ${new Date().toLocaleString()}</p>
-            <p><strong>Sent By:</strong> ${req.user?.email || req.user?.username || "Admin"}</p>
-            <hr>
-            <p><strong>✅ Successful:</strong> ${successCount}</p>
-            <p><strong>❌ Failed:</strong> ${failCount}</p>
-            <hr>
-            <h3>Recipients:</h3>
-            <ul>
-              ${results
-                .filter((r) => r.success)
-                .map((r) => `<li>${r.name} (${r.email})</li>`)
-                .join("")}
-            </ul>
-            ${
-              failCount > 0
-                ? `
-              <h3>Failed:</h3>
+        try {
+          const summaryHtml = `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+              <h2>📧 Bulk Email Summary</h2>
+              <p><strong>Subject:</strong> ${subject}</p>
+              <p><strong>Sent At:</strong> ${new Date().toLocaleString()}</p>
+              <p><strong>Sent By:</strong> ${req.user?.email || req.user?.username || "Admin"}</p>
+              <hr>
+              <p><strong>✅ Successful:</strong> ${successCount}</p>
+              <p><strong>❌ Failed:</strong> ${failCount}</p>
+              <hr>
+              <h3>Recipients:</h3>
               <ul>
                 ${results
-                  .filter((r) => !r.success)
-                  .map(
-                    (r) =>
-                      `<li>Application: ${r.applicationId} - ${r.error}</li>`,
-                  )
+                  .filter((r) => r.success)
+                  .map((r) => `<li>${r.name} (${r.email})</li>`)
                   .join("")}
               </ul>
-            `
-                : ""
-            }
-          </div>
-        `;
-        await emailService.sendEmail(
-          adminEmail,
-          `[BULK EMAIL SUMMARY] ${subject}`,
-          summaryHtml,
-          false,
-        );
+              ${
+                failCount > 0
+                  ? `
+                <h3>Failed:</h3>
+                <ul>
+                  ${failedEmails
+                    .map((r) => `<li>${r.name} (${r.email}) - ${r.error}</li>`)
+                    .join("")}
+                </ul>
+              `
+                  : ""
+              }
+            </div>
+          `;
+          await emailService.sendEmail(
+            adminEmail,
+            `[BULK EMAIL SUMMARY] ${subject}`,
+            summaryHtml,
+            false,
+          );
+        } catch (adminError) {
+          console.error("Failed to send admin summary:", adminError);
+        }
       }
     }
 
@@ -612,6 +643,7 @@ export const sendBulkEmails = async (
         successCount,
         failCount,
         results,
+        failedEmails: failCount > 0 ? failedEmails : undefined,
       },
     });
   } catch (error) {
@@ -907,7 +939,9 @@ export const sendReminderToUnpaid = async (
 
     const results = [];
     let sentCount = 0;
+    let failCount = 0;
     const sentRecords = [];
+    const failedEmails = [];
 
     for (const applicationId of uniqueApplicationIds) {
       if (!applicationId) continue;
@@ -952,11 +986,22 @@ export const sendReminderToUnpaid = async (
         application,
       );
 
-      const sent = await emailService.forceSendEmail(
-        application.email,
-        `⚠️ Payment Reminder - ${customerBills.length} Unpaid Bill(s)`,
-        emailHtml,
-      );
+      let emailSent = false;
+      let emailError = null;
+
+      try {
+        emailSent = await emailService.forceSendEmail(
+          application.email,
+          `⚠️ Payment Reminder - ${customerBills.length} Unpaid Bill(s)`,
+          emailHtml,
+        );
+      } catch (error: any) {
+        emailError = error.message || "Email service error";
+        console.error(
+          `Failed to send reminder to ${application.email}:`,
+          error,
+        );
+      }
 
       const record = new EmailSentRecord({
         applicationId: application.applicationId,
@@ -965,13 +1010,14 @@ export const sendReminderToUnpaid = async (
         subject: `⚠️ Payment Reminder - ${customerBills.length} Unpaid Bill(s)`,
         message: reminderMessage,
         sentAt: new Date(),
-        status: sent ? "sent" : "failed",
+        status: emailSent ? "sent" : "failed",
         isBulk: true,
         recipientCount: 1,
         includeBilling: true,
         billType: "unpaid",
         billId: customerBills[0]?._id,
-        error: sent ? undefined : "Failed to send reminder",
+        error:
+          emailError || (emailSent ? undefined : "Failed to send reminder"),
         sentBy: req.user?.username || req.user?.email || "Admin",
         sentByEmail: req.user?.email || "admin@misterfyber.com",
         adminCopySent: false,
@@ -979,7 +1025,7 @@ export const sendReminderToUnpaid = async (
 
       await record.save();
 
-      if (sent) {
+      if (emailSent) {
         sentCount++;
         results.push({
           applicationId,
@@ -989,6 +1035,14 @@ export const sendReminderToUnpaid = async (
           totalAmount,
         });
         sentRecords.push(record);
+      } else {
+        failCount++;
+        failedEmails.push({
+          applicationId,
+          email: application.email,
+          name: `${application.firstName} ${application.lastName}`,
+          error: emailError || "Failed to send reminder",
+        });
       }
 
       await new Promise((resolve) => setTimeout(resolve, 500));
@@ -996,11 +1050,13 @@ export const sendReminderToUnpaid = async (
 
     res.status(200).json({
       success: true,
-      message: `Sent reminders to ${sentCount} customers with unpaid bills`,
+      message: `Sent reminders to ${sentCount} customers with unpaid bills (${failCount} failed)`,
       data: {
         sentCount,
+        failCount,
         totalCustomers: uniqueApplicationIds.length,
         results,
+        failedEmails: failCount > 0 ? failedEmails : undefined,
       },
     });
   } catch (error) {
