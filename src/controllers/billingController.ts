@@ -3921,7 +3921,9 @@ export const getUnpaidBillsReport = async (
             .lean();
           if (application) {
             (b as any).applicationData = application;
-            (b as any).location = application.location || "";
+            // Get location from the application entity
+            const location = await getLocationFromEntity(application);
+            (b as any).location = location || "";
           }
         }
         return b;
