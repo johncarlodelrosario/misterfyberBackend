@@ -307,19 +307,46 @@ export const sendManualEmail = async (
       application,
     );
 
-    // Send to customer with better error handling
+    // Send to customer with improved error handling
     let emailSent = false;
     let emailError = null;
 
     try {
-      emailSent = await emailService.forceSendEmail(
-        application.email,
-        subject,
-        emailHtml,
-      );
+      // Check if email service is configured
+      if (!emailService.isConfigured()) {
+        console.warn("⚠️ Email service not configured. Check BREVO_API_KEY.");
+
+        // In development, simulate success
+        if (process.env.NODE_ENV === "development") {
+          console.log(
+            `📧 [DEV MODE] Would send email to: ${application.email}`,
+          );
+          console.log(`   Subject: ${subject}`);
+          console.log(`   Message preview: ${message.substring(0, 100)}...`);
+          emailSent = true;
+        } else {
+          throw new Error(
+            "Email service is not configured. Please check BREVO_API_KEY in .env file.",
+          );
+        }
+      } else {
+        // Try to send the email
+        emailSent = await emailService.forceSendEmail(
+          application.email,
+          subject,
+          emailHtml,
+        );
+
+        // If sending failed but we got a false, log it
+        if (!emailSent) {
+          console.warn(
+            `⚠️ Email sending returned false for ${application.email}`,
+          );
+        }
+      }
     } catch (error: any) {
       emailError = error.message || "Email service error";
-      console.error("Email sending error:", error);
+      console.error("❌ Email sending error:", error);
     }
 
     let adminCopySent = false;
@@ -387,15 +414,19 @@ export const sendManualEmail = async (
 
     await session.commitTransaction();
 
+    // Return appropriate response
     if (!emailSent) {
+      const errorMessage =
+        emailError ||
+        "Failed to send email. Please check email service configuration.";
       return res.status(500).json({
         success: false,
-        message:
-          emailError ||
-          "Failed to send email. Please check email service configuration.",
+        message: errorMessage,
         details: {
           error: emailError,
           customerEmail: application.email,
+          isEmailConfigured: emailService.isConfigured(),
+          environment: process.env.NODE_ENV,
         },
       });
     }
@@ -456,6 +487,19 @@ export const sendBulkEmails = async (
       });
     }
 
+    // Check if email service is configured
+    const isConfigured = emailService.isConfigured();
+    if (!isConfigured && process.env.NODE_ENV !== "development") {
+      return res.status(500).json({
+        success: false,
+        message: "Email service is not configured. Please check BREVO_API_KEY.",
+        details: {
+          isConfigured: false,
+          environment: process.env.NODE_ENV,
+        },
+      });
+    }
+
     const results = [];
     let successCount = 0;
     let failCount = 0;
@@ -484,7 +528,6 @@ export const sendBulkEmails = async (
           if (billType === "unpaid") {
             billQuery.status = { $in: ["sent", "overdue"] };
           } else if (billType === "latest") {
-            // Get latest bill
             billingData = await Billing.findOne({
               applicationId: application.applicationId,
             })
@@ -519,11 +562,22 @@ export const sendBulkEmails = async (
         let emailError = null;
 
         try {
-          emailSent = await emailService.forceSendEmail(
-            application.email,
-            subject,
-            emailHtml,
-          );
+          if (isConfigured || process.env.NODE_ENV === "development") {
+            if (!isConfigured && process.env.NODE_ENV === "development") {
+              console.log(
+                `📧 [DEV MODE] Would send bulk email to: ${application.email}`,
+              );
+              emailSent = true;
+            } else {
+              emailSent = await emailService.forceSendEmail(
+                application.email,
+                subject,
+                emailHtml,
+              );
+            }
+          } else {
+            throw new Error("Email service is not configured");
+          }
         } catch (error: any) {
           emailError = error.message || "Email service error";
           console.error(`Failed to send email to ${application.email}:`, error);
@@ -925,6 +979,19 @@ export const sendReminderToUnpaid = async (
   try {
     const { customMessage, includeDueDateReminder } = req.body;
 
+    // Check if email service is configured
+    const isConfigured = emailService.isConfigured();
+    if (!isConfigured && process.env.NODE_ENV !== "development") {
+      return res.status(500).json({
+        success: false,
+        message: "Email service is not configured. Please check BREVO_API_KEY.",
+        details: {
+          isConfigured: false,
+          environment: process.env.NODE_ENV,
+        },
+      });
+    }
+
     // Find all applications with unpaid bills
     const unpaidBills = await Billing.find({
       status: { $in: ["sent", "overdue"] },
@@ -990,11 +1057,22 @@ export const sendReminderToUnpaid = async (
       let emailError = null;
 
       try {
-        emailSent = await emailService.forceSendEmail(
-          application.email,
-          `⚠️ Payment Reminder - ${customerBills.length} Unpaid Bill(s)`,
-          emailHtml,
-        );
+        if (isConfigured || process.env.NODE_ENV === "development") {
+          if (!isConfigured && process.env.NODE_ENV === "development") {
+            console.log(
+              `📧 [DEV MODE] Would send reminder to: ${application.email}`,
+            );
+            emailSent = true;
+          } else {
+            emailSent = await emailService.forceSendEmail(
+              application.email,
+              `⚠️ Payment Reminder - ${customerBills.length} Unpaid Bill(s)`,
+              emailHtml,
+            );
+          }
+        } else {
+          throw new Error("Email service is not configured");
+        }
       } catch (error: any) {
         emailError = error.message || "Email service error";
         console.error(

@@ -53,7 +53,7 @@ const safeToFixed = (value: any, decimals: number = 2): string => {
 const LOCATION_EMAIL_MAP: { [key: string]: string } = {
   breeze:
     process.env.COLLECTION_EMAIL_BREEZE || "collection.breeze@misterfyber.com",
-  sil: process.env.COLLECTION_EMAIL_SIL || "collection.sil@misterfyber.com",
+  sil: process.env.COLLECTION_EMAIL_SIL || "collection.silk@misterfyber.com",
 };
 
 const DEFAULT_COLLECTION_EMAIL =
@@ -89,12 +89,10 @@ export const getCollectionEmailByLocation = (location: string): string => {
  */
 export const getLocationFromEntity = async (entity: any): Promise<string> => {
   try {
-    // Check if entity has location directly
     if (entity && entity.location) {
       return entity.location;
     }
 
-    // Check if entity has buildingId
     if (entity && entity.buildingId) {
       const building = await Building.findById(entity.buildingId);
       if (building && building.location) {
@@ -102,7 +100,6 @@ export const getLocationFromEntity = async (entity: any): Promise<string> => {
       }
     }
 
-    // Check if entity has buildingName with location mapping
     if (entity && entity.buildingName) {
       const buildingName = entity.buildingName.toLowerCase().trim();
       if (buildingName.includes("breeze")) {
@@ -113,13 +110,11 @@ export const getLocationFromEntity = async (entity: any): Promise<string> => {
       }
     }
 
-    // Check if entity has applicationId and get from application
     if (entity && entity.applicationId) {
       const application = await Application.findOne({
         applicationId: entity.applicationId,
       });
       if (application) {
-        // Check building from application
         if (application.buildingId) {
           const building = await Building.findById(application.buildingId);
           if (building && building.location) {
@@ -187,40 +182,37 @@ class EmailService {
   private adminEmail: string;
   private supportEmail: string;
   private emailFrom: string;
+  private brevoApiUrl: string = "https://api.brevo.com/v3/smtp/email";
 
   constructor() {
-    this.adminEmail = process.env.ADMIN_EMAIL || "";
-    this.supportEmail = process.env.SUPPORT_EMAIL || "";
-    this.emailFrom = process.env.EMAIL_FROM || "";
+    this.adminEmail = process.env.ADMIN_EMAIL || "admin@misterfyber.com";
+    this.supportEmail = process.env.SUPPORT_EMAIL || "support@misterfyber.com";
+    this.emailFrom =
+      process.env.EMAIL_FROM || "Mister Fyber <admin@misterfyber.com>";
     this.apiKey = process.env.BREVO_API_KEY || "";
 
     console.log("\n📧 EmailService Constructor Values:");
-    console.log("   ADMIN_EMAIL:", this.adminEmail || "❌ MISSING");
-    console.log("   SUPPORT_EMAIL:", this.supportEmail || "❌ MISSING");
-    console.log("   EMAIL_FROM:", this.emailFrom || "❌ MISSING");
+    console.log("   ADMIN_EMAIL:", this.adminEmail);
+    console.log("   SUPPORT_EMAIL:", this.supportEmail);
+    console.log("   EMAIL_FROM:", this.emailFrom);
     console.log("   BREVO_API_KEY:", this.apiKey ? "✅ SET" : "❌ MISSING");
+    console.log("   API Key length:", this.apiKey ? this.apiKey.length : 0);
 
-    if (!this.adminEmail || !this.supportEmail || !this.emailFrom) {
-      console.error("\n❌ Email configuration missing!");
-      console.error("   Please ensure these are in your .env file:");
-      console.error("   ADMIN_EMAIL=your_email@example.com");
-      console.error("   SUPPORT_EMAIL=support@example.com");
-      console.error("   EMAIL_FROM=noreply@example.com");
-    }
-
-    if (!this.apiKey) {
-      console.error("\n❌ BREVO_API_KEY is missing!");
-      console.error("   Please add BREVO_API_KEY to your .env file");
+    // Initialize if API key is present
+    if (this.apiKey && this.apiKey.length > 10) {
+      this.initialized = true;
+      console.log("✅ Email service initialized successfully!");
     } else {
-      if (this.apiKey.startsWith("xkeysib-") && this.apiKey.length > 30) {
-        this.initialized = true;
-        console.log("✅ Brevo API email service ready!\n");
-      } else {
-        console.error("\n❌ BREVO_API_KEY format looks invalid!");
-        console.error(
-          "   API key should start with 'xkeysib-' and be at least 30 characters",
+      console.warn(
+        "⚠️ Email service not initialized - BREVO_API_KEY is missing or invalid",
+      );
+
+      // In development, we can still "send" emails by logging them
+      if (process.env.NODE_ENV === "development") {
+        console.log(
+          "📧 [DEV MODE] Email service will log emails instead of sending",
         );
-        console.error(`   Current key: ${this.apiKey.substring(0, 20)}...`);
+        this.initialized = true; // Allow dev mode to work
       }
     }
   }
@@ -259,6 +251,7 @@ class EmailService {
     },
   ): Promise<boolean> {
     try {
+      // Check if customer emails are enabled
       if (isCustomerEmail) {
         const customerEmailsEnabled = await this.areCustomerEmailsEnabled();
         if (!customerEmailsEnabled) {
@@ -269,21 +262,22 @@ class EmailService {
         }
       }
 
+      // In development mode, log the email instead of sending
+      if (process.env.NODE_ENV === "development" && !this.apiKey) {
+        console.log(`📧 [DEV MODE] Would send email to: ${to}`);
+        console.log(`   Subject: ${subject}`);
+        console.log(`   Content preview: ${htmlContent.substring(0, 200)}...`);
+        return true;
+      }
+
       if (!this.initialized || !this.apiKey) {
         console.log(
           `⚠️ Email service not initialized - skipping email to ${to}`,
         );
-        if (process.env.NODE_ENV === "development") {
-          console.log(`📧 [DEV MODE] Would send email to: ${to}`);
-          console.log(`   Subject: ${subject}`);
-          console.log(
-            `   Content preview: ${htmlContent.substring(0, 200)}...`,
-          );
-          return true;
-        }
         return false;
       }
 
+      // Extract sender email from EMAIL_FROM
       let senderEmail = "admin@misterfyber.com";
       if (this.emailFrom) {
         const match = this.emailFrom.match(/<(.+)>/);
@@ -301,10 +295,6 @@ class EmailService {
       let collectionEmail = DEFAULT_COLLECTION_EMAIL;
       if (location) {
         collectionEmail = getCollectionEmailByLocation(location);
-      } else {
-        // Try to determine location from the first recipient's email if it's a user
-        // This is a fallback for when location is not explicitly passed
-        collectionEmail = DEFAULT_COLLECTION_EMAIL;
       }
 
       // Prepare BCC with collection email
@@ -336,28 +326,28 @@ class EmailService {
       console.log(`   Location: ${location || "Not specified"}`);
       console.log(`   Collection Email (BCC): ${collectionEmail}`);
 
+      // Build request body
       const requestBody: any = {
         sender: {
           name: "Mister Fyber",
           email: senderEmail,
         },
-        to: toArray.map((email) => ({ email })),
+        to: toArray.map((email) => ({ email: email.trim() })),
         subject: subject,
         htmlContent: htmlContent,
       };
 
       if (options?.cc && options.cc.length > 0) {
-        requestBody.cc = (
-          Array.isArray(options.cc) ? options.cc : [options.cc]
-        ).map((email) => ({ email }));
+        const ccArray = Array.isArray(options.cc) ? options.cc : [options.cc];
+        requestBody.cc = ccArray.map((email) => ({ email: email.trim() }));
       }
 
       if (bccEmails.length > 0) {
-        requestBody.bcc = bccEmails.map((email) => ({ email }));
+        requestBody.bcc = bccEmails.map((email) => ({ email: email.trim() }));
       }
 
       if (options?.replyTo) {
-        requestBody.replyTo = { email: options.replyTo };
+        requestBody.replyTo = { email: options.replyTo.trim() };
       }
 
       if (options?.attachments && options.attachments.length > 0) {
@@ -367,7 +357,8 @@ class EmailService {
         }));
       }
 
-      const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+      // Send email via Brevo API
+      const response = await fetch(this.brevoApiUrl, {
         method: "POST",
         headers: {
           accept: "application/json",
@@ -395,6 +386,15 @@ class EmailService {
           );
         } else if (response.status === 400) {
           console.error("   ⚠️ Bad request - Check email format or content");
+          try {
+            const errorJson = JSON.parse(errorText);
+            console.error(
+              "   Error details:",
+              JSON.stringify(errorJson, null, 2),
+            );
+          } catch {
+            // Ignore parse error
+          }
         }
 
         return false;
@@ -464,10 +464,8 @@ class EmailService {
 
       const subject = `🧾 Invoice #${billing.invoiceNumber || billing._id} - Mister Fyber`;
 
-      // Generate the email HTML
       const html = this.generateInvoiceHTML(user, billing, userLocation);
 
-      // Send to customer with collection email in BCC
       return await this.sendEmail(
         user.email,
         subject,
@@ -517,7 +515,6 @@ class EmailService {
         return false;
       }
 
-      // Get location and collection email
       const userLocation = location || invoiceData.location || "";
       const collectionEmail = getCollectionEmailByLocation(userLocation);
 
@@ -528,7 +525,6 @@ class EmailService {
       const frontendUrl =
         process.env.FRONTEND_URL || "https://www.misterfyber.com";
 
-      // Build invoice items table for email
       let itemsHtml = "";
       if (invoiceData.items && invoiceData.items.length > 0) {
         itemsHtml = `<table style="width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 13px;">
@@ -578,7 +574,6 @@ class EmailService {
         itemsHtml += `</tbody></table>`;
       }
 
-      // Location badge for collection team
       const locationBadge = userLocation
         ? `
         <div style="display: inline-block; background: ${userLocation.toLowerCase() === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin-top: 10px;">
@@ -593,7 +588,6 @@ class EmailService {
         </div>
       `;
 
-      // Build payment instructions
       let paymentInstructions = "";
       if (
         invoiceData.bankName &&
@@ -706,10 +700,10 @@ class EmailService {
           name: "Mister Fyber",
           email: senderEmail,
         },
-        to: [{ email: invoiceData.customerEmail }],
+        to: [{ email: invoiceData.customerEmail.trim() }],
         subject: `🧾 Invoice #${invoiceData.invoiceNumber} - Mister Fyber`,
         htmlContent: html,
-        bcc: [{ email: collectionEmail }],
+        bcc: [{ email: collectionEmail.trim() }],
         attachment: [
           {
             name: pdfFileName,
@@ -718,7 +712,7 @@ class EmailService {
         ],
       };
 
-      const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+      const response = await fetch(this.brevoApiUrl, {
         method: "POST",
         headers: {
           accept: "application/json",
@@ -2064,7 +2058,6 @@ class EmailService {
       };
     }
 
-    // Test location-based email
     const locationTestResults = {
       breeze: getCollectionEmailByLocation("breeze"),
       sil: getCollectionEmailByLocation("sil"),
