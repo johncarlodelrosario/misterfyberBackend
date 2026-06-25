@@ -1,3 +1,5 @@
+// emailController.ts - COMPLETE FIXED VERSION
+
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import Application from "../models/Application";
@@ -331,10 +333,12 @@ export const sendManualEmail = async (
         }
       } else {
         // Try to send the email
-        emailSent = await emailService.forceSendEmail(
+        emailSent = await emailService.sendEmail(
           application.email,
           subject,
           emailHtml,
+          true, // isCustomerEmail
+          undefined, // location
         );
 
         // If sending failed but we got a false, log it
@@ -383,7 +387,7 @@ export const sendManualEmail = async (
             adminEmail,
             `[ADMIN COPY] ${subject}`,
             adminHtml,
-            false,
+            false, // isCustomerEmail
           );
         } catch (adminError) {
           console.error("Failed to send admin copy:", adminError);
@@ -569,10 +573,11 @@ export const sendBulkEmails = async (
               );
               emailSent = true;
             } else {
-              emailSent = await emailService.forceSendEmail(
+              emailSent = await emailService.sendEmail(
                 application.email,
                 subject,
                 emailHtml,
+                true, // isCustomerEmail
               );
             }
           } else {
@@ -681,7 +686,7 @@ export const sendBulkEmails = async (
             adminEmail,
             `[BULK EMAIL SUMMARY] ${subject}`,
             summaryHtml,
-            false,
+            false, // isCustomerEmail
           );
         } catch (adminError) {
           console.error("Failed to send admin summary:", adminError);
@@ -1064,10 +1069,11 @@ export const sendReminderToUnpaid = async (
             );
             emailSent = true;
           } else {
-            emailSent = await emailService.forceSendEmail(
+            emailSent = await emailService.sendEmail(
               application.email,
               `⚠️ Payment Reminder - ${customerBills.length} Unpaid Bill(s)`,
               emailHtml,
+              true, // isCustomerEmail
             );
           }
         } else {

@@ -1,3 +1,5 @@
+// emailService.ts - COMPLETE FIXED VERSION
+
 import { IUser } from "../models/User";
 import Admin from "../models/Admin";
 import Building from "../models/Building";
@@ -57,7 +59,7 @@ const LOCATION_EMAIL_MAP: { [key: string]: string } = {
 };
 
 const DEFAULT_COLLECTION_EMAIL =
-  process.env.COLLECTION_EMAIL_DEFAULT || "collection@misterfyber.com";
+  process.env.COLLECTION_EMAIL_DEFAULT || "admin@misterfyber.com";
 
 /**
  * Get collection email based on location
@@ -197,6 +199,7 @@ class EmailService {
     console.log("   EMAIL_FROM:", this.emailFrom);
     console.log("   BREVO_API_KEY:", this.apiKey ? "✅ SET" : "❌ MISSING");
     console.log("   API Key length:", this.apiKey ? this.apiKey.length : 0);
+    console.log("   Brevo API URL:", this.brevoApiUrl);
 
     // Initialize if API key is present
     if (this.apiKey && this.apiKey.length > 10) {
@@ -221,9 +224,10 @@ class EmailService {
     return this.initialized && !!this.apiKey;
   }
 
-  // Check if customer emails are enabled globally
+  // Check if customer emails are enabled globally - FIXED: handle missing Admin model gracefully
   private async areCustomerEmailsEnabled(): Promise<boolean> {
     try {
+      // Try to find an admin, but if the model doesn't exist or there's an error, default to true
       const admin = await Admin.findOne({
         role: { $in: ["super_admin", "admin"] },
         status: "active",
@@ -231,7 +235,10 @@ class EmailService {
 
       return admin ? admin.customerEmailAlertsEnabled !== false : true;
     } catch (error) {
-      console.error("Error checking customer email setting:", error);
+      console.warn(
+        "⚠️ Could not check customer email setting, defaulting to true:",
+        error,
+      );
       return true;
     }
   }
@@ -423,7 +430,7 @@ class EmailService {
       to,
       subject,
       htmlContent,
-      false,
+      false, // isCustomerEmail = false (bypasses the check)
       location,
       options,
     );
@@ -2130,4 +2137,8 @@ class EmailService {
 export const getLocationEmailMap = () => LOCATION_EMAIL_MAP;
 export const getDefaultCollectionEmail = () => DEFAULT_COLLECTION_EMAIL;
 
-export default new EmailService();
+// Create a singleton instance
+const emailServiceInstance = new EmailService();
+
+// Export the instance
+export default emailServiceInstance;
