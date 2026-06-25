@@ -1,5 +1,4 @@
-// emailService.ts - COMPLETE FIXED VERSION
-
+// backend/src/services/emailService.ts
 import { IUser } from "../models/User";
 import Admin from "../models/Admin";
 import Building from "../models/Building";
@@ -7,6 +6,7 @@ import Application from "../models/Application";
 import dotenv from "dotenv";
 import path from "path";
 
+// Load environment variables
 const envPath = path.resolve(process.cwd(), ".env");
 console.log("📁 Loading .env from:", envPath);
 const result = dotenv.config({ path: envPath });
@@ -17,7 +17,8 @@ if (result.error) {
   console.log("✅ .env file loaded successfully");
 }
 
-console.log("🔍 ENVIRONMENT VARIABLES CHECK:");
+// Log environment variables status
+console.log("\n🔍 ENVIRONMENT VARIABLES CHECK:");
 console.log(
   "   ADMIN_EMAIL:",
   process.env.ADMIN_EMAIL ? "✅ EXISTS" : "❌ MISSING",
@@ -33,6 +34,10 @@ console.log(
 console.log(
   "   BREVO_API_KEY:",
   process.env.BREVO_API_KEY ? "✅ EXISTS" : "❌ MISSING",
+);
+console.log(
+  "   BREVO_API_KEY length:",
+  process.env.BREVO_API_KEY ? process.env.BREVO_API_KEY.length : 0,
 );
 console.log(
   "   COLLECTION_EMAIL_BREEZE:",
@@ -221,13 +226,18 @@ class EmailService {
   }
 
   isConfigured(): boolean {
-    return this.initialized && !!this.apiKey;
+    // Check if API key is valid and service is initialized
+    const configured =
+      this.initialized && !!this.apiKey && this.apiKey.length > 10;
+    console.log(
+      `📧 isConfigured() called: ${configured} (initialized: ${this.initialized}, apiKey: ${!!this.apiKey}, length: ${this.apiKey?.length || 0})`,
+    );
+    return configured;
   }
 
-  // Check if customer emails are enabled globally - FIXED: handle missing Admin model gracefully
+  // Check if customer emails are enabled globally
   private async areCustomerEmailsEnabled(): Promise<boolean> {
     try {
-      // Try to find an admin, but if the model doesn't exist or there's an error, default to true
       const admin = await Admin.findOne({
         role: { $in: ["super_admin", "admin"] },
         status: "active",
@@ -258,6 +268,11 @@ class EmailService {
     },
   ): Promise<boolean> {
     try {
+      console.log(`📧 sendEmail called: to=${to}, subject=${subject}`);
+      console.log(
+        `   isCustomerEmail: ${isCustomerEmail}, location: ${location || "none"}`,
+      );
+
       // Check if customer emails are enabled
       if (isCustomerEmail) {
         const customerEmailsEnabled = await this.areCustomerEmailsEnabled();
@@ -277,10 +292,12 @@ class EmailService {
         return true;
       }
 
-      if (!this.initialized || !this.apiKey) {
-        console.log(
-          `⚠️ Email service not initialized - skipping email to ${to}`,
+      // Check if email service is properly configured
+      if (!this.isConfigured()) {
+        console.error(
+          `❌ Email service not configured - skipping email to ${to}`,
         );
+        console.error(`   Please check BREVO_API_KEY in your .env file`);
         return false;
       }
 
@@ -298,6 +315,15 @@ class EmailService {
       // Prepare recipients
       const toArray = Array.isArray(to) ? to : [to];
 
+      // Filter out any empty or invalid emails
+      const validToArray = toArray.filter(
+        (email) => email && email.trim().length > 0,
+      );
+      if (validToArray.length === 0) {
+        console.error("❌ No valid recipient emails provided");
+        return false;
+      }
+
       // Get collection email based on location
       let collectionEmail = DEFAULT_COLLECTION_EMAIL;
       if (location) {
@@ -312,7 +338,7 @@ class EmailService {
 
       // Add collection email to BCC if it's not already in the TO or CC list
       const allRecipients = [
-        ...toArray,
+        ...validToArray,
         ...(options?.cc
           ? Array.isArray(options.cc)
             ? options.cc
@@ -327,7 +353,9 @@ class EmailService {
         console.log(`📧 Added collection email to BCC: ${collectionEmail}`);
       }
 
-      console.log(`📧 Sending email via Brevo API to ${toArray.join(", ")}...`);
+      console.log(
+        `📧 Sending email via Brevo API to ${validToArray.join(", ")}...`,
+      );
       console.log(`   Subject: ${subject}`);
       console.log(`   Sender: Mister Fyber <${senderEmail}>`);
       console.log(`   Location: ${location || "Not specified"}`);
@@ -339,18 +367,28 @@ class EmailService {
           name: "Mister Fyber",
           email: senderEmail,
         },
-        to: toArray.map((email) => ({ email: email.trim() })),
+        to: validToArray.map((email) => ({ email: email.trim() })),
         subject: subject,
         htmlContent: htmlContent,
       };
 
       if (options?.cc && options.cc.length > 0) {
         const ccArray = Array.isArray(options.cc) ? options.cc : [options.cc];
-        requestBody.cc = ccArray.map((email) => ({ email: email.trim() }));
+        const validCc = ccArray.filter(
+          (email) => email && email.trim().length > 0,
+        );
+        if (validCc.length > 0) {
+          requestBody.cc = validCc.map((email) => ({ email: email.trim() }));
+        }
       }
 
       if (bccEmails.length > 0) {
-        requestBody.bcc = bccEmails.map((email) => ({ email: email.trim() }));
+        const validBcc = bccEmails.filter(
+          (email) => email && email.trim().length > 0,
+        );
+        if (validBcc.length > 0) {
+          requestBody.bcc = validBcc.map((email) => ({ email: email.trim() }));
+        }
       }
 
       if (options?.replyTo) {
@@ -364,35 +402,38 @@ class EmailService {
         }));
       }
 
-      // Send email via Brevo API
-      const response = await fetch(this.brevoApiUrl, {
-        method: "POST",
-        headers: {
-          accept: "application/json",
-          "api-key": this.apiKey,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify(requestBody),
-      });
+      // Send email via Brevo API with timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
 
-      if (response.ok) {
-        const data: any = await response.json();
-        console.log(`✅ Email sent successfully to ${toArray.join(", ")}`);
-        console.log(`   Message ID: ${data.messageId || "N/A"}`);
-        return true;
-      } else {
-        const errorText = await response.text();
-        console.error(`❌ Brevo API error: ${response.status} - ${errorText}`);
+      try {
+        const response = await fetch(this.brevoApiUrl, {
+          method: "POST",
+          headers: {
+            accept: "application/json",
+            "api-key": this.apiKey,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
+        });
 
-        if (response.status === 401) {
-          console.error(
-            "   ⚠️ Authentication failed - Please check your BREVO_API_KEY",
+        clearTimeout(timeoutId);
+
+        if (response.ok) {
+          const data: any = await response.json();
+          console.log(
+            `✅ Email sent successfully to ${validToArray.join(", ")}`,
           );
+          console.log(`   Message ID: ${data.messageId || "N/A"}`);
+          return true;
+        } else {
+          const errorText = await response.text();
           console.error(
-            `   API Key (first 20 chars): ${this.apiKey.substring(0, 20)}...`,
+            `❌ Brevo API error: ${response.status} - ${errorText}`,
           );
-        } else if (response.status === 400) {
-          console.error("   ⚠️ Bad request - Check email format or content");
+
+          // Try to parse error for more details
           try {
             const errorJson = JSON.parse(errorText);
             console.error(
@@ -402,8 +443,31 @@ class EmailService {
           } catch {
             // Ignore parse error
           }
-        }
 
+          if (response.status === 401) {
+            console.error(
+              "   ⚠️ Authentication failed - Please check your BREVO_API_KEY",
+            );
+            console.error(
+              `   API Key (first 20 chars): ${this.apiKey.substring(0, 20)}...`,
+            );
+          } else if (response.status === 400) {
+            console.error("   ⚠️ Bad request - Check email format or content");
+          } else if (response.status === 429) {
+            console.error(
+              "   ⚠️ Rate limit exceeded - Please wait and try again",
+            );
+          }
+
+          return false;
+        }
+      } catch (fetchError: any) {
+        clearTimeout(timeoutId);
+        if (fetchError.name === "AbortError") {
+          console.error("❌ Email request timed out after 30 seconds");
+        } else {
+          console.error(`❌ Fetch error: ${fetchError.message}`);
+        }
         return false;
       }
     } catch (error) {
@@ -508,7 +572,7 @@ class EmailService {
         return false;
       }
 
-      if (!this.initialized || !this.apiKey) {
+      if (!this.isConfigured()) {
         console.log(
           `⚠️ Email service not initialized - skipping invoice to ${invoiceData.customerEmail}`,
         );
@@ -719,29 +783,43 @@ class EmailService {
         ],
       };
 
-      const response = await fetch(this.brevoApiUrl, {
-        method: "POST",
-        headers: {
-          accept: "application/json",
-          "api-key": this.apiKey,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify(requestBody),
-      });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
 
-      if (response.ok) {
-        const data: any = await response.json();
-        console.log(`✅ Invoice sent with PDF to ${invoiceData.customerEmail}`);
-        console.log(`   Invoice: ${invoiceData.invoiceNumber}`);
-        console.log(`   Location: ${userLocation || "Not specified"}`);
-        console.log(`   Collection Email (BCC): ${collectionEmail}`);
-        console.log(`   Message ID: ${data.messageId || "N/A"}`);
-        return true;
-      } else {
-        const errorText = await response.text();
-        console.error(
-          `❌ Failed to send invoice with PDF: ${response.status} - ${errorText}`,
-        );
+      try {
+        const response = await fetch(this.brevoApiUrl, {
+          method: "POST",
+          headers: {
+            accept: "application/json",
+            "api-key": this.apiKey,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeoutId);
+
+        if (response.ok) {
+          const data: any = await response.json();
+          console.log(
+            `✅ Invoice sent with PDF to ${invoiceData.customerEmail}`,
+          );
+          console.log(`   Invoice: ${invoiceData.invoiceNumber}`);
+          console.log(`   Location: ${userLocation || "Not specified"}`);
+          console.log(`   Collection Email (BCC): ${collectionEmail}`);
+          console.log(`   Message ID: ${data.messageId || "N/A"}`);
+          return true;
+        } else {
+          const errorText = await response.text();
+          console.error(
+            `❌ Failed to send invoice with PDF: ${response.status} - ${errorText}`,
+          );
+          return false;
+        }
+      } catch (fetchError: any) {
+        clearTimeout(timeoutId);
+        console.error(`❌ Error sending invoice with PDF:`, fetchError.message);
         return false;
       }
     } catch (error) {
@@ -2062,6 +2140,11 @@ class EmailService {
       return {
         success: false,
         message: "Email service is not configured. Please check BREVO_API_KEY.",
+        details: {
+          apiKeyPresent: !!this.apiKey,
+          apiKeyLength: this.apiKey?.length || 0,
+          initialized: this.initialized,
+        },
       };
     }
 
@@ -2091,6 +2174,14 @@ class EmailService {
           <li><strong>Default:</strong> ${locationTestResults.default}</li>
         </ul>
         <p><small>Collection emails will be BCC'd to the appropriate location email.</small></p>
+        <hr>
+        <h3>Configuration Details:</h3>
+        <ul>
+          <li><strong>API Key Present:</strong> ${!!this.apiKey}</li>
+          <li><strong>API Key Length:</strong> ${this.apiKey?.length || 0}</li>
+          <li><strong>Environment:</strong> ${process.env.NODE_ENV}</li>
+          <li><strong>Admin Email:</strong> ${this.adminEmail}</li>
+        </ul>
       </body>
       </html>
     `;
@@ -2110,6 +2201,7 @@ class EmailService {
           : "Failed to send test email",
         details: {
           locationEmails: locationTestResults,
+          isConfigured: this.isConfigured(),
         },
       };
     } catch (error: any) {

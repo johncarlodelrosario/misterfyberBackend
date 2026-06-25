@@ -1,5 +1,4 @@
-// emailController.ts - COMPLETE FIXED VERSION
-
+// backend/src/controllers/emailController.ts
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import Application from "../models/Application";
@@ -247,6 +246,7 @@ export const sendManualEmail = async (
       priority,
     } = req.body;
 
+    // Validate required fields
     if (!applicationId) {
       await session.abortTransaction();
       return res.status(400).json({
@@ -309,14 +309,27 @@ export const sendManualEmail = async (
       application,
     );
 
+    // Check if email service is configured
+    const isConfigured = emailService.isConfigured();
+    console.log(`📧 Email service configured: ${isConfigured}`);
+    console.log(
+      `📧 Email service initialized: ${(emailService as any).initialized}`,
+    );
+    console.log(`📧 API Key present: ${!!(emailService as any).apiKey}`);
+
     // Send to customer with improved error handling
     let emailSent = false;
     let emailError = null;
 
     try {
-      // Check if email service is configured
-      if (!emailService.isConfigured()) {
+      if (!isConfigured) {
         console.warn("⚠️ Email service not configured. Check BREVO_API_KEY.");
+        console.warn(
+          `   API Key: ${(emailService as any).apiKey ? "SET" : "MISSING"}`,
+        );
+        console.warn(
+          `   API Key length: ${(emailService as any).apiKey?.length || 0}`,
+        );
 
         // In development, simulate success
         if (process.env.NODE_ENV === "development") {
@@ -333,6 +346,7 @@ export const sendManualEmail = async (
         }
       } else {
         // Try to send the email
+        console.log(`📧 Attempting to send email to: ${application.email}`);
         emailSent = await emailService.sendEmail(
           application.email,
           subject,
@@ -346,6 +360,9 @@ export const sendManualEmail = async (
           console.warn(
             `⚠️ Email sending returned false for ${application.email}`,
           );
+          emailError = "Email service returned false - check logs for details";
+        } else {
+          console.log(`✅ Email sent successfully to ${application.email}`);
         }
       }
     } catch (error: any) {
@@ -431,6 +448,8 @@ export const sendManualEmail = async (
           customerEmail: application.email,
           isEmailConfigured: emailService.isConfigured(),
           environment: process.env.NODE_ENV,
+          apiKeyPresent: !!(emailService as any).apiKey,
+          apiKeyLength: (emailService as any).apiKey?.length || 0,
         },
       });
     }
@@ -500,6 +519,8 @@ export const sendBulkEmails = async (
         details: {
           isConfigured: false,
           environment: process.env.NODE_ENV,
+          apiKeyPresent: !!(emailService as any).apiKey,
+          apiKeyLength: (emailService as any).apiKey?.length || 0,
         },
       });
     }
