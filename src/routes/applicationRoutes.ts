@@ -15,7 +15,7 @@ import {
 } from "../controllers/applicationController";
 import { protect, authorize } from "../middleware/auth";
 import { uploadIdCard } from "../middleware/upload";
-import Application from "../models/Application"; // ADD THIS IMPORT
+import Application from "../models/Application";
 
 const router = express.Router();
 
@@ -35,6 +35,7 @@ router.post(
     body("email").isEmail().withMessage("Please provide a valid email"),
     body("phoneNumber").notEmpty().withMessage("Phone number is required"),
     body("buildingId").notEmpty().withMessage("Please select a building"),
+    body("tower").notEmpty().withMessage("Tower is required"),
     body("floor").notEmpty().withMessage("Floor is required"),
     body("unitNumber").notEmpty().withMessage("Unit number is required"),
     body("planId").notEmpty().withMessage("Plan is required"),
@@ -57,7 +58,6 @@ router.put("/:id/approve", approveApplication);
 router.put("/:id/reject", rejectApplication);
 router.post("/:applicationId/start-billing", startBillingForApplication);
 
-// ==================== ADD THIS NEW ROUTE ====================
 // Edit MAC Address for application (inline edit)
 router.patch(
   "/:id/mac-address",

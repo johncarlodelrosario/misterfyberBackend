@@ -10,6 +10,7 @@ export interface IUser extends Document {
   phoneNumber: string;
   buildingId?: mongoose.Types.ObjectId;
   buildingName?: string;
+  tower?: string;
   floor?: string;
   unitNumber?: string;
   address?: {
@@ -24,7 +25,7 @@ export interface IUser extends Document {
   profilePicture?: string;
   planId?: mongoose.Types.ObjectId;
   applicationId?: string;
-  macAddress?: string; // ADDED - OPTIONAL
+  macAddress?: string;
   status:
     | "active"
     | "inactive"
@@ -81,6 +82,7 @@ const UserSchema: Schema = new Schema(
     phoneNumber: { type: String, required: true },
     buildingId: { type: Schema.Types.ObjectId, ref: "Building" },
     buildingName: { type: String },
+    tower: { type: String, required: false, default: "" },
     floor: { type: String },
     unitNumber: { type: String },
     address: {
@@ -95,7 +97,7 @@ const UserSchema: Schema = new Schema(
     profilePicture: { type: String },
     planId: { type: Schema.Types.ObjectId, ref: "Plan" },
     applicationId: { type: String, index: true },
-    macAddress: { type: String, required: false, default: "" }, // ADDED - OPTIONAL
+    macAddress: { type: String, required: false, default: "" },
     status: {
       type: String,
       enum: [

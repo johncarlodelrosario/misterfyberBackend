@@ -177,6 +177,7 @@ export const submitApplication = async (
       email,
       phoneNumber,
       buildingId,
+      tower,
       floor,
       unitNumber,
       notes,
@@ -192,6 +193,7 @@ export const submitApplication = async (
       email,
       phoneNumber,
       buildingId,
+      tower,
       floor,
       unitNumber,
       planId,
@@ -207,6 +209,13 @@ export const submitApplication = async (
       return res
         .status(400)
         .json({ success: false, message: "Building selection is required" });
+    }
+    if (!tower || tower === "undefined" || tower === "null") {
+      await session.abortTransaction();
+      session.endSession();
+      return res
+        .status(400)
+        .json({ success: false, message: "Tower is required" });
     }
     if (!floor || floor === "undefined" || floor === "null") {
       await session.abortTransaction();
@@ -315,6 +324,7 @@ export const submitApplication = async (
 
     const existingActiveService = await Application.findOne({
       buildingId: new mongoose.Types.ObjectId(buildingId),
+      tower: tower?.toString().trim(),
       floor: floor?.toString().trim(),
       unitNumber: unitNumber?.toString().trim(),
       status: { $in: ["approved", "active"] },
@@ -325,7 +335,7 @@ export const submitApplication = async (
       session.endSession();
       return res.status(409).json({
         success: false,
-        message: `Unit ${floor}-${unitNumber} already has an active or approved service. Please contact support for assistance.`,
+        message: `Unit Tower ${tower} - ${floor}-${unitNumber} already has an active or approved service. Please contact support for assistance.`,
       });
     }
 
@@ -379,6 +389,7 @@ export const submitApplication = async (
       phoneNumber: normalizedPhoneNumber,
       buildingId: building._id,
       buildingName: building.buildingName,
+      tower: tower?.toString().trim(),
       floor: floor?.toString().trim(),
       unitNumber: unitNumber?.toString().trim(),
       notes: notes || "",
@@ -476,7 +487,7 @@ export const checkApplicationStatus = async (
     const { applicationId } = req.params;
     const application = await Application.findOne({ applicationId })
       .select(
-        "applicationId status idImage floor unitNumber notes createdAt adminNotes billingStarted billingCycleId registeredUserId firstName lastName email phoneNumber idType idNumber macAddress buildingId buildingName",
+        "applicationId status idImage tower floor unitNumber notes createdAt adminNotes billingStarted billingCycleId registeredUserId firstName lastName email phoneNumber idType idNumber macAddress buildingId buildingName",
       )
       .populate("planId", "name price speed")
       .populate(
@@ -508,6 +519,7 @@ export const checkApplicationStatus = async (
         plan: application.planId,
         building: application.buildingId,
         buildingName: application.buildingName,
+        tower: application.tower || "",
         floor: application.floor,
         unitNumber: application.unitNumber,
         notes: application.notes,
@@ -544,7 +556,7 @@ export const getAllApplications = async (
       Application.countDocuments(query),
       Application.find(query)
         .select(
-          "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber floor unitNumber macAddress buildingId buildingName",
+          "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName",
         )
         .populate("planId", "name price speed")
         .populate(
@@ -563,6 +575,7 @@ export const getAllApplications = async (
       idImageUrl: getImageUrl(app.idImage),
       hasAccount: !!app.registeredUserId,
       macAddress: app.macAddress || "",
+      tower: app.tower || "",
       // Map buildingId to building for frontend compatibility
       building: app.buildingId,
     }));
@@ -611,6 +624,7 @@ export const getApplication = async (
         ...application,
         idImageUrl,
         macAddress: application.macAddress || "",
+        tower: application.tower || "",
         building: application.buildingId,
       },
     });

@@ -8,6 +8,7 @@ export interface IApplication extends Document {
   phoneNumber: string;
   buildingId?: mongoose.Types.ObjectId;
   buildingName?: string;
+  tower?: string;
   floor?: string;
   unitNumber?: string;
   notes?: string;
@@ -27,7 +28,6 @@ export interface IApplication extends Document {
   approvalEmailSent: boolean;
   installationFee: number;
   installationFeePaid: boolean;
-  location: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -53,14 +53,6 @@ function generateApplicationIdSync(buildingName?: string): string {
   return `${buildingCode}${year}${month}${randomNum}`;
 }
 
-function getLocationFromBuildingName(buildingName?: string): string {
-  if (!buildingName) return "";
-  const name = buildingName.toLowerCase().trim();
-  if (name.includes("breeze")) return "breeze";
-  if (name.includes("sil") || name.includes("silk")) return "sil";
-  return "";
-}
-
 const ApplicationSchema: Schema = new Schema(
   {
     applicationId: {
@@ -81,6 +73,7 @@ const ApplicationSchema: Schema = new Schema(
       required: false,
     },
     buildingName: { type: String, required: false },
+    tower: { type: String, required: false, default: "" },
     floor: { type: String, required: false, default: "Not Provided" },
     unitNumber: { type: String, required: false, default: "Not Provided" },
     notes: { type: String, default: "" },
@@ -113,28 +106,19 @@ const ApplicationSchema: Schema = new Schema(
     approvalEmailSent: { type: Boolean, default: false },
     installationFee: { type: Number, default: 0 },
     installationFeePaid: { type: Boolean, default: false },
-    location: {
-      type: String,
-      enum: ["breeze", "sil", "other", ""],
-      default: "",
-      required: false,
-    },
   },
   { timestamps: true },
 );
 
-// Pre-save middleware to set location from building name
-ApplicationSchema.pre("save", function (next) {
-  if (this.buildingName && !this.location) {
-    this.location = getLocationFromBuildingName(this.buildingName);
-  }
-  next();
-});
-
 // Compound indexes for duplicate prevention
-ApplicationSchema.index({ buildingId: 1, floor: 1, unitNumber: 1, status: 1 });
+ApplicationSchema.index({
+  buildingId: 1,
+  tower: 1,
+  floor: 1,
+  unitNumber: 1,
+  status: 1,
+});
 ApplicationSchema.index({ email: 1, status: 1 });
 ApplicationSchema.index({ phoneNumber: 1, status: 1 });
-ApplicationSchema.index({ location: 1 });
 
 export default mongoose.model<IApplication>("Application", ApplicationSchema);

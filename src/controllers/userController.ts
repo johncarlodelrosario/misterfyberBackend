@@ -151,7 +151,15 @@ export const updateProfile = async (
   next: NextFunction,
 ) => {
   try {
-    const { firstName, lastName, phoneNumber, address } = req.body;
+    const {
+      firstName,
+      lastName,
+      phoneNumber,
+      address,
+      tower,
+      floor,
+      unitNumber,
+    } = req.body;
 
     const user = await User.findById(req.user?._id);
 
@@ -162,6 +170,9 @@ export const updateProfile = async (
     if (firstName) user.firstName = firstName;
     if (lastName) user.lastName = lastName;
     if (phoneNumber) user.phoneNumber = phoneNumber;
+    if (tower !== undefined) user.tower = tower;
+    if (floor !== undefined) user.floor = floor;
+    if (unitNumber !== undefined) user.unitNumber = unitNumber;
     if (address) {
       if (!user.address) user.address = {};
       user.address = { ...user.address, ...address };
@@ -178,6 +189,9 @@ export const updateProfile = async (
         firstName: user.firstName,
         lastName: user.lastName,
         phoneNumber: user.phoneNumber,
+        tower: user.tower,
+        floor: user.floor,
+        unitNumber: user.unitNumber,
         address: user.address,
       },
     });
@@ -224,7 +238,6 @@ export const uploadProfilePicture = async (
   }
 };
 
-// FIXED: No built-in HTML - uses emailService only
 export const changePassword = async (
   req: AuthRequest,
   res: Response,
@@ -247,11 +260,10 @@ export const changePassword = async (
     user.password = newPassword;
     await user.save();
 
-    // NO BUILT-IN HTML - emailService handles the template
     await emailService.sendEmail(
       user.email,
       "Password Changed Successfully",
-      "PASSWORD_CHANGED_TEMPLATE", // This will be replaced by emailService
+      "PASSWORD_CHANGED_TEMPLATE",
     );
 
     res.status(200).json({
@@ -263,7 +275,6 @@ export const changePassword = async (
   }
 };
 
-// FIXED: No built-in HTML - uses emailService only
 export const changePlan = async (
   req: AuthRequest,
   res: Response,
@@ -318,7 +329,6 @@ export const changePlan = async (
       }
     }
 
-    // NO BUILT-IN HTML - use sendPlanChangeNotification from emailService
     await emailService.sendPlanChangeNotification(user, oldPlan, newPlan);
 
     res.status(200).json({
@@ -509,7 +519,6 @@ export const getBillingHistory = async (
   }
 };
 
-// FIXED: No built-in HTML - uses emailService only
 export const requestDeletion = async (
   req: AuthRequest,
   res: Response,
@@ -535,7 +544,6 @@ export const requestDeletion = async (
       });
     }
 
-    // NO BUILT-IN HTML - emailService handles the template
     await emailService.sendEmail(
       process.env.ADMIN_EMAIL!,
       "Account Deletion Request",
@@ -694,7 +702,6 @@ export const getSupportTickets = async (
   }
 };
 
-// FIXED: No built-in HTML - uses emailService only
 export const createSupportTicket = async (
   req: AuthRequest,
   res: Response,
@@ -703,7 +710,6 @@ export const createSupportTicket = async (
   try {
     const { subject, category, message, priority } = req.body;
 
-    // NO BUILT-IN HTML - emailService handles the template
     await emailService.sendEmail(
       process.env.SUPPORT_EMAIL!,
       `New Support Ticket: ${subject}`,
@@ -772,7 +778,6 @@ export const getUserBillingCycle = async (
   }
 };
 
-// FIXED: No built-in HTML - uses emailService only
 export const requestPlanChange = async (
   req: AuthRequest,
   res: Response,
@@ -829,7 +834,6 @@ export const requestPlanChange = async (
     };
     await billingCycle.save();
 
-    // NO BUILT-IN HTML - emailService handles the template
     await emailService.sendEmail(
       process.env.ADMIN_EMAIL!,
       `Plan Change Request - ${user.username}`,
