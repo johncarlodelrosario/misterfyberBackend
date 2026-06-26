@@ -1,3 +1,4 @@
+// models/EmailSentRecord.ts
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IEmailSentRecord extends Document {
@@ -17,6 +18,7 @@ export interface IEmailSentRecord extends Document {
   sentBy: string;
   sentByEmail: string;
   adminCopySent?: boolean;
+  senderType?: "admin" | "collection";
   createdAt: Date;
   updatedAt: Date;
 }
@@ -87,6 +89,11 @@ const EmailSentRecordSchema = new Schema<IEmailSentRecord>(
       type: Boolean,
       default: false,
     },
+    senderType: {
+      type: String,
+      enum: ["admin", "collection"],
+      default: "collection",
+    },
   },
   {
     timestamps: true,
@@ -98,6 +105,7 @@ EmailSentRecordSchema.index({ applicationId: 1, sentAt: -1 });
 EmailSentRecordSchema.index({ status: 1 });
 EmailSentRecordSchema.index({ isBulk: 1 });
 EmailSentRecordSchema.index({ sentAt: -1 });
+EmailSentRecordSchema.index({ senderType: 1 });
 
 export default mongoose.model<IEmailSentRecord>(
   "EmailSentRecord",

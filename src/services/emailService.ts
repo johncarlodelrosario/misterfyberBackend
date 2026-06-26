@@ -286,12 +286,16 @@ class EmailService {
       bcc?: string | string[];
       replyTo?: string;
       attachments?: any[];
+      useAdminSender?: boolean;
     },
   ): Promise<boolean> {
     try {
       console.log(`📧 sendEmail called: to=${to}, subject=${subject}`);
       console.log(
         `   isCustomerEmail: ${isCustomerEmail}, location: ${location || "none"}`,
+      );
+      console.log(
+        `   useAdminSender: ${options?.useAdminSender ? "YES" : "NO"}`,
       );
 
       if (isCustomerEmail) {
@@ -307,6 +311,9 @@ class EmailService {
         console.log(`📧 [DEV MODE] Would send email to: ${to}`);
         console.log(`   Subject: ${subject}`);
         console.log(`   Content preview: ${htmlContent.substring(0, 200)}...`);
+        console.log(
+          `   Use Admin Sender: ${options?.useAdminSender ? "YES" : "NO"}`,
+        );
         return true;
       }
 
@@ -343,12 +350,17 @@ class EmailService {
         collectionEmail = getCollectionEmailByLocation(location);
       }
 
-      // ========== FIX: Use collection email as sender for customer emails ==========
+      // ========== DETERMINE SENDER BASED ON useAdminSender FLAG ==========
       let senderName = "Mister Fyber";
       let senderEmailAddress = senderEmail;
 
-      // For customer emails, use the collection email as the sender
-      if (isCustomerEmail && location) {
+      // If useAdminSender is true, use admin email as sender
+      if (options?.useAdminSender) {
+        senderEmailAddress = "admin@misterfyber.com";
+        senderName = "Mister Fyber Admin";
+        console.log(`📧 Using admin email as sender: ${senderEmailAddress}`);
+      } else if (isCustomerEmail && location) {
+        // Otherwise use collection email
         const collectionEmailForLocation =
           getCollectionEmailByLocation(location);
         if (
@@ -356,7 +368,6 @@ class EmailService {
           collectionEmailForLocation !== DEFAULT_COLLECTION_EMAIL
         ) {
           senderEmailAddress = collectionEmailForLocation;
-          // Extract name from email if possible
           if (collectionEmailForLocation.includes("breeze")) {
             senderName = "Mister Fyber Breeze Collection";
           } else if (collectionEmailForLocation.includes("sil")) {
@@ -401,6 +412,9 @@ class EmailService {
       console.log(`   Sender: ${senderName} <${senderEmailAddress}>`);
       console.log(`   Location: ${location || "Not specified"}`);
       console.log(`   Collection Email: ${collectionEmail}`);
+      console.log(
+        `   Use Admin Sender: ${options?.useAdminSender ? "YES" : "NO"}`,
+      );
 
       const requestBody: any = {
         sender: {
@@ -469,6 +483,7 @@ class EmailService {
             `✅ Email sent successfully to ${validToArray.join(", ")}`,
           );
           console.log(`   Message ID: ${data.messageId || "N/A"}`);
+          console.log(`   Sender: ${senderName} <${senderEmailAddress}>`);
           return true;
         } else {
           const errorText = await response.text();
@@ -528,6 +543,7 @@ class EmailService {
       bcc?: string | string[];
       replyTo?: string;
       attachments?: any[];
+      useAdminSender?: boolean;
     },
   ): Promise<boolean> {
     console.log(`📧 Force sending email (bypassing customer email setting)...`);
@@ -568,6 +584,7 @@ class EmailService {
       cc?: string | string[];
       attachments?: any[];
       replyTo?: string;
+      useAdminSender?: boolean;
     },
   ): Promise<boolean> {
     try {
@@ -589,6 +606,7 @@ class EmailService {
           attachments: options?.attachments,
           replyTo: options?.replyTo || collectionEmail,
           bcc: [collectionEmail, this.adminEmail],
+          useAdminSender: options?.useAdminSender || false,
         },
       );
     } catch (error) {
@@ -603,6 +621,7 @@ class EmailService {
     pdfBuffer: Buffer,
     pdfFileName: string,
     location?: string,
+    useAdminSender?: boolean,
   ): Promise<boolean> {
     try {
       const customerEmailsEnabled = await this.areCustomerEmailsEnabled();
@@ -629,11 +648,15 @@ class EmailService {
       const userLocation = location || invoiceData.location || "";
       const collectionEmail = getCollectionEmailByLocation(userLocation);
 
-      // ========== FIX: Use collection email as sender ==========
+      // ========== DETERMINE SENDER ==========
       let senderName = "Mister Fyber";
       let senderEmailAddress = "admin@misterfyber.com";
 
-      if (userLocation) {
+      if (useAdminSender) {
+        senderEmailAddress = "admin@misterfyber.com";
+        senderName = "Mister Fyber Admin";
+        console.log(`📧 Using admin email as sender: ${senderEmailAddress}`);
+      } else if (userLocation) {
         const collectionEmailForLocation =
           getCollectionEmailByLocation(userLocation);
         if (
@@ -718,6 +741,18 @@ class EmailService {
       `
         : "";
 
+      const senderBadge = useAdminSender
+        ? `
+        <div style="background: #e7f3ff; padding: 10px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
+          <strong>📧 Sent from:</strong> Admin (admin@misterfyber.com)
+        </div>
+      `
+        : `
+        <div style="background: #e7f3ff; padding: 10px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
+          <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
+        </div>
+      `;
+
       const collectionBCCNote = `
         <div style="background: #e7f3ff; padding: 10px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db;">
           <strong>📧 Collection Email:</strong> ${collectionEmail}
@@ -743,7 +778,6 @@ class EmailService {
         `;
       }
 
-      // ========== FIX: Use collection email in the invoice header ==========
       const companyEmailDisplay = collectionEmail;
 
       const html = `
@@ -778,9 +812,7 @@ class EmailService {
                     <h3 style="color: #1a237e; margin: 5px 0;">INVOICE</h3>
                     <p><span class="invoice-type">${invoiceData.invoiceType || "Monthly"}</span></p>
                     ${locationBadge}
-                    <div class="sender-info">
-                        <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
-                    </div>
+                    ${senderBadge}
                 </div>
                 <div class="content">
                     <p><strong>Subscriber's Name:</strong> ${invoiceData.customerName}</p>
@@ -946,7 +978,6 @@ class EmailService {
       `;
     }
 
-    // ========== FIX: Show sender info in email ==========
     let senderName = "Mister Fyber";
     let senderEmailAddress = "admin@misterfyber.com";
     if (location) {
@@ -1011,6 +1042,7 @@ class EmailService {
     user: IUser | any,
     billing: any,
     location?: string,
+    useAdminSender?: boolean,
   ): Promise<void> {
     try {
       const userLocation = location || (await getLocationFromEntity(user));
@@ -1023,10 +1055,16 @@ class EmailService {
       const frontendUrl =
         process.env.FRONTEND_URL || "https://www.misterfyber.com";
 
-      // ========== FIX: Use collection email as sender ==========
       let senderName = "Mister Fyber";
       let senderEmailAddress = "admin@misterfyber.com";
-      if (userLocation) {
+
+      if (useAdminSender) {
+        senderEmailAddress = "admin@misterfyber.com";
+        senderName = "Mister Fyber Admin";
+        console.log(
+          `📧 Using admin email as sender for reminder: ${senderEmailAddress}`,
+        );
+      } else if (userLocation) {
         const collectionEmailForLocation =
           getCollectionEmailByLocation(userLocation);
         if (
@@ -1061,6 +1099,18 @@ class EmailService {
       `
         : "";
 
+      const senderBadge = useAdminSender
+        ? `
+        <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
+          <strong>📧 Sent from:</strong> Admin (admin@misterfyber.com)
+        </div>
+      `
+        : `
+        <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
+          <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
+        </div>
+      `;
+
       const html = `
         <!DOCTYPE html>
         <html>
@@ -1076,9 +1126,7 @@ class EmailService {
                 <h2 style="color: #f39c12;">⚠️ Payment Reminder</h2>
                 <p>Hello ${user.firstName || user.email},</p>
                 <p>This is a friendly reminder that your Mister Fyber payment is due soon.</p>
-                <div class="sender-info">
-                  <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
-                </div>
+                ${senderBadge}
                 ${locationBadge}
                 <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
                     <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
@@ -1108,6 +1156,7 @@ class EmailService {
         {
           bcc: [collectionEmail, this.adminEmail],
           replyTo: collectionEmail,
+          useAdminSender: useAdminSender || false,
         },
       );
     } catch (error) {
@@ -1120,15 +1169,22 @@ class EmailService {
     user: IUser | any,
     billing: any,
     location?: string,
+    useAdminSender?: boolean,
   ): Promise<void> {
     try {
       const userLocation = location || (await getLocationFromEntity(user));
       const collectionEmail = getCollectionEmailByLocation(userLocation);
 
-      // ========== FIX: Use collection email as sender ==========
       let senderName = "Mister Fyber";
       let senderEmailAddress = "admin@misterfyber.com";
-      if (userLocation) {
+
+      if (useAdminSender) {
+        senderEmailAddress = "admin@misterfyber.com";
+        senderName = "Mister Fyber Admin";
+        console.log(
+          `📧 Using admin email as sender for due date reminder: ${senderEmailAddress}`,
+        );
+      } else if (userLocation) {
         const collectionEmailForLocation =
           getCollectionEmailByLocation(userLocation);
         if (
@@ -1172,6 +1228,18 @@ class EmailService {
       `
         : "";
 
+      const senderBadge = useAdminSender
+        ? `
+        <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
+          <strong>📧 Sent from:</strong> Admin (admin@misterfyber.com)
+        </div>
+      `
+        : `
+        <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
+          <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
+        </div>
+      `;
+
       const html = `
         <!DOCTYPE html>
         <html>
@@ -1199,9 +1267,7 @@ class EmailService {
                 <div class="content">
                     <p>Hello ${user.firstName || user.email},</p>
                     <p><strong>Your Mister Fyber payment is due TODAY.</strong> Please settle your bill immediately to avoid service interruption.</p>
-                    <div class="sender-info">
-                      <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
-                    </div>
+                    ${senderBadge}
                     ${locationBadge}
                     <div class="bill-details">
                         <h3 style="margin-top: 0;">📋 Invoice Details</h3>
@@ -1243,6 +1309,7 @@ class EmailService {
         {
           bcc: [collectionEmail, this.adminEmail],
           replyTo: collectionEmail,
+          useAdminSender: useAdminSender || false,
         },
       );
     } catch (error) {
@@ -1256,15 +1323,22 @@ class EmailService {
     payment: any,
     billing: any,
     location?: string,
+    useAdminSender?: boolean,
   ): Promise<void> {
     try {
       const userLocation = location || (await getLocationFromEntity(user));
       const collectionEmail = getCollectionEmailByLocation(userLocation);
 
-      // ========== FIX: Use collection email as sender ==========
       let senderName = "Mister Fyber";
       let senderEmailAddress = "admin@misterfyber.com";
-      if (userLocation) {
+
+      if (useAdminSender) {
+        senderEmailAddress = "admin@misterfyber.com";
+        senderName = "Mister Fyber Admin";
+        console.log(
+          `📧 Using admin email as sender for payment confirmation: ${senderEmailAddress}`,
+        );
+      } else if (userLocation) {
         const collectionEmailForLocation =
           getCollectionEmailByLocation(userLocation);
         if (
@@ -1302,6 +1376,18 @@ class EmailService {
       `
         : "";
 
+      const senderBadge = useAdminSender
+        ? `
+        <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
+          <strong>📧 Sent from:</strong> Admin (admin@misterfyber.com)
+        </div>
+      `
+        : `
+        <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
+          <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
+        </div>
+      `;
+
       const html = `
         <!DOCTYPE html>
         <html>
@@ -1317,9 +1403,7 @@ class EmailService {
                 <h2 style="color: #28a745;">💰 Payment Confirmed!</h2>
                 <p>Hello ${user.firstName || user.email},</p>
                 <p>Thank you for your payment to Mister Fyber. Your transaction has been completed successfully.</p>
-                <div class="sender-info">
-                  <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
-                </div>
+                ${senderBadge}
                 ${locationBadge}
                 <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
                     <h3 style="margin-top: 0;">Payment Details</h3>
@@ -1348,6 +1432,7 @@ class EmailService {
         {
           bcc: [collectionEmail, this.adminEmail],
           replyTo: collectionEmail,
+          useAdminSender: useAdminSender || false,
         },
       );
     } catch (error) {
@@ -1361,16 +1446,23 @@ class EmailService {
     bill: any,
     plan: any,
     location?: string,
+    useAdminSender?: boolean,
   ): Promise<void> {
     try {
       const userLocation =
         location || (await getLocationFromEntity(application));
       const collectionEmail = getCollectionEmailByLocation(userLocation);
 
-      // ========== FIX: Use collection email as sender ==========
       let senderName = "Mister Fyber";
       let senderEmailAddress = "admin@misterfyber.com";
-      if (userLocation) {
+
+      if (useAdminSender) {
+        senderEmailAddress = "admin@misterfyber.com";
+        senderName = "Mister Fyber Admin";
+        console.log(
+          `📧 Using admin email as sender for bill without account: ${senderEmailAddress}`,
+        );
+      } else if (userLocation) {
         const collectionEmailForLocation =
           getCollectionEmailByLocation(userLocation);
         if (
@@ -1402,6 +1494,18 @@ class EmailService {
       `
         : "";
 
+      const senderBadge = useAdminSender
+        ? `
+        <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
+          <strong>📧 Sent from:</strong> Admin (admin@misterfyber.com)
+        </div>
+      `
+        : `
+        <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
+          <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
+        </div>
+      `;
+
       const html = `
         <!DOCTYPE html>
         <html>
@@ -1429,9 +1533,7 @@ class EmailService {
                 <div class="content">
                     <p>Hello ${application.firstName} ${application.lastName},</p>
                     <p>Your Mister Fyber bill is now ready. Since you haven't created your account yet, please register first using your Application ID.</p>
-                    <div class="sender-info">
-                      <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
-                    </div>
+                    ${senderBadge}
                     ${locationBadge}
                     <div class="bill-details">
                         <h3 style="margin-top: 0;">📋 Bill Details</h3>
@@ -1472,6 +1574,7 @@ class EmailService {
         {
           bcc: [collectionEmail, this.adminEmail],
           replyTo: collectionEmail,
+          useAdminSender: useAdminSender || false,
         },
       );
     } catch (error) {
@@ -1484,10 +1587,13 @@ class EmailService {
     user: IUser | any,
     billing: any,
     location?: string,
+    useAdminSender?: boolean,
   ): Promise<void> {
     try {
       const userLocation = location || (await getLocationFromEntity(user));
-      await this.sendBillingEmail(user, billing, userLocation);
+      await this.sendBillingEmail(user, billing, userLocation, {
+        useAdminSender,
+      });
     } catch (error) {
       console.error(`❌ Error sending invoice:`, error);
     }
@@ -1498,15 +1604,19 @@ class EmailService {
     user: IUser | any,
     billing: any,
     location?: string,
+    useAdminSender?: boolean,
   ): Promise<void> {
     try {
       const userLocation = location || (await getLocationFromEntity(user));
       const collectionEmail = getCollectionEmailByLocation(userLocation);
 
-      // ========== FIX: Use collection email as sender ==========
       let senderName = "Mister Fyber";
       let senderEmailAddress = "admin@misterfyber.com";
-      if (userLocation) {
+
+      if (useAdminSender) {
+        senderEmailAddress = "admin@misterfyber.com";
+        senderName = "Mister Fyber Admin";
+      } else if (userLocation) {
         const collectionEmailForLocation =
           getCollectionEmailByLocation(userLocation);
         if (
@@ -1539,6 +1649,18 @@ class EmailService {
       `
         : "";
 
+      const senderBadge = useAdminSender
+        ? `
+        <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
+          <strong>📧 Sent from:</strong> Admin (admin@misterfyber.com)
+        </div>
+      `
+        : `
+        <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
+          <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
+        </div>
+      `;
+
       const html = `
         <!DOCTYPE html>
         <html>
@@ -1554,9 +1676,7 @@ class EmailService {
                 <h2 style="color: #f39c12;">📅 Billing Reminder</h2>
                 <p>Hello ${user.firstName || user.email},</p>
                 <p>Your Mister Fyber bill is due on ${dueDate}.</p>
-                <div class="sender-info">
-                  <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
-                </div>
+                ${senderBadge}
                 ${locationBadge}
                 <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
                     <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
@@ -1584,6 +1704,7 @@ class EmailService {
         {
           bcc: [collectionEmail, this.adminEmail],
           replyTo: collectionEmail,
+          useAdminSender: useAdminSender || false,
         },
       );
     } catch (error) {
@@ -2462,6 +2583,33 @@ class EmailService {
       }
     }
     return senderEmail;
+  }
+
+  /**
+   * Get available sender options for a specific location
+   */
+  getSenderOptions(location?: string): { value: string; label: string }[] {
+    const options = [];
+
+    // Admin sender option
+    options.push({
+      value: "admin",
+      label: "Admin (admin@misterfyber.com)",
+    });
+
+    // Collection email options based on location
+    if (location) {
+      const collectionEmail = getCollectionEmailByLocation(location);
+      if (collectionEmail && collectionEmail !== DEFAULT_COLLECTION_EMAIL) {
+        let locationName = location.charAt(0).toUpperCase() + location.slice(1);
+        options.push({
+          value: "collection",
+          label: `${locationName} Collection (${collectionEmail})`,
+        });
+      }
+    }
+
+    return options;
   }
 }
 

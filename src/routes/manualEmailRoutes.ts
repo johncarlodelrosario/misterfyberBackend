@@ -1,3 +1,4 @@
+// routes/manualEmailRoutes.ts
 import express from "express";
 import {
   getCustomersForEmail,
@@ -12,7 +13,7 @@ import {
   sendReminderToUnpaid,
   getSentRecords,
   deleteSentRecord,
-} from "../controllers/manualEmailController";
+} from "../controllers/emailController";
 import { protect, adminMiddleware } from "../middleware/auth";
 
 const router = express.Router();

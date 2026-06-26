@@ -6,7 +6,10 @@ import Billing from "../models/Billing";
 import BillingCycle from "../models/BillingCycle";
 import EmailSentRecord from "../models/EmailSentRecord";
 import EmailTemplate from "../models/EmailTemplate";
-import emailService from "../services/emailService";
+import emailService, {
+  getLocationFromEntity,
+  getCollectionEmailByLocation,
+} from "../services/emailService";
 
 type AuthRequest = Request & { user?: any };
 
@@ -37,7 +40,16 @@ function generateEmailPreview(
   includeBilling: boolean,
   billingData?: any,
   customerData?: any,
+  senderInfo?: string,
 ): string {
+  const senderSection = senderInfo
+    ? `
+    <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
+      <strong>📧 ${senderInfo}</strong>
+    </div>
+  `
+    : "";
+
   const billingSection =
     includeBilling && billingData
       ? `
@@ -92,6 +104,7 @@ function generateEmailPreview(
         </div>
         <div class="content">
           ${customerSection}
+          ${senderSection}
           <div class="message-box">
             ${message.replace(/\n/g, "<br>")}
           </div>
@@ -133,7 +146,9 @@ export const getCustomersForEmail = async (
     }
 
     const applications = await Application.find(query)
-      .select("firstName lastName email phoneNumber applicationId status")
+      .select(
+        "firstName lastName email phoneNumber applicationId status buildingName buildingId",
+      )
       .limit(100)
       .lean();
 
@@ -208,7 +223,7 @@ export const getCustomerBills = async (
       .lean();
 
     const customer = await Application.findOne({ applicationId })
-      .select("firstName lastName email phoneNumber")
+      .select("firstName lastName email phoneNumber buildingName buildingId")
       .lean();
 
     res.status(200).json({
@@ -244,6 +259,7 @@ export const sendManualEmail = async (
       sendCopyToAdmin,
       attachments,
       priority,
+      useAdminSender,
     } = req.body;
 
     // Validate required fields
@@ -281,6 +297,9 @@ export const sendManualEmail = async (
       });
     }
 
+    // Get location from application
+    const location = await getLocationFromEntity(application);
+
     let billingData = null;
     let selectedBillId = null;
     if (includeBilling && billId) {
@@ -294,10 +313,20 @@ export const sendManualEmail = async (
         });
       }
 
-      // Add payment link
       const frontendUrl =
         process.env.FRONTEND_URL || "https://www.misterfyber.com";
       billingData.paymentLink = `${frontendUrl}/billing/${billingData._id}`;
+    }
+
+    // Determine sender info for preview
+    let senderInfo = "";
+    if (useAdminSender) {
+      senderInfo = "Sent from: Admin (admin@misterfyber.com)";
+    } else if (location) {
+      const collectionEmail = getCollectionEmailByLocation(location);
+      senderInfo = `Sent from: Collection (${collectionEmail})`;
+    } else {
+      senderInfo = "Sent from: Admin (admin@misterfyber.com)";
     }
 
     // Generate email HTML
@@ -307,15 +336,13 @@ export const sendManualEmail = async (
       includeBilling,
       billingData,
       application,
+      senderInfo,
     );
 
     // Check if email service is configured
     const isConfigured = emailService.isConfigured();
     console.log(`📧 Email service configured: ${isConfigured}`);
-    console.log(
-      `📧 Email service initialized: ${(emailService as any).initialized}`,
-    );
-    console.log(`📧 API Key present: ${!!(emailService as any).apiKey}`);
+    console.log(`📧 Using admin sender: ${useAdminSender ? "YES" : "NO"}`);
 
     // Send to customer with improved error handling
     let emailSent = false;
@@ -331,13 +358,13 @@ export const sendManualEmail = async (
           `   API Key length: ${(emailService as any).apiKey?.length || 0}`,
         );
 
-        // In development, simulate success
         if (process.env.NODE_ENV === "development") {
           console.log(
             `📧 [DEV MODE] Would send email to: ${application.email}`,
           );
           console.log(`   Subject: ${subject}`);
           console.log(`   Message preview: ${message.substring(0, 100)}...`);
+          console.log(`   Use Admin Sender: ${useAdminSender ? "YES" : "NO"}`);
           emailSent = true;
         } else {
           throw new Error(
@@ -345,17 +372,18 @@ export const sendManualEmail = async (
           );
         }
       } else {
-        // Try to send the email
         console.log(`📧 Attempting to send email to: ${application.email}`);
         emailSent = await emailService.sendEmail(
           application.email,
           subject,
           emailHtml,
-          true, // isCustomerEmail
-          undefined, // location
+          true,
+          location,
+          {
+            useAdminSender: useAdminSender === true,
+          },
         );
 
-        // If sending failed but we got a false, log it
         if (!emailSent) {
           console.warn(
             `⚠️ Email sending returned false for ${application.email}`,
@@ -382,6 +410,7 @@ export const sendManualEmail = async (
               <p><strong>Subject:</strong> ${subject}</p>
               <p><strong>Sent At:</strong> ${new Date().toLocaleString()}</p>
               <p><strong>Sent By:</strong> ${req.user?.email || req.user?.username || "Admin"}</p>
+              <p><strong>Sender Type:</strong> ${useAdminSender ? "Admin" : "Collection"}</p>
               <hr>
               <div style="background: #f8f9fa; padding: 15px; border-radius: 5px;">
                 <h3>Message Content:</h3>
@@ -404,7 +433,7 @@ export const sendManualEmail = async (
             adminEmail,
             `[ADMIN COPY] ${subject}`,
             adminHtml,
-            false, // isCustomerEmail
+            false,
           );
         } catch (adminError) {
           console.error("Failed to send admin copy:", adminError);
@@ -429,6 +458,7 @@ export const sendManualEmail = async (
       sentBy: req.user?.username || req.user?.email || "Admin",
       sentByEmail: req.user?.email || "admin@misterfyber.com",
       adminCopySent: adminCopySent || false,
+      senderType: useAdminSender ? "admin" : "collection",
     });
 
     await sentRecord.save({ session });
@@ -464,6 +494,7 @@ export const sendManualEmail = async (
         sentAt: new Date().toISOString(),
         adminCopySent,
         recordId: sentRecord._id,
+        senderType: useAdminSender ? "admin" : "collection",
       },
     });
   } catch (error) {
@@ -490,6 +521,7 @@ export const sendBulkEmails = async (
       includeBilling,
       billType,
       sendCopyToAdmin,
+      useAdminSender,
     } = req.body;
 
     if (
@@ -525,6 +557,10 @@ export const sendBulkEmails = async (
       });
     }
 
+    console.log(
+      `📧 Bulk Email - Using admin sender: ${useAdminSender ? "YES" : "NO"}`,
+    );
+
     const results = [];
     let successCount = 0;
     let failCount = 0;
@@ -543,6 +579,9 @@ export const sendBulkEmails = async (
           failCount++;
           continue;
         }
+
+        // Get location from application
+        const location = await getLocationFromEntity(application);
 
         let billingData = null;
         let selectedBillId = null;
@@ -575,12 +614,24 @@ export const sendBulkEmails = async (
           }
         }
 
+        // Determine sender info for preview
+        let senderInfo = "";
+        if (useAdminSender) {
+          senderInfo = "Sent from: Admin (admin@misterfyber.com)";
+        } else if (location) {
+          const collectionEmail = getCollectionEmailByLocation(location);
+          senderInfo = `Sent from: Collection (${collectionEmail})`;
+        } else {
+          senderInfo = "Sent from: Admin (admin@misterfyber.com)";
+        }
+
         const emailHtml = generateEmailPreview(
           subject,
           message,
           includeBilling && !!billingData,
           billingData,
           application,
+          senderInfo,
         );
 
         let emailSent = false;
@@ -598,7 +649,11 @@ export const sendBulkEmails = async (
                 application.email,
                 subject,
                 emailHtml,
-                true, // isCustomerEmail
+                true,
+                location,
+                {
+                  useAdminSender: useAdminSender === true,
+                },
               );
             }
           } else {
@@ -626,6 +681,7 @@ export const sendBulkEmails = async (
           sentBy: req.user?.username || req.user?.email || "Admin",
           sentByEmail: req.user?.email || "admin@misterfyber.com",
           adminCopySent: false,
+          senderType: useAdminSender ? "admin" : "collection",
         });
 
         await record.save();
@@ -678,6 +734,7 @@ export const sendBulkEmails = async (
               <p><strong>Subject:</strong> ${subject}</p>
               <p><strong>Sent At:</strong> ${new Date().toLocaleString()}</p>
               <p><strong>Sent By:</strong> ${req.user?.email || req.user?.username || "Admin"}</p>
+              <p><strong>Sender Type:</strong> ${useAdminSender ? "Admin" : "Collection"}</p>
               <hr>
               <p><strong>✅ Successful:</strong> ${successCount}</p>
               <p><strong>❌ Failed:</strong> ${failCount}</p>
@@ -707,7 +764,7 @@ export const sendBulkEmails = async (
             adminEmail,
             `[BULK EMAIL SUMMARY] ${subject}`,
             summaryHtml,
-            false, // isCustomerEmail
+            false,
           );
         } catch (adminError) {
           console.error("Failed to send admin summary:", adminError);
@@ -724,6 +781,7 @@ export const sendBulkEmails = async (
         failCount,
         results,
         failedEmails: failCount > 0 ? failedEmails : undefined,
+        senderType: useAdminSender ? "admin" : "collection",
       },
     });
   } catch (error) {
@@ -954,14 +1012,24 @@ export const previewEmail = async (
   if (!checkAdmin(req, res)) return;
 
   try {
-    const { subject, message, includeBilling, applicationId, billId } =
-      req.body;
+    const {
+      subject,
+      message,
+      includeBilling,
+      applicationId,
+      billId,
+      useAdminSender,
+    } = req.body;
 
     let customerData = null;
     let billingData = null;
+    let location = "";
 
     if (applicationId) {
       customerData = await Application.findOne({ applicationId }).lean();
+      if (customerData) {
+        location = await getLocationFromEntity(customerData);
+      }
     }
 
     if (includeBilling && billId) {
@@ -973,12 +1041,24 @@ export const previewEmail = async (
       }
     }
 
+    // Determine sender info for preview
+    let senderInfo = "";
+    if (useAdminSender) {
+      senderInfo = "Sent from: Admin (admin@misterfyber.com)";
+    } else if (location) {
+      const collectionEmail = getCollectionEmailByLocation(location);
+      senderInfo = `Sent from: Collection (${collectionEmail})`;
+    } else {
+      senderInfo = "Sent from: Admin (admin@misterfyber.com)";
+    }
+
     const previewHtml = generateEmailPreview(
       subject,
       message,
       includeBilling,
       billingData,
       customerData,
+      senderInfo,
     );
 
     res.status(200).json({
@@ -1003,7 +1083,7 @@ export const sendReminderToUnpaid = async (
   if (!checkAdmin(req, res)) return;
 
   try {
-    const { customMessage, includeDueDateReminder } = req.body;
+    const { customMessage, includeDueDateReminder, useAdminSender } = req.body;
 
     // Check if email service is configured
     const isConfigured = emailService.isConfigured();
@@ -1017,6 +1097,10 @@ export const sendReminderToUnpaid = async (
         },
       });
     }
+
+    console.log(
+      `📧 Reminder to Unpaid - Using admin sender: ${useAdminSender ? "YES" : "NO"}`,
+    );
 
     // Find all applications with unpaid bills
     const unpaidBills = await Billing.find({
@@ -1071,12 +1155,27 @@ export const sendReminderToUnpaid = async (
         reminderMessage += `\n\nYou have ${customerBills.length} unpaid bill(s) totaling ₱${totalAmount.toLocaleString()}.`;
       }
 
+      // Get location for sender
+      const location = await getLocationFromEntity(application);
+
+      // Determine sender info for preview
+      let senderInfo = "";
+      if (useAdminSender) {
+        senderInfo = "Sent from: Admin (admin@misterfyber.com)";
+      } else if (location) {
+        const collectionEmail = getCollectionEmailByLocation(location);
+        senderInfo = `Sent from: Collection (${collectionEmail})`;
+      } else {
+        senderInfo = "Sent from: Admin (admin@misterfyber.com)";
+      }
+
       const emailHtml = generateEmailPreview(
         "Payment Reminder - Unpaid Bill(s)",
         reminderMessage,
         true,
         customerBills[0],
         application,
+        senderInfo,
       );
 
       let emailSent = false;
@@ -1094,7 +1193,11 @@ export const sendReminderToUnpaid = async (
               application.email,
               `⚠️ Payment Reminder - ${customerBills.length} Unpaid Bill(s)`,
               emailHtml,
-              true, // isCustomerEmail
+              true,
+              location,
+              {
+                useAdminSender: useAdminSender === true,
+              },
             );
           }
         } else {
@@ -1126,6 +1229,7 @@ export const sendReminderToUnpaid = async (
         sentBy: req.user?.username || req.user?.email || "Admin",
         sentByEmail: req.user?.email || "admin@misterfyber.com",
         adminCopySent: false,
+        senderType: useAdminSender ? "admin" : "collection",
       });
 
       await record.save();
@@ -1162,6 +1266,7 @@ export const sendReminderToUnpaid = async (
         totalCustomers: uniqueApplicationIds.length,
         results,
         failedEmails: failCount > 0 ? failedEmails : undefined,
+        senderType: useAdminSender ? "admin" : "collection",
       },
     });
   } catch (error) {
@@ -1214,6 +1319,7 @@ export const getSentRecords = async (
       includeBilling: record.includeBilling,
       billType: record.billType,
       error: record.error,
+      senderType: (record as any).senderType || "collection",
     }));
 
     res.status(200).json({
