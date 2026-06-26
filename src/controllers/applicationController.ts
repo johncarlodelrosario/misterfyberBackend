@@ -6,7 +6,7 @@ import User from "../models/User";
 import Billing from "../models/Billing";
 import BillingCycle from "../models/BillingCycle";
 import emailService from "../services/emailService";
-import { validationResult } from "express-validator";
+import { validationResult, ValidationError } from "express-validator";
 import axios from "axios";
 import mongoose from "mongoose";
 
@@ -162,12 +162,31 @@ export const submitApplication = async (
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
+      console.log(
+        "❌ Validation errors:",
+        JSON.stringify(errors.array(), null, 2),
+      );
       await session.abortTransaction();
       session.endSession();
+
+      // Properly map validation errors
+      const errorMessages = errors.array().map((err: ValidationError) => {
+        if (err.type === "field") {
+          return {
+            field: err.path,
+            message: err.msg,
+            value: err.value,
+          };
+        }
+        return {
+          message: err.msg,
+        };
+      });
+
       return res.status(400).json({
         success: false,
         message: "Validation failed",
-        errors: errors.array(),
+        errors: errorMessages,
       });
     }
 
@@ -187,7 +206,7 @@ export const submitApplication = async (
       macAddress,
     } = req.body;
 
-    console.log("Received application data:", {
+    console.log("📥 Received application data:", {
       firstName,
       lastName,
       email,
@@ -203,6 +222,39 @@ export const submitApplication = async (
     });
 
     // Validate required fields
+    const requiredFields = [
+      "firstName",
+      "lastName",
+      "email",
+      "phoneNumber",
+      "buildingId",
+      "floor",
+      "unitNumber",
+      "planId",
+      "idType",
+      "idNumber",
+    ];
+    const missingFields = requiredFields.filter((field) => {
+      const value = req.body[field];
+      return !value || value === "undefined" || value === "null";
+    });
+
+    if (missingFields.length > 0) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({
+        success: false,
+        message: `Missing required fields: ${missingFields.join(", ")}`,
+        missingFields: missingFields,
+      });
+    }
+
+    // Tower is now OPTIONAL - handle gracefully
+    if (!tower || tower === "undefined" || tower === "null") {
+      console.warn("⚠️ Tower not provided, using default empty string");
+      tower = "";
+    }
+
     if (!buildingId || buildingId === "undefined" || buildingId === "null") {
       await session.abortTransaction();
       session.endSession();
@@ -210,13 +262,7 @@ export const submitApplication = async (
         .status(400)
         .json({ success: false, message: "Building selection is required" });
     }
-    if (!tower || tower === "undefined" || tower === "null") {
-      await session.abortTransaction();
-      session.endSession();
-      return res
-        .status(400)
-        .json({ success: false, message: "Tower is required" });
-    }
+
     if (!floor || floor === "undefined" || floor === "null") {
       await session.abortTransaction();
       session.endSession();
@@ -322,20 +368,30 @@ export const submitApplication = async (
       });
     }
 
-    const existingActiveService = await Application.findOne({
+    // Check for existing active service - only if tower is provided
+    const existingActiveServiceQuery: any = {
       buildingId: new mongoose.Types.ObjectId(buildingId),
-      tower: tower?.toString().trim(),
       floor: floor?.toString().trim(),
       unitNumber: unitNumber?.toString().trim(),
       status: { $in: ["approved", "active"] },
-    }).lean();
+    };
+
+    // Only add tower to query if it has a value
+    if (tower && tower.toString().trim()) {
+      existingActiveServiceQuery.tower = tower.toString().trim();
+    }
+
+    const existingActiveService = await Application.findOne(
+      existingActiveServiceQuery,
+    ).lean();
 
     if (existingActiveService) {
+      const towerMsg = tower ? `Tower ${tower} - ` : "";
       await session.abortTransaction();
       session.endSession();
       return res.status(409).json({
         success: false,
-        message: `Unit Tower ${tower} - ${floor}-${unitNumber} already has an active or approved service. Please contact support for assistance.`,
+        message: `Unit ${towerMsg}${floor}-${unitNumber} already has an active or approved service. Please contact support for assistance.`,
       });
     }
 
@@ -389,7 +445,7 @@ export const submitApplication = async (
       phoneNumber: normalizedPhoneNumber,
       buildingId: building._id,
       buildingName: building.buildingName,
-      tower: tower?.toString().trim(),
+      tower: tower?.toString().trim() || "",
       floor: floor?.toString().trim(),
       unitNumber: unitNumber?.toString().trim(),
       notes: notes || "",
@@ -576,7 +632,6 @@ export const getAllApplications = async (
       hasAccount: !!app.registeredUserId,
       macAddress: app.macAddress || "",
       tower: app.tower || "",
-      // Map buildingId to building for frontend compatibility
       building: app.buildingId,
     }));
 

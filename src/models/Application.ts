@@ -1,3 +1,5 @@
+// models/Application.ts - Keep as is, tower is already optional
+
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IApplication extends Document {

@@ -1,3 +1,5 @@
+// routes/applicationRoutes.ts - Update tower validation to optional
+
 import express from "express";
 import { body } from "express-validator";
 import {
@@ -35,7 +37,8 @@ router.post(
     body("email").isEmail().withMessage("Please provide a valid email"),
     body("phoneNumber").notEmpty().withMessage("Phone number is required"),
     body("buildingId").notEmpty().withMessage("Please select a building"),
-    body("tower").notEmpty().withMessage("Tower is required"),
+    // Tower is now optional - can be empty string
+    body("tower").optional().isString().withMessage("Tower must be a string"),
     body("floor").notEmpty().withMessage("Floor is required"),
     body("unitNumber").notEmpty().withMessage("Unit number is required"),
     body("planId").notEmpty().withMessage("Plan is required"),
@@ -97,6 +100,48 @@ router.patch(
       res.status(500).json({
         success: false,
         message: "Server error updating MAC address",
+      });
+    }
+  },
+);
+
+// Edit Tower for application (inline edit)
+router.patch(
+  "/:id/tower",
+  async (req: express.Request, res: express.Response) => {
+    try {
+      const { id } = req.params;
+      const { tower } = req.body;
+
+      console.log(`📝 Updating tower for application ${id} to: ${tower}`);
+
+      const application = await Application.findByIdAndUpdate(
+        id,
+        { tower: tower || "" },
+        { new: true },
+      );
+
+      if (!application) {
+        return res.status(404).json({
+          success: false,
+          message: "Application not found",
+        });
+      }
+
+      console.log(`✅ Tower updated for ${application.applicationId}`);
+
+      res.status(200).json({
+        success: true,
+        data: {
+          tower: application.tower,
+          applicationId: application.applicationId,
+        },
+      });
+    } catch (error) {
+      console.error("Error updating tower:", error);
+      res.status(500).json({
+        success: false,
+        message: "Server error updating tower",
       });
     }
   },
