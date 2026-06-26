@@ -680,6 +680,352 @@ class EmailService {
     }
   }
 
+  // ==================== SEND PAID INVOICE EMAIL WITH PDF ATTACHMENT ====================
+  async sendPaidInvoiceEmail(
+    invoiceData: any,
+    pdfBuffer: Buffer,
+    pdfFileName: string,
+    paymentData?: any,
+    location?: string,
+    useAdminSender?: boolean,
+  ): Promise<boolean> {
+    try {
+      const customerEmailsEnabled = await this.areCustomerEmailsEnabled();
+      if (!customerEmailsEnabled) {
+        console.log(
+          `📧 CUSTOMER EMAILS ARE DISABLED. Force sending paid invoice to ${invoiceData.customerEmail}`,
+        );
+      }
+
+      if (!this.isConfigured()) {
+        console.log(
+          `⚠️ Email service not initialized - skipping paid invoice to ${invoiceData.customerEmail}`,
+        );
+        if (process.env.NODE_ENV === "development") {
+          console.log(
+            `📧 [DEV MODE] Would send paid invoice to: ${invoiceData.customerEmail}`,
+          );
+          console.log(`   Invoice: ${invoiceData.invoiceNumber}`);
+          return true;
+        }
+        return false;
+      }
+
+      const userLocation = location || invoiceData.location || "";
+      const collectionEmail = getCollectionEmailByLocation(userLocation);
+
+      // ========== DETERMINE SENDER ==========
+      let senderName = "Mister Fyber";
+      let senderEmailAddress = "admin@misterfyber.com";
+
+      if (useAdminSender) {
+        senderEmailAddress = "admin@misterfyber.com";
+        senderName = "Mister Fyber Admin";
+        console.log(`📧 Using admin email as sender: ${senderEmailAddress}`);
+      } else if (userLocation) {
+        const collectionEmailForLocation =
+          getCollectionEmailByLocation(userLocation);
+        if (
+          collectionEmailForLocation &&
+          collectionEmailForLocation !== DEFAULT_COLLECTION_EMAIL
+        ) {
+          senderEmailAddress = collectionEmailForLocation;
+          if (collectionEmailForLocation.includes("breeze")) {
+            senderName = "Mister Fyber Breeze Collection";
+          } else if (
+            collectionEmailForLocation.includes("sil") ||
+            collectionEmailForLocation.includes("silk")
+          ) {
+            senderName = "Mister Fyber SIL Collection";
+          } else {
+            senderName = "Mister Fyber Collection";
+          }
+          console.log(
+            `📧 Using collection email as sender: ${senderEmailAddress} (${senderName})`,
+          );
+        }
+      }
+
+      const dueDate = invoiceData.dueDate
+        ? new Date(invoiceData.dueDate).toLocaleDateString()
+        : "N/A";
+      const amount = invoiceData.total || 0;
+      const paidAt = invoiceData.paidAt
+        ? new Date(invoiceData.paidAt).toLocaleString()
+        : paymentData?.paidAt
+          ? new Date(paymentData.paidAt).toLocaleString()
+          : new Date().toLocaleString();
+      const referenceNumber =
+        paymentData?.referenceNumber || invoiceData.referenceNumber || "N/A";
+      const frontendUrl =
+        process.env.FRONTEND_URL || "https://www.misterfyber.com";
+
+      let itemsHtml = "";
+      if (invoiceData.items && invoiceData.items.length > 0) {
+        itemsHtml = `<table style="width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 13px;">
+          <thead>
+            <tr style="background-color: #28a745; color: white;">
+              <th style="padding: 10px; text-align: left; border: 1px solid #ddd;">Description</th>
+              <th style="padding: 10px; text-align: center; border: 1px solid #ddd;">Qty</th>
+              <th style="padding: 10px; text-align: right; border: 1px solid #ddd;">Rate</th>
+              <th style="padding: 10px; text-align: right; border: 1px solid #ddd;">Amount</th>
+            </tr>
+          </thead>
+          <tbody>`;
+
+        for (const item of invoiceData.items) {
+          itemsHtml += `<tr>
+            <td style="padding: 8px; border: 1px solid #ddd;">${item.description}</td>
+            <td style="padding: 8px; text-align: center; border: 1px solid #ddd;">${item.quantity || 1}</td>
+            <td style="padding: 8px; text-align: right; border: 1px solid #ddd;">₱${safeToFixed(item.rate)}</td>
+            <td style="padding: 8px; text-align: right; border: 1px solid #ddd;">₱${safeToFixed(item.amount)}</td>
+          </tr>`;
+        }
+
+        itemsHtml += `<tr style="font-weight: bold; background-color: #f8f9fa;">
+          <td colspan="3" style="padding: 10px; text-align: right; border: 1px solid #ddd;">Subtotal:</td>
+          <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">₱${safeToFixed(invoiceData.subtotal)}</td>
+        </tr>`;
+
+        if (invoiceData.discountAmount > 0) {
+          itemsHtml += `<tr style="background-color: #f8f9fa;">
+            <td colspan="3" style="padding: 10px; text-align: right; border: 1px solid #ddd;">Discount:</td>
+            <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">-₱${safeToFixed(invoiceData.discountAmount)}</td>
+          </tr>`;
+        }
+
+        if (invoiceData.taxAmount > 0) {
+          itemsHtml += `<tr style="background-color: #f8f9fa;">
+            <td colspan="3" style="padding: 10px; text-align: right; border: 1px solid #ddd;">Tax (${invoiceData.taxRate}%):</td>
+            <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">₱${safeToFixed(invoiceData.taxAmount)}</td>
+          </tr>`;
+        }
+
+        itemsHtml += `<tr style="font-weight: bold; background-color: #28a745; color: white;">
+          <td colspan="3" style="padding: 12px; text-align: right; border: 1px solid #28a745;">TOTAL PAID:</td>
+          <td style="padding: 12px; text-align: right; border: 1px solid #28a745;">₱${safeToFixed(amount)}</td>
+        </tr>`;
+
+        itemsHtml += `</tbody></table>`;
+      }
+
+      const locationBadge = userLocation
+        ? `
+        <div style="display: inline-block; background: ${userLocation.toLowerCase() === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin-top: 10px;">
+          📍 ${userLocation.toUpperCase()}
+        </div>
+      `
+        : "";
+
+      const senderBadge = useAdminSender
+        ? `
+        <div style="background: #e7f3ff; padding: 10px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
+          <strong>📧 Sent from:</strong> Admin (admin@misterfyber.com)
+        </div>
+      `
+        : `
+        <div style="background: #e7f3ff; padding: 10px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
+          <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
+        </div>
+      `;
+
+      const collectionBCCNote = `
+        <div style="background: #e7f3ff; padding: 10px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db;">
+          <strong>📧 Collection Email (BCC):</strong> ${collectionEmail}
+        </div>
+      `;
+
+      const isInstallationFee =
+        invoiceData.isInstallationFee ||
+        invoiceData.invoiceType === "installation";
+      const isProRated =
+        invoiceData.isProRated || invoiceData.invoiceType === "pro-rated";
+
+      let additionalInfo = "";
+      if (isInstallationFee) {
+        additionalInfo = `
+          <div style="background: #d1ecf1; padding: 15px; border-radius: 5px; margin: 15px 0;">
+            <p style="margin: 0; color: #0c5460;">
+              <strong>🔧 Installation Fee Paid:</strong> Your installation fee of ₱${safeToFixed(amount)} has been paid. Our technical team will contact you within 24-48 hours to schedule your installation.
+            </p>
+          </div>
+        `;
+      } else if (isProRated) {
+        additionalInfo = `
+          <div style="background: #d1ecf1; padding: 15px; border-radius: 5px; margin: 15px 0;">
+            <p style="margin: 0; color: #0c5460;">
+              <strong>📌 Pro-rated First Bill Paid:</strong> Your pro-rated first bill of ₱${safeToFixed(amount)} has been paid. Your service is now active!
+            </p>
+          </div>
+        `;
+      } else {
+        additionalInfo = `
+          <div style="background: #d1ecf1; padding: 15px; border-radius: 5px; margin: 15px 0;">
+            <p style="margin: 0; color: #0c5460;">
+              <strong>📌 Monthly Subscription Paid:</strong> Your monthly subscription payment of ₱${safeToFixed(amount)} has been confirmed. Your service will continue without interruption.
+            </p>
+          </div>
+        `;
+      }
+
+      const html = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <title>Payment Confirmation - ${invoiceData.invoiceNumber}</title>
+            <style>
+                body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+                .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 2px solid #28a745; border-radius: 10px; }
+                .header { text-align: center; border-bottom: 2px solid #28a745; padding-bottom: 20px; }
+                .header h1 { color: #28a745; margin: 0; font-size: 28px; }
+                .header p { color: #666; margin: 5px 0; }
+                .content { padding: 20px 0; }
+                .paid-badge { display: inline-block; background: #28a745; color: white; padding: 6px 20px; border-radius: 20px; font-weight: bold; font-size: 14px; }
+                .bill-details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
+                .button { display: inline-block; background-color: #28a745; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; }
+                .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
+                .company-info { text-align: center; font-size: 12px; color: #666; margin: 10px 0; }
+                .invoice-type { display: inline-block; background: #28a745; color: white; padding: 3px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; }
+                .sender-info { background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center; }
+                .payment-details { background: #e8f5e9; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #28a745; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>✅ PAYMENT CONFIRMED!</h1>
+                    <p>MISTER FYBER</p>
+                    <p>FYBERBLIZZ NETWORK CORPORATION</p>
+                    <p>UNIT 6 BLDG 2 G/F EL PUEBLO CONDO, ANONAS ST., STA. MESA, MANILA</p>
+                    <p>VAT-REG.: 697-461-165-00000 | CONTACT NO.: 0969-341-4876</p>
+                    <div style="margin: 15px 0;">
+                        <span class="paid-badge">✅ PAID</span>
+                    </div>
+                    <p><span class="invoice-type">${invoiceData.invoiceType || "Monthly"} - PAID</span></p>
+                    ${locationBadge}
+                    ${senderBadge}
+                </div>
+                <div class="content">
+                    <p><strong>Dear ${invoiceData.customerName || "Customer"},</strong></p>
+                    <p>We are pleased to confirm that your payment has been received and processed successfully.</p>
+                    
+                    <div class="payment-details">
+                        <h4 style="margin-top: 0; color: #28a745;">💰 Payment Details</h4>
+                        <p><strong>Invoice Number:</strong> ${invoiceData.invoiceNumber}</p>
+                        <p><strong>Amount Paid:</strong> <span style="color: #28a745; font-size: 20px; font-weight: bold;">₱${safeToFixed(amount)}</span></p>
+                        <p><strong>Payment Date:</strong> ${paidAt}</p>
+                        <p><strong>Reference Number:</strong> ${referenceNumber}</p>
+                        <p><strong>Invoice Type:</strong> ${invoiceData.invoiceType || "Monthly"}</p>
+                        ${isInstallationFee ? `<p><strong>Note:</strong> Installation Fee Payment</p>` : ""}
+                        ${isProRated ? `<p><strong>Note:</strong> Pro-rated First Bill</p>` : ""}
+                        ${userLocation ? `<p><strong>Location:</strong> ${userLocation.toUpperCase()}</p>` : ""}
+                    </div>
+
+                    ${collectionBCCNote}
+                    ${itemsHtml}
+                    ${additionalInfo}
+
+                    <div style="background: #e7f3ff; padding: 15px; border-radius: 5px; margin: 15px 0;">
+                        <p style="margin: 0; color: #1a56db;">
+                            <strong>📎 Invoice PDF:</strong> A copy of your paid invoice is attached to this email for your records.
+                        </p>
+                    </div>
+
+                    ${invoiceData.notes ? `<div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;"><p><strong>Notes:</strong><br>${invoiceData.notes}</p></div>` : ""}
+                    
+                    <div style="text-align: center; margin: 30px 0;">
+                        <a href="${frontendUrl}/invoices" class="button">📄 View All Invoices</a>
+                    </div>
+                    
+                    <p>Thank you for choosing Mister Fyber as your trusted internet provider.</p>
+                    <p><strong>Best regards,</strong><br>Mister Fyber Team</p>
+                </div>
+                <div class="footer">
+                    <p>Mister Fyber - Your trusted internet provider</p>
+                    <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
+                    <p><small>This is a computer-generated receipt. No signature required.</small></p>
+                    <p><small>Collection email: <a href="mailto:${collectionEmail}">${collectionEmail}</a></small></p>
+                    <p><small>Sent from: ${senderName} (${senderEmailAddress})</small></p>
+                    <p><small>Payment Date: ${paidAt}</small></p>
+                </div>
+            </div>
+        </body>
+        </html>
+      `;
+
+      const pdfBase64 = pdfBuffer.toString("base64");
+
+      const requestBody = {
+        sender: {
+          name: senderName,
+          email: senderEmailAddress,
+        },
+        to: [{ email: invoiceData.customerEmail.trim() }],
+        subject: `✅ Payment Confirmed - ${invoiceData.invoiceNumber}`,
+        htmlContent: html,
+        bcc: [
+          { email: collectionEmail.trim() },
+          { email: this.adminEmail.trim() },
+        ],
+        replyTo: { email: collectionEmail },
+        attachment: [
+          {
+            name: pdfFileName,
+            content: pdfBase64,
+          },
+        ],
+      };
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+      try {
+        const response = await fetch(this.brevoApiUrl, {
+          method: "POST",
+          headers: {
+            accept: "application/json",
+            "api-key": this.apiKey,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeoutId);
+
+        if (response.ok) {
+          const data: any = await response.json();
+          console.log(
+            `✅ Paid invoice email sent to ${invoiceData.customerEmail}`,
+          );
+          console.log(`   Invoice: ${invoiceData.invoiceNumber}`);
+          console.log(`   Location: ${userLocation || "Not specified"}`);
+          console.log(`   Sender: ${senderName} <${senderEmailAddress}>`);
+          console.log(`   Collection Email (BCC): ${collectionEmail}`);
+          console.log(`   Message ID: ${data.messageId || "N/A"}`);
+          return true;
+        } else {
+          const errorText = await response.text();
+          console.error(
+            `❌ Failed to send paid invoice email: ${response.status} - ${errorText}`,
+          );
+          return false;
+        }
+      } catch (fetchError: any) {
+        clearTimeout(timeoutId);
+        console.error(
+          `❌ Error sending paid invoice email:`,
+          fetchError.message,
+        );
+        return false;
+      }
+    } catch (error) {
+      console.error(`❌ Error sending paid invoice email:`, error);
+      return false;
+    }
+  }
+
   // ==================== SEND INVOICE WITH PDF ATTACHMENT ====================
   async sendInvoiceWithPDF(
     invoiceData: any,
@@ -845,8 +1191,6 @@ class EmailService {
           </div>
         `;
       }
-
-      const companyEmailDisplay = collectionEmail;
 
       const html = `
         <!DOCTYPE html>
