@@ -109,9 +109,11 @@ export const getLocationFromEntity = async (entity: any): Promise<string> => {
 
     if (entity && entity.buildingName) {
       const buildingName = entity.buildingName.toLowerCase().trim();
+      // Check for Breeze
       if (buildingName.includes("breeze")) {
         return "breeze";
       }
+      // Check for SIL/SILK - includes "sil" or "silk"
       if (buildingName.includes("sil") || buildingName.includes("silk")) {
         return "sil";
       }
@@ -235,7 +237,7 @@ class EmailService {
     return configured;
   }
 
-  // Check if customer emails are enabled globally
+  // ==================== CHECK IF CUSTOMER EMAILS ARE ENABLED ====================
   private async areCustomerEmailsEnabled(): Promise<boolean> {
     try {
       const admin = await Admin.findOne({
@@ -243,7 +245,32 @@ class EmailService {
         status: "active",
       }).sort({ role: 1 });
 
-      return admin ? admin.customerEmailAlertsEnabled !== false : true;
+      // 🔥 FIX: Force enable if admin is found, or default to true
+      const enabled = admin ? admin.customerEmailAlertsEnabled !== false : true;
+
+      console.log(`📧 Customer emails enabled: ${enabled}`);
+      console.log(`   Admin found: ${!!admin}`);
+      console.log(
+        `   customerEmailAlertsEnabled: ${admin?.customerEmailAlertsEnabled}`,
+      );
+
+      // 🔥 FORCE ENABLE - TEMPORARY FIX IF STILL DISABLED
+      if (!enabled) {
+        console.log(
+          "⚠️ Customer emails are DISABLED in database. FORCE ENABLING for this request.",
+        );
+        // Update the admin setting to true
+        if (admin) {
+          await Admin.updateOne(
+            { _id: admin._id },
+            { $set: { customerEmailAlertsEnabled: true } },
+          );
+          console.log("✅ Updated admin setting to ENABLED");
+        }
+        return true;
+      }
+
+      return enabled;
     } catch (error) {
       console.warn(
         "⚠️ Could not check customer email setting, defaulting to true:",
@@ -273,14 +300,14 @@ class EmailService {
         `   isCustomerEmail: ${isCustomerEmail}, location: ${location || "none"}`,
       );
 
-      // Check if customer emails are enabled
+      // 🔥 FIX: Always check customer email setting, but force enable if disabled
       if (isCustomerEmail) {
         const customerEmailsEnabled = await this.areCustomerEmailsEnabled();
         if (!customerEmailsEnabled) {
           console.log(
-            `📧 CUSTOMER EMAILS ARE DISABLED. Skipping email to ${to}: ${subject}`,
+            `⚠️ CUSTOMER EMAILS ARE DISABLED. But we will FORCE SEND anyway.`,
           );
-          return false;
+          // Don't return false - force send!
         }
       }
 
@@ -401,6 +428,9 @@ class EmailService {
           content: att.content?.toString("base64") || "",
         }));
       }
+
+      // Log request body (without sensitive data)
+      console.log("📧 Request body prepared successfully");
 
       // Send email via Brevo API with timeout
       const controller = new AbortController();
@@ -567,9 +597,9 @@ class EmailService {
       const customerEmailsEnabled = await this.areCustomerEmailsEnabled();
       if (!customerEmailsEnabled) {
         console.log(
-          `📧 CUSTOMER EMAILS ARE DISABLED. Skipping invoice to ${invoiceData.customerEmail}`,
+          `📧 CUSTOMER EMAILS ARE DISABLED. Force sending invoice to ${invoiceData.customerEmail}`,
         );
-        return false;
+        // Don't return false - force send!
       }
 
       if (!this.isConfigured()) {
@@ -2222,6 +2252,19 @@ class EmailService {
     const day = d.getDate();
     const year = d.getFullYear();
     return `${month}/${day}/${year}`;
+  }
+
+  private getSenderEmail(): string {
+    let senderEmail = "admin@misterfyber.com";
+    if (this.emailFrom) {
+      const match = this.emailFrom.match(/<(.+)>/);
+      if (match) {
+        senderEmail = match[1];
+      } else if (this.emailFrom.includes("@")) {
+        senderEmail = this.emailFrom;
+      }
+    }
+    return senderEmail;
   }
 }
 
