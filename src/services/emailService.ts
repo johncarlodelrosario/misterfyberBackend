@@ -1,4 +1,3 @@
-// backend/src/services/emailService.ts
 import { IUser } from "../models/User";
 import Admin from "../models/Admin";
 import Building from "../models/Building";
@@ -96,10 +95,12 @@ export const getCollectionEmailByLocation = (location: string): string => {
  */
 export const getLocationFromEntity = async (entity: any): Promise<string> => {
   try {
+    // Check if entity has location directly
     if (entity && entity.location) {
       return entity.location;
     }
 
+    // Check if entity has buildingId
     if (entity && entity.buildingId) {
       const building = await Building.findById(entity.buildingId);
       if (building && building.location) {
@@ -107,18 +108,18 @@ export const getLocationFromEntity = async (entity: any): Promise<string> => {
       }
     }
 
+    // Check buildingName
     if (entity && entity.buildingName) {
       const buildingName = entity.buildingName.toLowerCase().trim();
-      // Check for Breeze
       if (buildingName.includes("breeze")) {
         return "breeze";
       }
-      // Check for SIL/SILK - includes "sil" or "silk"
       if (buildingName.includes("sil") || buildingName.includes("silk")) {
         return "sil";
       }
     }
 
+    // Check if entity is an application with ID
     if (entity && entity.applicationId) {
       const application = await Application.findOne({
         applicationId: entity.applicationId,
@@ -208,7 +209,6 @@ class EmailService {
     console.log("   API Key length:", this.apiKey ? this.apiKey.length : 0);
     console.log("   Brevo API URL:", this.brevoApiUrl);
 
-    // Initialize if API key is present
     if (this.apiKey && this.apiKey.length > 10) {
       this.initialized = true;
       console.log("✅ Email service initialized successfully!");
@@ -217,18 +217,16 @@ class EmailService {
         "⚠️ Email service not initialized - BREVO_API_KEY is missing or invalid",
       );
 
-      // In development, we can still "send" emails by logging them
       if (process.env.NODE_ENV === "development") {
         console.log(
           "📧 [DEV MODE] Email service will log emails instead of sending",
         );
-        this.initialized = true; // Allow dev mode to work
+        this.initialized = true;
       }
     }
   }
 
   isConfigured(): boolean {
-    // Check if API key is valid and service is initialized
     const configured =
       this.initialized && !!this.apiKey && this.apiKey.length > 10;
     console.log(
@@ -237,7 +235,6 @@ class EmailService {
     return configured;
   }
 
-  // ==================== CHECK IF CUSTOMER EMAILS ARE ENABLED ====================
   private async areCustomerEmailsEnabled(): Promise<boolean> {
     try {
       const admin = await Admin.findOne({
@@ -245,7 +242,6 @@ class EmailService {
         status: "active",
       }).sort({ role: 1 });
 
-      // 🔥 FIX: Force enable if admin is found, or default to true
       const enabled = admin ? admin.customerEmailAlertsEnabled !== false : true;
 
       console.log(`📧 Customer emails enabled: ${enabled}`);
@@ -254,12 +250,10 @@ class EmailService {
         `   customerEmailAlertsEnabled: ${admin?.customerEmailAlertsEnabled}`,
       );
 
-      // 🔥 FORCE ENABLE - TEMPORARY FIX IF STILL DISABLED
       if (!enabled) {
         console.log(
           "⚠️ Customer emails are DISABLED in database. FORCE ENABLING for this request.",
         );
-        // Update the admin setting to true
         if (admin) {
           await Admin.updateOne(
             { _id: admin._id },
@@ -300,18 +294,15 @@ class EmailService {
         `   isCustomerEmail: ${isCustomerEmail}, location: ${location || "none"}`,
       );
 
-      // 🔥 FIX: Always check customer email setting, but force enable if disabled
       if (isCustomerEmail) {
         const customerEmailsEnabled = await this.areCustomerEmailsEnabled();
         if (!customerEmailsEnabled) {
           console.log(
             `⚠️ CUSTOMER EMAILS ARE DISABLED. But we will FORCE SEND anyway.`,
           );
-          // Don't return false - force send!
         }
       }
 
-      // In development mode, log the email instead of sending
       if (process.env.NODE_ENV === "development" && !this.apiKey) {
         console.log(`📧 [DEV MODE] Would send email to: ${to}`);
         console.log(`   Subject: ${subject}`);
@@ -319,7 +310,6 @@ class EmailService {
         return true;
       }
 
-      // Check if email service is properly configured
       if (!this.isConfigured()) {
         console.error(
           `❌ Email service not configured - skipping email to ${to}`,
@@ -328,7 +318,6 @@ class EmailService {
         return false;
       }
 
-      // Extract sender email from EMAIL_FROM
       let senderEmail = "admin@misterfyber.com";
       if (this.emailFrom) {
         const match = this.emailFrom.match(/<(.+)>/);
@@ -339,10 +328,7 @@ class EmailService {
         }
       }
 
-      // Prepare recipients
       const toArray = Array.isArray(to) ? to : [to];
-
-      // Filter out any empty or invalid emails
       const validToArray = toArray.filter(
         (email) => email && email.trim().length > 0,
       );
@@ -357,42 +343,69 @@ class EmailService {
         collectionEmail = getCollectionEmailByLocation(location);
       }
 
-      // Prepare BCC with collection email
+      // ========== FIX: Use collection email as sender for customer emails ==========
+      let senderName = "Mister Fyber";
+      let senderEmailAddress = senderEmail;
+
+      // For customer emails, use the collection email as the sender
+      if (isCustomerEmail && location) {
+        const collectionEmailForLocation =
+          getCollectionEmailByLocation(location);
+        if (
+          collectionEmailForLocation &&
+          collectionEmailForLocation !== DEFAULT_COLLECTION_EMAIL
+        ) {
+          senderEmailAddress = collectionEmailForLocation;
+          // Extract name from email if possible
+          if (collectionEmailForLocation.includes("breeze")) {
+            senderName = "Mister Fyber Breeze Collection";
+          } else if (collectionEmailForLocation.includes("sil")) {
+            senderName = "Mister Fyber SIL Collection";
+          } else {
+            senderName = "Mister Fyber Collection";
+          }
+          console.log(
+            `📧 Using collection email as sender: ${senderEmailAddress} (${senderName})`,
+          );
+        }
+      }
+
       let bccEmails: string[] = [];
       if (options?.bcc) {
         bccEmails = Array.isArray(options.bcc) ? options.bcc : [options.bcc];
       }
 
-      // Add collection email to BCC if it's not already in the TO or CC list
-      const allRecipients = [
-        ...validToArray,
-        ...(options?.cc
-          ? Array.isArray(options.cc)
-            ? options.cc
-            : [options.cc]
-          : []),
-      ];
-      if (
-        !allRecipients.includes(collectionEmail) &&
-        !bccEmails.includes(collectionEmail)
-      ) {
-        bccEmails.push(collectionEmail);
-        console.log(`📧 Added collection email to BCC: ${collectionEmail}`);
+      // Add admin email to BCC for customer emails
+      if (isCustomerEmail && this.adminEmail) {
+        const allRecipients = [
+          ...validToArray,
+          ...(options?.cc
+            ? Array.isArray(options.cc)
+              ? options.cc
+              : [options.cc]
+            : []),
+        ];
+        if (
+          !allRecipients.includes(this.adminEmail) &&
+          !bccEmails.includes(this.adminEmail)
+        ) {
+          bccEmails.push(this.adminEmail);
+          console.log(`📧 Added admin email to BCC: ${this.adminEmail}`);
+        }
       }
 
       console.log(
         `📧 Sending email via Brevo API to ${validToArray.join(", ")}...`,
       );
       console.log(`   Subject: ${subject}`);
-      console.log(`   Sender: Mister Fyber <${senderEmail}>`);
+      console.log(`   Sender: ${senderName} <${senderEmailAddress}>`);
       console.log(`   Location: ${location || "Not specified"}`);
-      console.log(`   Collection Email (BCC): ${collectionEmail}`);
+      console.log(`   Collection Email: ${collectionEmail}`);
 
-      // Build request body
       const requestBody: any = {
         sender: {
-          name: "Mister Fyber",
-          email: senderEmail,
+          name: senderName,
+          email: senderEmailAddress,
         },
         to: validToArray.map((email) => ({ email: email.trim() })),
         subject: subject,
@@ -420,6 +433,8 @@ class EmailService {
 
       if (options?.replyTo) {
         requestBody.replyTo = { email: options.replyTo.trim() };
+      } else if (isCustomerEmail && collectionEmail) {
+        requestBody.replyTo = { email: collectionEmail };
       }
 
       if (options?.attachments && options.attachments.length > 0) {
@@ -429,12 +444,10 @@ class EmailService {
         }));
       }
 
-      // Log request body (without sensitive data)
       console.log("📧 Request body prepared successfully");
 
-      // Send email via Brevo API with timeout
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
 
       try {
         const response = await fetch(this.brevoApiUrl, {
@@ -463,7 +476,6 @@ class EmailService {
             `❌ Brevo API error: ${response.status} - ${errorText}`,
           );
 
-          // Try to parse error for more details
           try {
             const errorJson = JSON.parse(errorText);
             console.error(
@@ -506,7 +518,6 @@ class EmailService {
     }
   }
 
-  // Force send email - bypasses customer email enabled check
   async forceSendEmail(
     to: string | string[],
     subject: string,
@@ -524,7 +535,7 @@ class EmailService {
       to,
       subject,
       htmlContent,
-      false, // isCustomerEmail = false (bypasses the check)
+      false,
       location,
       options,
     );
@@ -576,8 +587,8 @@ class EmailService {
         {
           cc: options?.cc,
           attachments: options?.attachments,
-          replyTo: options?.replyTo || this.supportEmail,
-          bcc: [collectionEmail],
+          replyTo: options?.replyTo || collectionEmail,
+          bcc: [collectionEmail, this.adminEmail],
         },
       );
     } catch (error) {
@@ -599,7 +610,6 @@ class EmailService {
         console.log(
           `📧 CUSTOMER EMAILS ARE DISABLED. Force sending invoice to ${invoiceData.customerEmail}`,
         );
-        // Don't return false - force send!
       }
 
       if (!this.isConfigured()) {
@@ -618,6 +628,31 @@ class EmailService {
 
       const userLocation = location || invoiceData.location || "";
       const collectionEmail = getCollectionEmailByLocation(userLocation);
+
+      // ========== FIX: Use collection email as sender ==========
+      let senderName = "Mister Fyber";
+      let senderEmailAddress = "admin@misterfyber.com";
+
+      if (userLocation) {
+        const collectionEmailForLocation =
+          getCollectionEmailByLocation(userLocation);
+        if (
+          collectionEmailForLocation &&
+          collectionEmailForLocation !== DEFAULT_COLLECTION_EMAIL
+        ) {
+          senderEmailAddress = collectionEmailForLocation;
+          if (collectionEmailForLocation.includes("breeze")) {
+            senderName = "Mister Fyber Breeze Collection";
+          } else if (collectionEmailForLocation.includes("sil")) {
+            senderName = "Mister Fyber SIL Collection";
+          } else {
+            senderName = "Mister Fyber Collection";
+          }
+          console.log(
+            `📧 Using collection email as sender: ${senderEmailAddress} (${senderName})`,
+          );
+        }
+      }
 
       const dueDate = invoiceData.dueDate
         ? new Date(invoiceData.dueDate).toLocaleDateString()
@@ -708,6 +743,9 @@ class EmailService {
         `;
       }
 
+      // ========== FIX: Use collection email in the invoice header ==========
+      const companyEmailDisplay = collectionEmail;
+
       const html = `
         <!DOCTYPE html>
         <html>
@@ -727,6 +765,7 @@ class EmailService {
                 .warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }
                 .company-info { text-align: center; font-size: 12px; color: #666; margin: 10px 0; }
                 .invoice-type { display: inline-block; background: #1a237e; color: white; padding: 3px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; }
+                .sender-info { background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center; }
             </style>
         </head>
         <body>
@@ -739,6 +778,9 @@ class EmailService {
                     <h3 style="color: #1a237e; margin: 5px 0;">INVOICE</h3>
                     <p><span class="invoice-type">${invoiceData.invoiceType || "Monthly"}</span></p>
                     ${locationBadge}
+                    <div class="sender-info">
+                        <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
+                    </div>
                 </div>
                 <div class="content">
                     <p><strong>Subscriber's Name:</strong> ${invoiceData.customerName}</p>
@@ -778,33 +820,28 @@ class EmailService {
                     <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
                     <p><small>This is a computer-generated invoice. No signature required.</small></p>
                     <p><small>Collection email: <a href="mailto:${collectionEmail}">${collectionEmail}</a></small></p>
+                    <p><small>Sent from: ${senderName} (${senderEmailAddress})</small></p>
                 </div>
             </div>
         </body>
         </html>
       `;
 
-      let senderEmail = "admin@misterfyber.com";
-      if (this.emailFrom) {
-        const match = this.emailFrom.match(/<(.+)>/);
-        if (match) {
-          senderEmail = match[1];
-        } else if (this.emailFrom.includes("@")) {
-          senderEmail = this.emailFrom;
-        }
-      }
-
       const pdfBase64 = pdfBuffer.toString("base64");
 
       const requestBody = {
         sender: {
-          name: "Mister Fyber",
-          email: senderEmail,
+          name: senderName,
+          email: senderEmailAddress,
         },
         to: [{ email: invoiceData.customerEmail.trim() }],
         subject: `🧾 Invoice #${invoiceData.invoiceNumber} - Mister Fyber`,
         htmlContent: html,
-        bcc: [{ email: collectionEmail.trim() }],
+        bcc: [
+          { email: collectionEmail.trim() },
+          { email: this.adminEmail.trim() },
+        ],
+        replyTo: { email: collectionEmail },
         attachment: [
           {
             name: pdfFileName,
@@ -837,6 +874,7 @@ class EmailService {
           );
           console.log(`   Invoice: ${invoiceData.invoiceNumber}`);
           console.log(`   Location: ${userLocation || "Not specified"}`);
+          console.log(`   Sender: ${senderName} <${senderEmailAddress}>`);
           console.log(`   Collection Email (BCC): ${collectionEmail}`);
           console.log(`   Message ID: ${data.messageId || "N/A"}`);
           return true;
@@ -858,7 +896,6 @@ class EmailService {
     }
   }
 
-  // ==================== GENERATE INVOICE HTML ====================
   private generateInvoiceHTML(
     user: any,
     billing: any,
@@ -871,6 +908,8 @@ class EmailService {
     const frontendUrl =
       process.env.FRONTEND_URL || "https://www.misterfyber.com";
 
+    const collectionEmail = getCollectionEmailByLocation(location);
+
     const locationBadge = location
       ? `
       <div style="display: inline-block; background: ${location.toLowerCase() === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin-top: 10px;">
@@ -878,8 +917,6 @@ class EmailService {
       </div>
     `
       : "";
-
-    const collectionEmail = getCollectionEmailByLocation(location);
 
     let additionalInfo = "";
     if (billing.isProRated && billing.items && billing.items[0]) {
@@ -909,6 +946,26 @@ class EmailService {
       `;
     }
 
+    // ========== FIX: Show sender info in email ==========
+    let senderName = "Mister Fyber";
+    let senderEmailAddress = "admin@misterfyber.com";
+    if (location) {
+      const collectionEmailForLocation = getCollectionEmailByLocation(location);
+      if (
+        collectionEmailForLocation &&
+        collectionEmailForLocation !== DEFAULT_COLLECTION_EMAIL
+      ) {
+        senderEmailAddress = collectionEmailForLocation;
+        if (collectionEmailForLocation.includes("breeze")) {
+          senderName = "Mister Fyber Breeze Collection";
+        } else if (collectionEmailForLocation.includes("sil")) {
+          senderName = "Mister Fyber SIL Collection";
+        } else {
+          senderName = "Mister Fyber Collection";
+        }
+      }
+    }
+
     return `
       <!DOCTYPE html>
       <html>
@@ -922,6 +979,9 @@ class EmailService {
               <p>Hello ${user.firstName || user.email},</p>
               <p>Your Mister Fyber invoice is now ready for payment.</p>
               ${locationBadge}
+              <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
+                <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
+              </div>
               <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
                   <h3 style="margin-top: 0;">Invoice Details</h3>
                   <p><strong>Invoice Number:</strong> ${billing.invoiceNumber || billing._id}</p>
@@ -939,6 +999,7 @@ class EmailService {
               </div>
               <hr>
               <p style="color: #666; font-size: 12px;">Mister Fyber</p>
+              <p style="color: #666; font-size: 12px;">Sent from: ${senderName} (${senderEmailAddress})</p>
           </div>
       </body>
       </html>
@@ -961,6 +1022,27 @@ class EmailService {
       const amount = billing.total || billing.amount || 0;
       const frontendUrl =
         process.env.FRONTEND_URL || "https://www.misterfyber.com";
+
+      // ========== FIX: Use collection email as sender ==========
+      let senderName = "Mister Fyber";
+      let senderEmailAddress = "admin@misterfyber.com";
+      if (userLocation) {
+        const collectionEmailForLocation =
+          getCollectionEmailByLocation(userLocation);
+        if (
+          collectionEmailForLocation &&
+          collectionEmailForLocation !== DEFAULT_COLLECTION_EMAIL
+        ) {
+          senderEmailAddress = collectionEmailForLocation;
+          if (collectionEmailForLocation.includes("breeze")) {
+            senderName = "Mister Fyber Breeze Collection";
+          } else if (collectionEmailForLocation.includes("sil")) {
+            senderName = "Mister Fyber SIL Collection";
+          } else {
+            senderName = "Mister Fyber Collection";
+          }
+        }
+      }
 
       const isInstallationBill = billing.isInstallationBill;
 
@@ -985,12 +1067,18 @@ class EmailService {
         <head>
             <meta charset="UTF-8">
             <title>Payment Reminder</title>
+            <style>
+                .sender-info { background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center; }
+            </style>
         </head>
         <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
             <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
                 <h2 style="color: #f39c12;">⚠️ Payment Reminder</h2>
                 <p>Hello ${user.firstName || user.email},</p>
                 <p>This is a friendly reminder that your Mister Fyber payment is due soon.</p>
+                <div class="sender-info">
+                  <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
+                </div>
                 ${locationBadge}
                 <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
                     <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
@@ -1005,6 +1093,7 @@ class EmailService {
                 <hr>
                 <p style="color: #666; font-size: 12px;">This is an automated reminder from Mister Fyber.</p>
                 <p style="color: #666; font-size: 12px;">Collection Email: <a href="mailto:${collectionEmail}">${collectionEmail}</a></p>
+                <p style="color: #666; font-size: 12px;">Sent from: ${senderName} (${senderEmailAddress})</p>
             </div>
         </body>
         </html>
@@ -1017,8 +1106,8 @@ class EmailService {
         true,
         userLocation,
         {
-          bcc: [collectionEmail],
-          replyTo: this.supportEmail,
+          bcc: [collectionEmail, this.adminEmail],
+          replyTo: collectionEmail,
         },
       );
     } catch (error) {
@@ -1035,6 +1124,27 @@ class EmailService {
     try {
       const userLocation = location || (await getLocationFromEntity(user));
       const collectionEmail = getCollectionEmailByLocation(userLocation);
+
+      // ========== FIX: Use collection email as sender ==========
+      let senderName = "Mister Fyber";
+      let senderEmailAddress = "admin@misterfyber.com";
+      if (userLocation) {
+        const collectionEmailForLocation =
+          getCollectionEmailByLocation(userLocation);
+        if (
+          collectionEmailForLocation &&
+          collectionEmailForLocation !== DEFAULT_COLLECTION_EMAIL
+        ) {
+          senderEmailAddress = collectionEmailForLocation;
+          if (collectionEmailForLocation.includes("breeze")) {
+            senderName = "Mister Fyber Breeze Collection";
+          } else if (collectionEmailForLocation.includes("sil")) {
+            senderName = "Mister Fyber SIL Collection";
+          } else {
+            senderName = "Mister Fyber Collection";
+          }
+        }
+      }
 
       const dueDate = billing.dueDate
         ? new Date(billing.dueDate).toLocaleDateString()
@@ -1078,6 +1188,7 @@ class EmailService {
                 .button { display: inline-block; background-color: #dc3545; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; }
                 .warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }
                 .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
+                .sender-info { background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center; }
             </style>
         </head>
         <body>
@@ -1088,6 +1199,9 @@ class EmailService {
                 <div class="content">
                     <p>Hello ${user.firstName || user.email},</p>
                     <p><strong>Your Mister Fyber payment is due TODAY.</strong> Please settle your bill immediately to avoid service interruption.</p>
+                    <div class="sender-info">
+                      <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
+                    </div>
                     ${locationBadge}
                     <div class="bill-details">
                         <h3 style="margin-top: 0;">📋 Invoice Details</h3>
@@ -1112,6 +1226,7 @@ class EmailService {
                     <p>Mister Fyber - Your trusted internet provider</p>
                     <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
                     <p><small>Collection Email: <a href="mailto:${collectionEmail}">${collectionEmail}</a></small></p>
+                    <p><small>Sent from: ${senderName} (${senderEmailAddress})</small></p>
                     <p><small>Late payments may incur service interruption after grace period.</small></p>
                 </div>
             </div>
@@ -1126,8 +1241,8 @@ class EmailService {
         true,
         userLocation,
         {
-          bcc: [collectionEmail],
-          replyTo: this.supportEmail,
+          bcc: [collectionEmail, this.adminEmail],
+          replyTo: collectionEmail,
         },
       );
     } catch (error) {
@@ -1145,6 +1260,27 @@ class EmailService {
     try {
       const userLocation = location || (await getLocationFromEntity(user));
       const collectionEmail = getCollectionEmailByLocation(userLocation);
+
+      // ========== FIX: Use collection email as sender ==========
+      let senderName = "Mister Fyber";
+      let senderEmailAddress = "admin@misterfyber.com";
+      if (userLocation) {
+        const collectionEmailForLocation =
+          getCollectionEmailByLocation(userLocation);
+        if (
+          collectionEmailForLocation &&
+          collectionEmailForLocation !== DEFAULT_COLLECTION_EMAIL
+        ) {
+          senderEmailAddress = collectionEmailForLocation;
+          if (collectionEmailForLocation.includes("breeze")) {
+            senderName = "Mister Fyber Breeze Collection";
+          } else if (collectionEmailForLocation.includes("sil")) {
+            senderName = "Mister Fyber SIL Collection";
+          } else {
+            senderName = "Mister Fyber Collection";
+          }
+        }
+      }
 
       const amount = payment.amount || payment.totalAmount || 0;
       const isInstallationPayment =
@@ -1172,12 +1308,18 @@ class EmailService {
         <head>
             <meta charset="UTF-8">
             <title>Payment Confirmation</title>
+            <style>
+                .sender-info { background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center; }
+            </style>
         </head>
         <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
             <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
                 <h2 style="color: #28a745;">💰 Payment Confirmed!</h2>
                 <p>Hello ${user.firstName || user.email},</p>
                 <p>Thank you for your payment to Mister Fyber. Your transaction has been completed successfully.</p>
+                <div class="sender-info">
+                  <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
+                </div>
                 ${locationBadge}
                 <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
                     <h3 style="margin-top: 0;">Payment Details</h3>
@@ -1191,6 +1333,7 @@ class EmailService {
                 </div>
                 <hr>
                 <p style="color: #666; font-size: 12px;">Thank you for being a valued Mister Fyber customer!</p>
+                <p style="color: #666; font-size: 12px;">Sent from: ${senderName} (${senderEmailAddress})</p>
             </div>
         </body>
         </html>
@@ -1203,8 +1346,8 @@ class EmailService {
         true,
         userLocation,
         {
-          bcc: [collectionEmail],
-          replyTo: this.supportEmail,
+          bcc: [collectionEmail, this.adminEmail],
+          replyTo: collectionEmail,
         },
       );
     } catch (error) {
@@ -1223,6 +1366,27 @@ class EmailService {
       const userLocation =
         location || (await getLocationFromEntity(application));
       const collectionEmail = getCollectionEmailByLocation(userLocation);
+
+      // ========== FIX: Use collection email as sender ==========
+      let senderName = "Mister Fyber";
+      let senderEmailAddress = "admin@misterfyber.com";
+      if (userLocation) {
+        const collectionEmailForLocation =
+          getCollectionEmailByLocation(userLocation);
+        if (
+          collectionEmailForLocation &&
+          collectionEmailForLocation !== DEFAULT_COLLECTION_EMAIL
+        ) {
+          senderEmailAddress = collectionEmailForLocation;
+          if (collectionEmailForLocation.includes("breeze")) {
+            senderName = "Mister Fyber Breeze Collection";
+          } else if (collectionEmailForLocation.includes("sil")) {
+            senderName = "Mister Fyber SIL Collection";
+          } else {
+            senderName = "Mister Fyber Collection";
+          }
+        }
+      }
 
       const registerUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/register`;
       const dueDate = bill.dueDate
@@ -1254,6 +1418,7 @@ class EmailService {
                 .button { display: inline-block; background-color: #28a745; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; }
                 .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
                 .warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }
+                .sender-info { background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center; }
             </style>
         </head>
         <body>
@@ -1264,6 +1429,9 @@ class EmailService {
                 <div class="content">
                     <p>Hello ${application.firstName} ${application.lastName},</p>
                     <p>Your Mister Fyber bill is now ready. Since you haven't created your account yet, please register first using your Application ID.</p>
+                    <div class="sender-info">
+                      <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
+                    </div>
                     ${locationBadge}
                     <div class="bill-details">
                         <h3 style="margin-top: 0;">📋 Bill Details</h3>
@@ -1288,6 +1456,7 @@ class EmailService {
                     <p>Mister Fyber - Your trusted internet provider</p>
                     <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
                     <p><small>Collection Email: <a href="mailto:${collectionEmail}">${collectionEmail}</a></small></p>
+                    <p><small>Sent from: ${senderName} (${senderEmailAddress})</small></p>
                 </div>
             </div>
         </body>
@@ -1301,8 +1470,8 @@ class EmailService {
         true,
         userLocation,
         {
-          bcc: [collectionEmail],
-          replyTo: this.supportEmail,
+          bcc: [collectionEmail, this.adminEmail],
+          replyTo: collectionEmail,
         },
       );
     } catch (error) {
@@ -1334,6 +1503,27 @@ class EmailService {
       const userLocation = location || (await getLocationFromEntity(user));
       const collectionEmail = getCollectionEmailByLocation(userLocation);
 
+      // ========== FIX: Use collection email as sender ==========
+      let senderName = "Mister Fyber";
+      let senderEmailAddress = "admin@misterfyber.com";
+      if (userLocation) {
+        const collectionEmailForLocation =
+          getCollectionEmailByLocation(userLocation);
+        if (
+          collectionEmailForLocation &&
+          collectionEmailForLocation !== DEFAULT_COLLECTION_EMAIL
+        ) {
+          senderEmailAddress = collectionEmailForLocation;
+          if (collectionEmailForLocation.includes("breeze")) {
+            senderName = "Mister Fyber Breeze Collection";
+          } else if (collectionEmailForLocation.includes("sil")) {
+            senderName = "Mister Fyber SIL Collection";
+          } else {
+            senderName = "Mister Fyber Collection";
+          }
+        }
+      }
+
       const dueDate = billing.dueDate
         ? new Date(billing.dueDate).toLocaleDateString()
         : "N/A";
@@ -1355,12 +1545,18 @@ class EmailService {
         <head>
             <meta charset="UTF-8">
             <title>Billing Reminder</title>
+            <style>
+                .sender-info { background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center; }
+            </style>
         </head>
         <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
             <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
                 <h2 style="color: #f39c12;">📅 Billing Reminder</h2>
                 <p>Hello ${user.firstName || user.email},</p>
                 <p>Your Mister Fyber bill is due on ${dueDate}.</p>
+                <div class="sender-info">
+                  <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
+                </div>
                 ${locationBadge}
                 <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
                     <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
@@ -1373,6 +1569,7 @@ class EmailService {
                 <hr>
                 <p style="color: #666; font-size: 12px;">This is an automated reminder from Mister Fyber.</p>
                 <p style="color: #666; font-size: 12px;">Collection Email: <a href="mailto:${collectionEmail}">${collectionEmail}</a></p>
+                <p style="color: #666; font-size: 12px;">Sent from: ${senderName} (${senderEmailAddress})</p>
             </div>
         </body>
         </html>
@@ -1385,8 +1582,8 @@ class EmailService {
         true,
         userLocation,
         {
-          bcc: [collectionEmail],
-          replyTo: this.supportEmail,
+          bcc: [collectionEmail, this.adminEmail],
+          replyTo: collectionEmail,
         },
       );
     } catch (error) {
@@ -1394,7 +1591,7 @@ class EmailService {
     }
   }
 
-  // ==================== SEND WELCOME EMAIL ====================
+  // ==================== WELCOME EMAIL ====================
   async sendWelcomeEmail(user: IUser): Promise<void> {
     const loginUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/login`;
     const dashboardUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/dashboard`;
@@ -1478,7 +1675,7 @@ class EmailService {
     await this.sendToAdmin(`New User Registration: ${user.email}`, adminHtml);
   }
 
-  // ==================== SEND PASSWORD RESET ====================
+  // ==================== PASSWORD RESET ====================
   async sendPasswordReset(user: IUser, resetToken: string): Promise<void> {
     const frontendUrl =
       process.env.FRONTEND_URL || "https://www.misterfyber.com";
@@ -1510,7 +1707,7 @@ class EmailService {
     await this.sendEmail(user.email, "Password Reset Request", html, true);
   }
 
-  // ==================== SEND ACCOUNT CREDENTIALS ====================
+  // ==================== ACCOUNT CREDENTIALS ====================
   async sendAccountCredentials(
     user: IUser,
     username: string,
