@@ -19,6 +19,8 @@ export interface IEmailSentRecord extends Document {
   sentByEmail: string;
   adminCopySent?: boolean;
   senderType?: "admin" | "collection";
+  location?: string;
+  collectionEmail?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -94,6 +96,13 @@ const EmailSentRecordSchema = new Schema<IEmailSentRecord>(
       enum: ["admin", "collection"],
       default: "collection",
     },
+    location: {
+      type: String,
+      default: "unknown",
+    },
+    collectionEmail: {
+      type: String,
+    },
   },
   {
     timestamps: true,
@@ -106,6 +115,7 @@ EmailSentRecordSchema.index({ status: 1 });
 EmailSentRecordSchema.index({ isBulk: 1 });
 EmailSentRecordSchema.index({ sentAt: -1 });
 EmailSentRecordSchema.index({ senderType: 1 });
+EmailSentRecordSchema.index({ location: 1 });
 
 export default mongoose.model<IEmailSentRecord>(
   "EmailSentRecord",

@@ -50,6 +50,24 @@ function generateEmailPreview(
   `
     : "";
 
+  // Location badge for preview
+  let locationBadge = "";
+  if (customerData && customerData.buildingName) {
+    const buildingName = customerData.buildingName.toLowerCase().trim();
+    let location = "other";
+    if (buildingName.includes("breeze")) location = "breeze";
+    else if (buildingName.includes("sil") || buildingName.includes("silk"))
+      location = "sil";
+
+    if (location !== "other") {
+      locationBadge = `
+        <div style="display: inline-block; background: ${location === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin: 10px 0;">
+          📍 ${location.toUpperCase()} - ${customerData.buildingName}
+        </div>
+      `;
+    }
+  }
+
   const billingSection =
     includeBilling && billingData
       ? `
@@ -76,6 +94,7 @@ function generateEmailPreview(
       <p style="margin: 5px 0;"><strong>Email:</strong> ${customerData.email || ""}</p>
       <p style="margin: 5px 0;"><strong>Phone:</strong> ${customerData.phoneNumber || "N/A"}</p>
       <p style="margin: 5px 0;"><strong>Application ID:</strong> ${customerData.applicationId || "N/A"}</p>
+      ${customerData.buildingName ? `<p style="margin: 5px 0;"><strong>Building:</strong> ${customerData.buildingName}</p>` : ""}
     </div>
   `
     : "";
@@ -104,6 +123,7 @@ function generateEmailPreview(
         </div>
         <div class="content">
           ${customerSection}
+          ${locationBadge}
           ${senderSection}
           <div class="message-box">
             ${message.replace(/\n/g, "<br>")}
@@ -170,12 +190,25 @@ export const getCustomersForEmail = async (
           .sort({ createdAt: -1 })
           .lean();
 
+        // Detect location from building name
+        let location = "other";
+        if (app.buildingName) {
+          const buildingName = app.buildingName.toLowerCase().trim();
+          if (buildingName.includes("breeze")) location = "breeze";
+          else if (
+            buildingName.includes("sil") ||
+            buildingName.includes("silk")
+          )
+            location = "sil";
+        }
+
         return {
           ...app,
           hasBilling: !!billingCycle,
           hasUnpaidBills: !!hasUnpaidBills,
           lastBillAmount: lastBill?.total || 0,
           lastBillStatus: lastBill?.status || null,
+          location: location,
         };
       }),
     );
@@ -297,8 +330,65 @@ export const sendManualEmail = async (
       });
     }
 
-    // Get location from application
-    const location = await getLocationFromEntity(application);
+    // Get location from application - FIXED: Check buildingName directly
+    let location = "";
+    console.log(`🔍 Getting location for application: ${applicationId}`);
+    console.log(`🏢 Building name: ${application.buildingName}`);
+
+    if (application.buildingName) {
+      const buildingName = application.buildingName.toLowerCase().trim();
+      if (buildingName.includes("breeze")) {
+        location = "breeze";
+        console.log(
+          `✅ Location detected: BREEZE from buildingName: ${application.buildingName}`,
+        );
+      } else if (
+        buildingName.includes("sil") ||
+        buildingName.includes("silk")
+      ) {
+        location = "sil";
+        console.log(
+          `✅ Location detected: SIL from buildingName: ${application.buildingName}`,
+        );
+      } else {
+        console.log(`⚠️ Unknown building: ${application.buildingName}`);
+      }
+    }
+
+    // If no location from buildingName, try buildingId
+    if (!location && application.buildingId) {
+      console.log(`🔍 Looking up building by ID: ${application.buildingId}`);
+      const Building = require("../models/Building").default;
+      const building = await Building.findById(application.buildingId).lean();
+      if (building) {
+        console.log(`🏢 Building found:`, building);
+        if (building.name) {
+          const buildingName = building.name.toLowerCase().trim();
+          if (buildingName.includes("breeze")) {
+            location = "breeze";
+            console.log(
+              `✅ Location detected: BREEZE from building name: ${building.name}`,
+            );
+          } else if (
+            buildingName.includes("sil") ||
+            buildingName.includes("silk")
+          ) {
+            location = "sil";
+            console.log(
+              `✅ Location detected: SIL from building name: ${building.name}`,
+            );
+          }
+        }
+        if (building.location) {
+          location = building.location;
+          console.log(`📍 Location from building: ${location}`);
+        }
+      }
+    }
+
+    console.log(
+      `📍 Final location for ${applicationId}: ${location || "NOT FOUND"}`,
+    );
 
     let billingData = null;
     let selectedBillId = null;
@@ -343,6 +433,10 @@ export const sendManualEmail = async (
     const isConfigured = emailService.isConfigured();
     console.log(`📧 Email service configured: ${isConfigured}`);
     console.log(`📧 Using admin sender: ${useAdminSender ? "YES" : "NO"}`);
+    console.log(`📧 Location: ${location || "NONE"}`);
+    console.log(
+      `📧 Collection email: ${location ? getCollectionEmailByLocation(location) : "NONE"}`,
+    );
 
     // Send to customer with improved error handling
     let emailSent = false;
@@ -365,6 +459,10 @@ export const sendManualEmail = async (
           console.log(`   Subject: ${subject}`);
           console.log(`   Message preview: ${message.substring(0, 100)}...`);
           console.log(`   Use Admin Sender: ${useAdminSender ? "YES" : "NO"}`);
+          console.log(`   Location: ${location || "NONE"}`);
+          console.log(
+            `   Would send from: ${useAdminSender ? "admin@misterfyber.com" : location ? getCollectionEmailByLocation(location) : "admin@misterfyber.com"}`,
+          );
           emailSent = true;
         } else {
           throw new Error(
@@ -377,8 +475,8 @@ export const sendManualEmail = async (
           application.email,
           subject,
           emailHtml,
-          true,
-          location,
+          true, // isCustomerEmail
+          location, // location for collection email
           {
             useAdminSender: useAdminSender === true,
           },
@@ -391,6 +489,10 @@ export const sendManualEmail = async (
           emailError = "Email service returned false - check logs for details";
         } else {
           console.log(`✅ Email sent successfully to ${application.email}`);
+          console.log(
+            `   Sender: ${useAdminSender ? "admin@misterfyber.com" : location ? getCollectionEmailByLocation(location) : "admin@misterfyber.com"}`,
+          );
+          console.log(`   Location: ${location || "NONE"}`);
         }
       }
     } catch (error: any) {
@@ -411,6 +513,8 @@ export const sendManualEmail = async (
               <p><strong>Sent At:</strong> ${new Date().toLocaleString()}</p>
               <p><strong>Sent By:</strong> ${req.user?.email || req.user?.username || "Admin"}</p>
               <p><strong>Sender Type:</strong> ${useAdminSender ? "Admin" : "Collection"}</p>
+              <p><strong>Location:</strong> ${location || "NONE"}</p>
+              <p><strong>Collection Email:</strong> ${location ? getCollectionEmailByLocation(location) : "NONE"}</p>
               <hr>
               <div style="background: #f8f9fa; padding: 15px; border-radius: 5px;">
                 <h3>Message Content:</h3>
@@ -433,7 +537,7 @@ export const sendManualEmail = async (
             adminEmail,
             `[ADMIN COPY] ${subject}`,
             adminHtml,
-            false,
+            false, // isCustomerEmail
           );
         } catch (adminError) {
           console.error("Failed to send admin copy:", adminError);
@@ -459,6 +563,8 @@ export const sendManualEmail = async (
       sentByEmail: req.user?.email || "admin@misterfyber.com",
       adminCopySent: adminCopySent || false,
       senderType: useAdminSender ? "admin" : "collection",
+      location: location || "unknown",
+      collectionEmail: location ? getCollectionEmailByLocation(location) : null,
     });
 
     await sentRecord.save({ session });
@@ -480,6 +586,10 @@ export const sendManualEmail = async (
           environment: process.env.NODE_ENV,
           apiKeyPresent: !!(emailService as any).apiKey,
           apiKeyLength: (emailService as any).apiKey?.length || 0,
+          location: location || "unknown",
+          collectionEmail: location
+            ? getCollectionEmailByLocation(location)
+            : null,
         },
       });
     }
@@ -495,6 +605,10 @@ export const sendManualEmail = async (
         adminCopySent,
         recordId: sentRecord._id,
         senderType: useAdminSender ? "admin" : "collection",
+        location: location || "unknown",
+        collectionEmail: location
+          ? getCollectionEmailByLocation(location)
+          : null,
       },
     });
   } catch (error) {
@@ -580,8 +694,59 @@ export const sendBulkEmails = async (
           continue;
         }
 
-        // Get location from application
-        const location = await getLocationFromEntity(application);
+        // Get location from application - FIXED: Check buildingName directly
+        let location = "";
+        console.log(`🔍 Getting location for application: ${applicationId}`);
+        console.log(`🏢 Building name: ${application.buildingName}`);
+
+        if (application.buildingName) {
+          const buildingName = application.buildingName.toLowerCase().trim();
+          if (buildingName.includes("breeze")) {
+            location = "breeze";
+            console.log(
+              `✅ Location detected: BREEZE from buildingName: ${application.buildingName}`,
+            );
+          } else if (
+            buildingName.includes("sil") ||
+            buildingName.includes("silk")
+          ) {
+            location = "sil";
+            console.log(
+              `✅ Location detected: SIL from buildingName: ${application.buildingName}`,
+            );
+          }
+        }
+
+        // If no location from buildingName, try buildingId
+        if (!location && application.buildingId) {
+          console.log(
+            `🔍 Looking up building by ID: ${application.buildingId}`,
+          );
+          const Building = require("../models/Building").default;
+          const building = await Building.findById(
+            application.buildingId,
+          ).lean();
+          if (building) {
+            if (building.name) {
+              const buildingName = building.name.toLowerCase().trim();
+              if (buildingName.includes("breeze")) {
+                location = "breeze";
+              } else if (
+                buildingName.includes("sil") ||
+                buildingName.includes("silk")
+              ) {
+                location = "sil";
+              }
+            }
+            if (building.location) {
+              location = building.location;
+            }
+          }
+        }
+
+        console.log(
+          `📍 Final location for ${applicationId}: ${location || "NOT FOUND"}`,
+        );
 
         let billingData = null;
         let selectedBillId = null;
@@ -643,14 +808,18 @@ export const sendBulkEmails = async (
               console.log(
                 `📧 [DEV MODE] Would send bulk email to: ${application.email}`,
               );
+              console.log(`   Location: ${location || "NONE"}`);
+              console.log(
+                `   Sender: ${useAdminSender ? "admin@misterfyber.com" : location ? getCollectionEmailByLocation(location) : "admin@misterfyber.com"}`,
+              );
               emailSent = true;
             } else {
               emailSent = await emailService.sendEmail(
                 application.email,
                 subject,
                 emailHtml,
-                true,
-                location,
+                true, // isCustomerEmail
+                location, // location
                 {
                   useAdminSender: useAdminSender === true,
                 },
@@ -682,6 +851,10 @@ export const sendBulkEmails = async (
           sentByEmail: req.user?.email || "admin@misterfyber.com",
           adminCopySent: false,
           senderType: useAdminSender ? "admin" : "collection",
+          location: location || "unknown",
+          collectionEmail: location
+            ? getCollectionEmailByLocation(location)
+            : null,
         });
 
         await record.save();
@@ -693,6 +866,12 @@ export const sendBulkEmails = async (
             email: application.email,
             name: `${application.firstName} ${application.lastName}`,
             success: true,
+            location: location || "unknown",
+            sender: useAdminSender
+              ? "admin@misterfyber.com"
+              : location
+                ? getCollectionEmailByLocation(location)
+                : "admin@misterfyber.com",
           });
           sentRecords.push(record);
         } else {
@@ -743,7 +922,10 @@ export const sendBulkEmails = async (
               <ul>
                 ${results
                   .filter((r) => r.success)
-                  .map((r) => `<li>${r.name} (${r.email})</li>`)
+                  .map(
+                    (r) =>
+                      `<li>${r.name} (${r.email}) - Location: ${r.location || "unknown"} - Sender: ${r.sender}</li>`,
+                  )
                   .join("")}
               </ul>
               ${
@@ -764,7 +946,7 @@ export const sendBulkEmails = async (
             adminEmail,
             `[BULK EMAIL SUMMARY] ${subject}`,
             summaryHtml,
-            false,
+            false, // isCustomerEmail
           );
         } catch (adminError) {
           console.error("Failed to send admin summary:", adminError);
@@ -1028,7 +1210,40 @@ export const previewEmail = async (
     if (applicationId) {
       customerData = await Application.findOne({ applicationId }).lean();
       if (customerData) {
-        location = await getLocationFromEntity(customerData);
+        // Get location from buildingName directly
+        if (customerData.buildingName) {
+          const buildingName = customerData.buildingName.toLowerCase().trim();
+          if (buildingName.includes("breeze")) {
+            location = "breeze";
+          } else if (
+            buildingName.includes("sil") ||
+            buildingName.includes("silk")
+          ) {
+            location = "sil";
+          }
+        }
+        // If no location, try buildingId
+        if (!location && customerData.buildingId) {
+          const Building = require("../models/Building").default;
+          const building = await Building.findById(
+            customerData.buildingId,
+          ).lean();
+          if (building) {
+            if (building.name) {
+              const buildingName = building.name.toLowerCase().trim();
+              if (buildingName.includes("breeze")) location = "breeze";
+              else if (
+                buildingName.includes("sil") ||
+                buildingName.includes("silk")
+              )
+                location = "sil";
+            }
+            if (building.location) location = building.location;
+          }
+        }
+        console.log(
+          `📍 Preview location for ${applicationId}: ${location || "NOT FOUND"}`,
+        );
       }
     }
 
@@ -1067,6 +1282,8 @@ export const previewEmail = async (
         html: previewHtml,
         subject,
         message,
+        location: location || "unknown",
+        senderInfo: senderInfo,
       },
     });
   } catch (error) {
@@ -1126,6 +1343,36 @@ export const sendReminderToUnpaid = async (
       const application = await Application.findOne({ applicationId }).lean();
       if (!application || !application.email) continue;
 
+      // Get location from buildingName directly
+      let location = "";
+      if (application.buildingName) {
+        const buildingName = application.buildingName.toLowerCase().trim();
+        if (buildingName.includes("breeze")) {
+          location = "breeze";
+        } else if (
+          buildingName.includes("sil") ||
+          buildingName.includes("silk")
+        ) {
+          location = "sil";
+        }
+      }
+      if (!location && application.buildingId) {
+        const Building = require("../models/Building").default;
+        const building = await Building.findById(application.buildingId).lean();
+        if (building) {
+          if (building.name) {
+            const buildingName = building.name.toLowerCase().trim();
+            if (buildingName.includes("breeze")) location = "breeze";
+            else if (
+              buildingName.includes("sil") ||
+              buildingName.includes("silk")
+            )
+              location = "sil";
+          }
+          if (building.location) location = building.location;
+        }
+      }
+
       const customerBills = unpaidBills.filter(
         (bill) => bill.applicationId === applicationId,
       );
@@ -1155,10 +1402,7 @@ export const sendReminderToUnpaid = async (
         reminderMessage += `\n\nYou have ${customerBills.length} unpaid bill(s) totaling ₱${totalAmount.toLocaleString()}.`;
       }
 
-      // Get location for sender
-      const location = await getLocationFromEntity(application);
-
-      // Determine sender info for preview
+      // Determine sender info
       let senderInfo = "";
       if (useAdminSender) {
         senderInfo = "Sent from: Admin (admin@misterfyber.com)";
@@ -1187,14 +1431,18 @@ export const sendReminderToUnpaid = async (
             console.log(
               `📧 [DEV MODE] Would send reminder to: ${application.email}`,
             );
+            console.log(`   Location: ${location || "NONE"}`);
+            console.log(
+              `   Sender: ${useAdminSender ? "admin@misterfyber.com" : location ? getCollectionEmailByLocation(location) : "admin@misterfyber.com"}`,
+            );
             emailSent = true;
           } else {
             emailSent = await emailService.sendEmail(
               application.email,
               `⚠️ Payment Reminder - ${customerBills.length} Unpaid Bill(s)`,
               emailHtml,
-              true,
-              location,
+              true, // isCustomerEmail
+              location, // location
               {
                 useAdminSender: useAdminSender === true,
               },
@@ -1230,6 +1478,10 @@ export const sendReminderToUnpaid = async (
         sentByEmail: req.user?.email || "admin@misterfyber.com",
         adminCopySent: false,
         senderType: useAdminSender ? "admin" : "collection",
+        location: location || "unknown",
+        collectionEmail: location
+          ? getCollectionEmailByLocation(location)
+          : null,
       });
 
       await record.save();
@@ -1242,6 +1494,12 @@ export const sendReminderToUnpaid = async (
           name: `${application.firstName} ${application.lastName}`,
           billsCount: customerBills.length,
           totalAmount,
+          location: location || "unknown",
+          sender: useAdminSender
+            ? "admin@misterfyber.com"
+            : location
+              ? getCollectionEmailByLocation(location)
+              : "admin@misterfyber.com",
         });
         sentRecords.push(record);
       } else {
@@ -1320,6 +1578,8 @@ export const getSentRecords = async (
       billType: record.billType,
       error: record.error,
       senderType: (record as any).senderType || "collection",
+      location: (record as any).location || "unknown",
+      collectionEmail: (record as any).collectionEmail || null,
     }));
 
     res.status(200).json({

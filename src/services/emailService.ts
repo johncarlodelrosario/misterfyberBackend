@@ -91,61 +91,114 @@ export const getCollectionEmailByLocation = (location: string): string => {
 };
 
 /**
- * Get location from user, application, or building
+ * Get location from entity - FIXED: Look at building name properly
  */
 export const getLocationFromEntity = async (entity: any): Promise<string> => {
   try {
+    console.log(
+      "🔍 Getting location from entity:",
+      JSON.stringify(entity, null, 2),
+    );
+
     // Check if entity has location directly
     if (entity && entity.location) {
+      console.log(`📍 Entity has location directly: ${entity.location}`);
       return entity.location;
     }
 
-    // Check if entity has buildingId
-    if (entity && entity.buildingId) {
-      const building = await Building.findById(entity.buildingId);
-      if (building && building.location) {
-        return building.location;
-      }
-    }
-
-    // Check buildingName
+    // Check buildingName directly on entity
     if (entity && entity.buildingName) {
       const buildingName = entity.buildingName.toLowerCase().trim();
+      console.log(`🏢 Building name from entity: "${buildingName}"`);
       if (buildingName.includes("breeze")) {
+        console.log("✅ Location detected: BREEZE from buildingName");
         return "breeze";
       }
       if (buildingName.includes("sil") || buildingName.includes("silk")) {
+        console.log("✅ Location detected: SIL from buildingName");
         return "sil";
       }
     }
 
-    // Check if entity is an application with ID
-    if (entity && entity.applicationId) {
-      const application = await Application.findOne({
-        applicationId: entity.applicationId,
-      });
-      if (application) {
-        if (application.buildingId) {
-          const building = await Building.findById(application.buildingId);
-          if (building && building.location) {
-            return building.location;
-          }
+    // Check if entity has buildingId
+    if (entity && entity.buildingId) {
+      console.log(`🏢 Looking up building by ID: ${entity.buildingId}`);
+      const building = await Building.findById(entity.buildingId);
+      if (building) {
+        console.log(`🏢 Building found:`, building);
+        if (building.location) {
+          console.log(`📍 Building location: ${building.location}`);
+          return building.location;
         }
-        if (application.buildingName) {
-          const buildingName = application.buildingName.toLowerCase().trim();
+        // FIXED: Use buildingName instead of name
+        if (building.buildingName) {
+          const buildingName = building.buildingName.toLowerCase().trim();
+          console.log(`🏢 Building name: "${buildingName}"`);
           if (buildingName.includes("breeze")) {
+            console.log("✅ Location detected: BREEZE from building name");
             return "breeze";
           }
           if (buildingName.includes("sil") || buildingName.includes("silk")) {
+            console.log("✅ Location detected: SIL from building name");
             return "sil";
           }
         }
       }
     }
 
+    // Check if entity is an application with ID
+    if (entity && entity.applicationId) {
+      console.log(`📋 Looking up application by ID: ${entity.applicationId}`);
+      const application = await Application.findOne({
+        applicationId: entity.applicationId,
+      });
+      if (application) {
+        console.log(`📋 Application found:`, application);
+        if (application.buildingName) {
+          const buildingName = application.buildingName.toLowerCase().trim();
+          console.log(`🏢 Application building name: "${buildingName}"`);
+          if (buildingName.includes("breeze")) {
+            console.log(
+              "✅ Location detected: BREEZE from application buildingName",
+            );
+            return "breeze";
+          }
+          if (buildingName.includes("sil") || buildingName.includes("silk")) {
+            console.log(
+              "✅ Location detected: SIL from application buildingName",
+            );
+            return "sil";
+          }
+        }
+        if (application.buildingId) {
+          const building = await Building.findById(application.buildingId);
+          if (building) {
+            if (building.location) {
+              console.log(`📍 Building location: ${building.location}`);
+              return building.location;
+            }
+            // FIXED: Use buildingName instead of name
+            if (building.buildingName) {
+              const buildingName = building.buildingName.toLowerCase().trim();
+              if (buildingName.includes("breeze")) {
+                return "breeze";
+              }
+              if (
+                buildingName.includes("sil") ||
+                buildingName.includes("silk")
+              ) {
+                return "sil";
+              }
+            }
+          }
+        }
+      }
+    }
+
+    console.log("⚠️ No location found, returning empty string");
     return "";
   } catch (error) {
-    console.error("Error getting location from entity:", error);
+    console.error("❌ Error getting location from entity:", error);
     return "";
   }
 };
@@ -348,9 +401,16 @@ class EmailService {
       let collectionEmail = DEFAULT_COLLECTION_EMAIL;
       if (location) {
         collectionEmail = getCollectionEmailByLocation(location);
+        console.log(
+          `📍 Collection email for location "${location}": ${collectionEmail}`,
+        );
+      } else {
+        console.log(
+          `⚠️ No location provided, using default collection email: ${collectionEmail}`,
+        );
       }
 
-      // ========== DETERMINE SENDER BASED ON useAdminSender FLAG ==========
+      // ========== DETERMINE SENDER ==========
       let senderName = "Mister Fyber";
       let senderEmailAddress = senderEmail;
 
@@ -360,17 +420,17 @@ class EmailService {
         senderName = "Mister Fyber Admin";
         console.log(`📧 Using admin email as sender: ${senderEmailAddress}`);
       } else if (isCustomerEmail && location) {
-        // Otherwise use collection email
+        // Otherwise use collection email - THIS IS THE FIX!
         const collectionEmailForLocation =
           getCollectionEmailByLocation(location);
-        if (
-          collectionEmailForLocation &&
-          collectionEmailForLocation !== DEFAULT_COLLECTION_EMAIL
-        ) {
+        if (collectionEmailForLocation) {
           senderEmailAddress = collectionEmailForLocation;
           if (collectionEmailForLocation.includes("breeze")) {
             senderName = "Mister Fyber Breeze Collection";
-          } else if (collectionEmailForLocation.includes("sil")) {
+          } else if (
+            collectionEmailForLocation.includes("sil") ||
+            collectionEmailForLocation.includes("silk")
+          ) {
             senderName = "Mister Fyber SIL Collection";
           } else {
             senderName = "Mister Fyber Collection";
@@ -379,27 +439,30 @@ class EmailService {
             `📧 Using collection email as sender: ${senderEmailAddress} (${senderName})`,
           );
         }
+      } else {
+        console.log(`📧 Using default sender: ${senderEmailAddress}`);
       }
 
+      // Build BCC list - ALWAYS include collection email for customer emails
       let bccEmails: string[] = [];
       if (options?.bcc) {
         bccEmails = Array.isArray(options.bcc) ? options.bcc : [options.bcc];
       }
 
+      // Add collection email to BCC for customer emails
+      if (isCustomerEmail && collectionEmail) {
+        const collectionEmailToAdd = collectionEmail;
+        if (!bccEmails.includes(collectionEmailToAdd)) {
+          bccEmails.push(collectionEmailToAdd);
+          console.log(
+            `📧 Added collection email to BCC: ${collectionEmailToAdd}`,
+          );
+        }
+      }
+
       // Add admin email to BCC for customer emails
       if (isCustomerEmail && this.adminEmail) {
-        const allRecipients = [
-          ...validToArray,
-          ...(options?.cc
-            ? Array.isArray(options.cc)
-              ? options.cc
-              : [options.cc]
-            : []),
-        ];
-        if (
-          !allRecipients.includes(this.adminEmail) &&
-          !bccEmails.includes(this.adminEmail)
-        ) {
+        if (!bccEmails.includes(this.adminEmail)) {
           bccEmails.push(this.adminEmail);
           console.log(`📧 Added admin email to BCC: ${this.adminEmail}`);
         }
@@ -412,9 +475,7 @@ class EmailService {
       console.log(`   Sender: ${senderName} <${senderEmailAddress}>`);
       console.log(`   Location: ${location || "Not specified"}`);
       console.log(`   Collection Email: ${collectionEmail}`);
-      console.log(
-        `   Use Admin Sender: ${options?.useAdminSender ? "YES" : "NO"}`,
-      );
+      console.log(`   BCC: ${bccEmails.join(", ")}`);
 
       const requestBody: any = {
         sender: {
@@ -459,6 +520,9 @@ class EmailService {
       }
 
       console.log("📧 Request body prepared successfully");
+      console.log("📧 Sender:", requestBody.sender);
+      console.log("📧 To:", requestBody.to);
+      console.log("📧 BCC:", requestBody.bcc || "None");
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 30000);
@@ -484,6 +548,7 @@ class EmailService {
           );
           console.log(`   Message ID: ${data.messageId || "N/A"}`);
           console.log(`   Sender: ${senderName} <${senderEmailAddress}>`);
+          console.log(`   Collection Email (BCC): ${collectionEmail}`);
           return true;
         } else {
           const errorText = await response.text();
@@ -666,7 +731,10 @@ class EmailService {
           senderEmailAddress = collectionEmailForLocation;
           if (collectionEmailForLocation.includes("breeze")) {
             senderName = "Mister Fyber Breeze Collection";
-          } else if (collectionEmailForLocation.includes("sil")) {
+          } else if (
+            collectionEmailForLocation.includes("sil") ||
+            collectionEmailForLocation.includes("silk")
+          ) {
             senderName = "Mister Fyber SIL Collection";
           } else {
             senderName = "Mister Fyber Collection";
@@ -755,7 +823,7 @@ class EmailService {
 
       const collectionBCCNote = `
         <div style="background: #e7f3ff; padding: 10px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db;">
-          <strong>📧 Collection Email:</strong> ${collectionEmail}
+          <strong>📧 Collection Email (BCC):</strong> ${collectionEmail}
         </div>
       `;
 
@@ -989,7 +1057,10 @@ class EmailService {
         senderEmailAddress = collectionEmailForLocation;
         if (collectionEmailForLocation.includes("breeze")) {
           senderName = "Mister Fyber Breeze Collection";
-        } else if (collectionEmailForLocation.includes("sil")) {
+        } else if (
+          collectionEmailForLocation.includes("sil") ||
+          collectionEmailForLocation.includes("silk")
+        ) {
           senderName = "Mister Fyber SIL Collection";
         } else {
           senderName = "Mister Fyber Collection";
@@ -1037,7 +1108,7 @@ class EmailService {
     `;
   }
 
-  // ==================== SEND PAYMENT REMINDER WITH LOCATION ====================
+  // ==================== SEND PAYMENT REMINDER ====================
   async sendPaymentReminder(
     user: IUser | any,
     billing: any,
@@ -1074,7 +1145,10 @@ class EmailService {
           senderEmailAddress = collectionEmailForLocation;
           if (collectionEmailForLocation.includes("breeze")) {
             senderName = "Mister Fyber Breeze Collection";
-          } else if (collectionEmailForLocation.includes("sil")) {
+          } else if (
+            collectionEmailForLocation.includes("sil") ||
+            collectionEmailForLocation.includes("silk")
+          ) {
             senderName = "Mister Fyber SIL Collection";
           } else {
             senderName = "Mister Fyber Collection";
@@ -1164,7 +1238,7 @@ class EmailService {
     }
   }
 
-  // ==================== SEND DUE DATE REMINDER WITH LOCATION ====================
+  // ==================== SEND DUE DATE REMINDER ====================
   async sendDueDateReminder(
     user: IUser | any,
     billing: any,
@@ -1194,7 +1268,10 @@ class EmailService {
           senderEmailAddress = collectionEmailForLocation;
           if (collectionEmailForLocation.includes("breeze")) {
             senderName = "Mister Fyber Breeze Collection";
-          } else if (collectionEmailForLocation.includes("sil")) {
+          } else if (
+            collectionEmailForLocation.includes("sil") ||
+            collectionEmailForLocation.includes("silk")
+          ) {
             senderName = "Mister Fyber SIL Collection";
           } else {
             senderName = "Mister Fyber Collection";
@@ -1317,7 +1394,7 @@ class EmailService {
     }
   }
 
-  // ==================== SEND PAYMENT CONFIRMATION WITH LOCATION ====================
+  // ==================== SEND PAYMENT CONFIRMATION ====================
   async sendPaymentConfirmation(
     user: IUser | any,
     payment: any,
@@ -1348,7 +1425,10 @@ class EmailService {
           senderEmailAddress = collectionEmailForLocation;
           if (collectionEmailForLocation.includes("breeze")) {
             senderName = "Mister Fyber Breeze Collection";
-          } else if (collectionEmailForLocation.includes("sil")) {
+          } else if (
+            collectionEmailForLocation.includes("sil") ||
+            collectionEmailForLocation.includes("silk")
+          ) {
             senderName = "Mister Fyber SIL Collection";
           } else {
             senderName = "Mister Fyber Collection";
@@ -1472,7 +1552,10 @@ class EmailService {
           senderEmailAddress = collectionEmailForLocation;
           if (collectionEmailForLocation.includes("breeze")) {
             senderName = "Mister Fyber Breeze Collection";
-          } else if (collectionEmailForLocation.includes("sil")) {
+          } else if (
+            collectionEmailForLocation.includes("sil") ||
+            collectionEmailForLocation.includes("silk")
+          ) {
             senderName = "Mister Fyber SIL Collection";
           } else {
             senderName = "Mister Fyber Collection";
@@ -1626,7 +1709,10 @@ class EmailService {
           senderEmailAddress = collectionEmailForLocation;
           if (collectionEmailForLocation.includes("breeze")) {
             senderName = "Mister Fyber Breeze Collection";
-          } else if (collectionEmailForLocation.includes("sil")) {
+          } else if (
+            collectionEmailForLocation.includes("sil") ||
+            collectionEmailForLocation.includes("silk")
+          ) {
             senderName = "Mister Fyber SIL Collection";
           } else {
             senderName = "Mister Fyber Collection";
