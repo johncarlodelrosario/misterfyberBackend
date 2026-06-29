@@ -19,9 +19,11 @@ export interface IPayment extends Document {
   status: "pending" | "processing" | "completed" | "failed" | "refunded";
   transactionId: string;
   referenceNumber: string;
-  customerName: string; // NEW: Direct customer name storage
-  customerEmail: string; // NEW: Direct customer email storage
-  customerPhone: string; // NEW: Direct customer phone storage
+  customerName: string;
+  customerEmail: string;
+  customerPhone: string;
+  buildingId?: string;
+  buildingName?: string;
   paymentDetails: {
     gateway: string;
     gatewayResponse: any;
@@ -81,6 +83,8 @@ const PaymentSchema: Schema = new Schema(
     customerName: { type: String, required: false, default: "" },
     customerEmail: { type: String, required: false, default: "" },
     customerPhone: { type: String, required: false, default: "" },
+    buildingId: { type: String, required: false, default: "" },
+    buildingName: { type: String, required: false, default: "" },
     paymentDetails: {
       gateway: { type: String, default: "manual" },
       gatewayResponse: { type: Schema.Types.Mixed },
@@ -128,5 +132,6 @@ PaymentSchema.index({ paymentType: 1 });
 PaymentSchema.index({ billingId: 1 });
 PaymentSchema.index({ referenceNumber: 1 });
 PaymentSchema.index({ customerName: 1 });
+PaymentSchema.index({ buildingId: 1 });
 
 export default mongoose.model<IPayment>("Payment", PaymentSchema);
