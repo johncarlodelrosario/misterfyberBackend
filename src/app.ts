@@ -1,5 +1,4 @@
-// backend/src/app.ts
-
+// backend/src/app.ts - COMPLETE FIXED VERSION
 import express, { Application, Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import cors from "cors";
@@ -34,6 +33,7 @@ import {
 import { ensureIndexes } from "./models/Index";
 import BillingSettings from "./models/BillingSettings";
 
+// Load environment variables
 dotenv.config({ path: path.join(__dirname, "../.env") });
 
 console.log("🔍 Environment Variables Load Check:");
@@ -45,7 +45,7 @@ console.log(
   process.env.FRONTEND_URL || "http://localhost:3000",
 );
 
-// Allowed origins with localhost for testing
+// Allowed origins - includes all possible frontend URLs
 const allowedOrigins = [
   "http://localhost:3000",
   "http://localhost:3001",
@@ -59,6 +59,7 @@ const allowedOrigins = [
   "https://misterfyber.com",
   "https://misterfyber.vercel.app",
   "https://misterfyber-frontend.vercel.app",
+  "https://misterfyberbackend.onrender.com",
   process.env.FRONTEND_URL || "",
 ].filter(Boolean);
 
@@ -83,26 +84,35 @@ app.use(
   }),
 );
 
-// Enhanced CORS configuration
+// Enhanced CORS configuration - FIXED
 app.use(
   cors({
     origin: function (origin, callback) {
+      // Allow requests with no origin (like mobile apps or curl requests)
       if (!origin) return callback(null, true);
 
+      // Check if origin is in allowed list
       if (allowedOrigins.indexOf(origin) !== -1) {
-        callback(null, true);
-      } else {
-        if (
-          process.env.NODE_ENV === "development" &&
-          (origin.includes("localhost") || origin.includes("127.0.0.1"))
-        ) {
-          console.log("🟢 Development mode - allowing origin:", origin);
-          callback(null, true);
-        } else {
-          console.log("🔴 CORS blocked origin:", origin);
-          callback(new Error("Not allowed by CORS"));
-        }
+        return callback(null, true);
       }
+
+      // Allow localhost in any environment for testing
+      if (origin.includes("localhost") || origin.includes("127.0.0.1")) {
+        return callback(null, true);
+      }
+
+      // Allow Render domain
+      if (origin.includes("render.com")) {
+        return callback(null, true);
+      }
+
+      // Allow Vercel domains
+      if (origin.includes("vercel.app")) {
+        return callback(null, true);
+      }
+
+      console.log("🔴 CORS blocked origin:", origin);
+      callback(new Error("Not allowed by CORS"));
     },
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
@@ -121,17 +131,26 @@ app.use(
   }),
 );
 
+// Handle preflight requests - FIXED
 app.options("*", (req, res) => {
-  res.header("Access-Control-Allow-Origin", req.headers.origin || "*");
+  const origin = req.headers.origin;
+  if (origin && allowedOrigins.includes(origin)) {
+    res.header("Access-Control-Allow-Origin", origin);
+  } else if (origin) {
+    res.header("Access-Control-Allow-Origin", origin);
+  } else {
+    res.header("Access-Control-Allow-Origin", "*");
+  }
   res.header(
     "Access-Control-Allow-Methods",
     "GET, POST, PUT, DELETE, OPTIONS, PATCH",
   );
   res.header(
     "Access-Control-Allow-Headers",
-    "Content-Type, Authorization, Cookie",
+    "Content-Type, Authorization, Cookie, X-Requested-With",
   );
   res.header("Access-Control-Allow-Credentials", "true");
+  res.header("Access-Control-Max-Age", "86400");
   res.sendStatus(204);
 });
 
@@ -185,16 +204,25 @@ app.get("/", (req: Request, res: Response) => {
     version: "1.0.0",
     status: "running",
     environment: process.env.NODE_ENV,
+    timestamp: new Date().toISOString(),
   });
 });
 
 app.get("/health", (req: Request, res: Response) => {
+  const dbStatus = mongoose.connection.readyState;
+  const statusMap = {
+    0: "disconnected",
+    1: "connected",
+    2: "connecting",
+    3: "disconnecting",
+  };
   res.status(200).json({
     status: "OK",
-    timestamp: new Date(),
-    mongodb:
-      mongoose.connection.readyState === 1 ? "connected" : "disconnected",
+    timestamp: new Date().toISOString(),
+    mongodb: statusMap[dbStatus as keyof typeof statusMap] || "unknown",
     environment: process.env.NODE_ENV,
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
   });
 });
 
@@ -209,13 +237,18 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/applications", applicationRoutes);
 app.use("/api/buildings", buildingRoutes);
 app.use("/api/manual-email", manualEmailRoutes);
-app.use("/api/invoices", invoiceRoutes); // <-- Make sure this line exists
+app.use("/api/invoices", invoiceRoutes);
 
 // ==================== ERROR HANDLING ====================
+// 404 handler
 app.use((req: Request, res: Response) => {
-  res.status(404).json({ success: false, message: "Route not found" });
+  res.status(404).json({
+    success: false,
+    message: `Route not found: ${req.method} ${req.url}`,
+  });
 });
 
+// Global error handler
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   console.error("❌ Error:", err.stack);
   const status = (err as any).status || 500;
@@ -253,6 +286,7 @@ const initializeDatabase = async () => {
     console.log("✅ MongoDB connected successfully");
     await ensureIndexes();
 
+    // Initialize default billing settings if not exists
     const settings = await BillingSettings.findOne();
     if (!settings) {
       await BillingSettings.create({
@@ -285,6 +319,7 @@ const initializeDatabase = async () => {
 const initializeScheduledJobs = () => {
   console.log("🔄 Initializing scheduled billing jobs...");
 
+  // Run at 1 AM daily - generate bills
   cron.schedule("0 1 * * *", async () => {
     try {
       console.log("🔄 Running auto-generate monthly bills job...");
@@ -295,6 +330,7 @@ const initializeScheduledJobs = () => {
     }
   });
 
+  // Run at 9 AM daily - send reminders
   cron.schedule("0 9 * * *", async () => {
     try {
       console.log("🔄 Running auto-send reminders job...");
@@ -305,6 +341,7 @@ const initializeScheduledJobs = () => {
     }
   });
 
+  // Run at 2 AM daily - suspend overdue
   cron.schedule("0 2 * * *", async () => {
     try {
       console.log("🔄 Running auto-suspend overdue job...");
@@ -336,7 +373,7 @@ const start = async () => {
     console.log(`📧 Manual email routes available at: /api/manual-email`);
     console.log(`📄 Invoice routes available at: /api/invoices`);
     console.log(`📁 Uploads directory: ${uploadsPath}`);
-    console.log(`\n✅ All systems ready for localhost testing!\n`);
+    console.log(`\n✅ All systems ready!\n`);
   });
 };
 
