@@ -1120,7 +1120,7 @@ export const getPendingPayments = async (
   }
 };
 
-// @desc    Get all payments with pagination (Admin) - FIXED VERSION WITH BUILDING
+// @desc    Get all payments with pagination (Admin) - COMPLETE FIXED VERSION
 // @route   GET /api/payments/admin/all
 // @access  Private/Admin
 export const getAllPaymentsAdmin = async (
@@ -1143,15 +1143,6 @@ export const getAllPaymentsAdmin = async (
     }
     if (paymentType && paymentType !== "all" && paymentType !== "") {
       query.paymentType = paymentType;
-    }
-
-    // Filter by buildingId - if provided, we need to filter payments that have this building
-    if (buildingId && buildingId !== "all" && buildingId !== "") {
-      query.$or = [
-        { buildingId: buildingId },
-        // Also check if the building is in the application
-        { applicationId: { $exists: true } },
-      ];
     }
 
     // Search functionality
@@ -1246,14 +1237,18 @@ export const getAllPaymentsAdmin = async (
       ]),
     ]);
 
-    // Get ALL unique application IDs from payments
+    // ============================================================
+    // CRITICAL: Get building info for ALL payments
+    // ============================================================
+
+    // 1. Get all application IDs from payments
     const applicationIds = payments
       .filter((p) => p.applicationId)
       .map((p) => p.applicationId)
       .filter((value, index, self) => self.indexOf(value) === index);
 
-    // Fetch all applications in ONE query with building populated
-    let applicationMap = new Map();
+    // 2. Fetch all applications with building populated
+    const appMap = new Map();
     if (applicationIds.length > 0) {
       const applications = await Application.find({
         applicationId: { $in: applicationIds },
@@ -1262,102 +1257,146 @@ export const getAllPaymentsAdmin = async (
         .lean();
 
       applications.forEach((app) => {
-        applicationMap.set(app.applicationId, app);
+        const building = (app as any).buildingId as any;
+        appMap.set(app.applicationId, {
+          ...app,
+          buildingId: building?._id?.toString() || "",
+          buildingName: building?.buildingName || "",
+          buildingAddress: building?.streetAddress || building?.address || "",
+        });
       });
     }
 
-    // Helper function to enrich a single payment with application data
-    const enrichPaymentWithAppData = (payment: any) => {
+    // 3. Get building names from buildingId
+    const buildingIds = payments
+      .filter((p) => p.buildingId)
+      .map((p) => p.buildingId)
+      .filter((value, index, self) => self.indexOf(value) === index);
+
+    const buildingNameMap = new Map();
+    if (buildingIds.length > 0) {
+      const buildings = await Building.find({
+        _id: { $in: buildingIds },
+      }).lean();
+
+      buildings.forEach((b) => {
+        buildingNameMap.set(b._id.toString(), (b as any).buildingName || "");
+      });
+    }
+
+    // 4. Get building IDs from users
+    const userIds = payments
+      .filter((p) => p.userId && typeof p.userId === "object")
+      .map((p) => (p.userId as any)._id)
+      .filter((id) => id);
+
+    const userBuildingMap = new Map();
+    if (userIds.length > 0) {
+      const users = await User.find({
+        _id: { $in: userIds },
+      })
+        .select("_id buildingId buildingName")
+        .lean();
+
+      users.forEach((u) => {
+        userBuildingMap.set(u._id.toString(), {
+          buildingId: (u as any).buildingId || "",
+          buildingName: (u as any).buildingName || "",
+        });
+      });
+    }
+
+    // ============================================================
+    // ENRICH PAYMENTS WITH BUILDING DATA
+    // ============================================================
+    const enrichedPayments = payments.map((payment) => {
       const enriched: any = { ...payment };
 
-      // Initialize building fields
-      enriched.buildingId = payment.buildingId || "";
-      enriched.buildingName = payment.buildingName || "";
+      // Default building fields
+      let buildingId = payment.buildingId || "";
+      let buildingName = payment.buildingName || "";
 
-      // Get application data from map
-      if (payment.applicationId && applicationMap.has(payment.applicationId)) {
-        const app = applicationMap.get(payment.applicationId);
-        enriched.application = {
-          _id: app._id,
-          applicationId: app.applicationId,
-          firstName: app.firstName || "",
-          lastName: app.lastName || "",
-          email: app.email || "",
-          phoneNumber: app.phoneNumber || "",
-          status: app.status || "",
-          serviceStatus: (app as any).serviceStatus || "pending",
-          billingStarted: app.billingStarted || false,
-          installationFee: (app as any).installationFee || 0,
-          installationFeePaid: (app as any).installationFeePaid || false,
-          applicantName: `${app.firstName || ""} ${app.lastName || ""}`.trim(),
-          fullName: `${app.firstName || ""} ${app.lastName || ""}`.trim(),
-          buildingId: (app as any).buildingId?._id || (app as any).buildingId,
-          buildingName:
-            (app as any).buildingId?.buildingName ||
-            (app as any).buildingName ||
-            "",
-        };
-        // Set customer name fields if not already set
+      // 1. Get from application if available
+      if (payment.applicationId && appMap.has(payment.applicationId)) {
+        const app = appMap.get(payment.applicationId);
+        if (app.buildingName && !buildingName) {
+          buildingName = app.buildingName;
+        }
+        if (app.buildingId && !buildingId) {
+          buildingId = app.buildingId;
+        }
+        // Set customer info from application if not set
         if (!enriched.customerName || enriched.customerName === "") {
           enriched.customerName =
             `${app.firstName || ""} ${app.lastName || ""}`.trim();
           enriched.customerEmail = app.email || "";
           enriched.customerPhone = app.phoneNumber || "";
         }
-
-        // Get building info from application
-        if (app.buildingId) {
-          const building = app.buildingId as any;
-          enriched.buildingId = building._id;
-          enriched.buildingName = building.buildingName || "";
-        }
+        enriched.application = app;
       }
 
-      // If we have userId but no application data, try to get name from user
-      if (
-        !enriched.application &&
-        payment.userId &&
-        typeof payment.userId === "object"
-      ) {
+      // 2. Get from user if available
+      if (payment.userId && typeof payment.userId === "object") {
         const user = payment.userId as any;
-        enriched.user = {
-          _id: user._id,
-          firstName: user.firstName || "",
-          lastName: user.lastName || "",
-          email: user.email || "",
-          phoneNumber: user.phoneNumber || "",
-          username: user.username || "",
-          status: user.status || "",
-          buildingId: user.buildingId || "",
-          buildingName: user.buildingName || "",
-        };
-        if (!enriched.customerName || enriched.customerName === "") {
-          enriched.customerName =
-            `${user.firstName || ""} ${user.lastName || ""}`.trim();
-          enriched.customerEmail = user.email || "";
-          enriched.customerPhone = user.phoneNumber || "";
+        if (user.buildingName && !buildingName) {
+          buildingName = user.buildingName;
         }
-        // Get building info from user
-        if (user.buildingId && !enriched.buildingId) {
-          enriched.buildingId = user.buildingId;
-          enriched.buildingName = user.buildingName || "";
+        if (user.buildingId && !buildingId) {
+          buildingId = user.buildingId;
+        }
+
+        // Try to get from userBuildingMap if not found
+        if (
+          !buildingName &&
+          user._id &&
+          userBuildingMap.has(user._id.toString())
+        ) {
+          const userData = userBuildingMap.get(user._id.toString());
+          if (userData.buildingName) {
+            buildingName = userData.buildingName;
+          }
+          if (userData.buildingId && !buildingId) {
+            buildingId = userData.buildingId;
+          }
         }
       }
 
-      // If billingId has building info
+      // 3. Get from billing if available
       if (payment.billingId && typeof payment.billingId === "object") {
         const billing = payment.billingId as any;
-        if (billing.buildingId && !enriched.buildingId) {
-          enriched.buildingId = billing.buildingId;
-          enriched.buildingName = billing.buildingName || "";
+        if (billing.buildingName && !buildingName) {
+          buildingName = billing.buildingName;
+        }
+        if (billing.buildingId && !buildingId) {
+          buildingId = billing.buildingId;
         }
       }
 
-      // If still no name, use applicationId as last resort
-      if (!enriched.customerName || enriched.customerName === "") {
-        enriched.customerName = payment.applicationId || "Unknown Customer";
+      // 4. Get from buildingNameMap if we have buildingId
+      if (buildingId && buildingNameMap.has(buildingId) && !buildingName) {
+        buildingName = buildingNameMap.get(buildingId);
       }
 
+      // 5. If still no building name, try to get from appMap via applicationId
+      if (
+        !buildingName &&
+        payment.applicationId &&
+        appMap.has(payment.applicationId)
+      ) {
+        const app = appMap.get(payment.applicationId);
+        if (app.buildingId && buildingNameMap.has(app.buildingId)) {
+          buildingName = buildingNameMap.get(app.buildingId);
+          if (!buildingId) {
+            buildingId = app.buildingId;
+          }
+        }
+      }
+
+      // Set the building fields
+      enriched.buildingId = buildingId || "";
+      enriched.buildingName = buildingName || "—";
+
+      // Set isInstallationPayment flag
       enriched.isInstallationPayment =
         payment.paymentType === "installation" ||
         (payment.billingId &&
@@ -1365,20 +1404,15 @@ export const getAllPaymentsAdmin = async (
           (payment.billingId as any).isInstallationBill);
 
       return enriched;
-    };
+    });
 
-    // Enrich payments with application data (synchronous - no await needed)
-    const enrichedPayments = payments.map(enrichPaymentWithAppData);
-
-    // If buildingId filter is applied, filter the enriched payments
+    // Filter by buildingId if provided
     let filteredEnrichedPayments = enrichedPayments;
     if (buildingId && buildingId !== "all" && buildingId !== "") {
       filteredEnrichedPayments = enrichedPayments.filter(
         (p) =>
           p.buildingId === buildingId ||
-          p.buildingId?.toString() === buildingId ||
-          p.application?.buildingId === buildingId ||
-          p.application?.buildingId?.toString() === buildingId,
+          p.buildingId?.toString() === buildingId,
       );
     }
 
