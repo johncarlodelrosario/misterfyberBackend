@@ -1,4 +1,4 @@
-// backend/src/controllers/paymentController.ts
+// backend/src/controllers/paymentController.ts - COMPLETE FIXED VERSION
 
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
@@ -7,9 +7,17 @@ import User from "../models/User";
 import Application from "../models/Application";
 import Billing from "../models/Billing";
 import BillingCycle from "../models/BillingCycle";
-import emailService from "../services/emailService";
+import Invoice from "../models/Invoice";
+import Plan from "../models/Plan";
+import emailService, {
+  getLocationFromEntity,
+  getCollectionEmailByLocation,
+} from "../services/emailService";
 import mikrotikService from "../services/mikrotikService";
 import paymentService from "../services/paymentService";
+import { generateInvoicePDF } from "../services/pdfService";
+import fs from "fs";
+import path from "path";
 
 interface AuthRequest extends Request {
   user?: any;
@@ -37,10 +45,8 @@ async function getPopulatedPayment(paymentId: string) {
 
   if (!payment) return null;
 
-  // Create a plain object with application data for frontend
   const result: any = { ...payment };
 
-  // Manually fetch application data using string applicationId
   if (payment.applicationId) {
     const application = await Application.findOne({
       applicationId: payment.applicationId,
@@ -68,7 +74,6 @@ async function getPopulatedPayment(paymentId: string) {
       };
       result.applicationId = application.applicationId;
 
-      // Set customer name fields if not already set
       if (!result.customerName || result.customerName === "") {
         result.customerName =
           `${application.firstName || ""} ${application.lastName || ""}`.trim();
@@ -78,7 +83,6 @@ async function getPopulatedPayment(paymentId: string) {
     }
   }
 
-  // If userId is populated, also add user data
   if (payment.userId && typeof payment.userId === "object") {
     const user = payment.userId as any;
     result.user = {
@@ -91,7 +95,6 @@ async function getPopulatedPayment(paymentId: string) {
       status: user.status,
     };
 
-    // Set customer name fields if not already set
     if (!result.customerName || result.customerName === "") {
       result.customerName =
         `${user.firstName || ""} ${user.lastName || ""}`.trim();
@@ -101,54 +104,6 @@ async function getPopulatedPayment(paymentId: string) {
   }
 
   return result;
-}
-
-// Helper to extract customer info from various sources
-function extractCustomerInfo(
-  application: any,
-  user: any,
-  billing: any,
-  requestBody: any,
-): { name: string; email: string; phone: string } {
-  let name = "";
-  let email = "";
-  let phone = "";
-
-  // Try to get from application first
-  if (application) {
-    name =
-      `${application.firstName || ""} ${application.lastName || ""}`.trim();
-    email = application.email || "";
-    phone = application.phoneNumber || "";
-  }
-
-  // If no name from application, try user
-  if (!name && user) {
-    name = `${user.firstName || ""} ${user.lastName || ""}`.trim();
-    email = user.email || "";
-    phone = user.phoneNumber || "";
-  }
-
-  // If still no name, try request body
-  if (!name && requestBody) {
-    name = requestBody.customerName || requestBody.name || "";
-    email = requestBody.customerEmail || requestBody.email || "";
-    phone = requestBody.customerPhone || requestBody.phone || "";
-  }
-
-  // If still no name, try billing
-  if (!name && billing) {
-    name = billing.customerName || "";
-    email = billing.customerEmail || "";
-    phone = billing.customerPhone || "";
-  }
-
-  // If still no name, use application ID as fallback
-  if (!name && application?.applicationId) {
-    name = application.applicationId;
-  }
-
-  return { name, email, phone };
 }
 
 // @desc    Create payment (manual - pending status only)
@@ -173,7 +128,6 @@ export const createPayment = async (
     } = req.body;
     const userId = req.user._id;
 
-    // Validate required fields
     if (!amount) {
       return res.status(400).json({ message: "Amount is required" });
     }
@@ -186,14 +140,11 @@ export const createPayment = async (
       return res.status(404).json({ message: "Billing record not found" });
     }
 
-    // Extract customer info - PRIORITIZE from billing's application
     let customerNameFinal = customerName || "";
     let customerEmailFinal = customerEmail || "";
     let customerPhoneFinal = customerPhone || "";
 
-    // CRITICAL FIX: Get from application if billing has it
     if (billing.applicationId) {
-      // Check if it's a populated object or just an ID
       if (
         typeof billing.applicationId === "object" &&
         billing.applicationId !== null
@@ -203,11 +154,7 @@ export const createPayment = async (
           `${app.firstName || ""} ${app.lastName || ""}`.trim();
         customerEmailFinal = app.email || "";
         customerPhoneFinal = app.phoneNumber || "";
-        console.log(
-          `✅ Got customer from populated application: ${customerNameFinal}`,
-        );
       } else {
-        // It's just an ID, fetch the application
         const app = await Application.findOne({
           applicationId: billing.applicationId,
         }).lean();
@@ -216,14 +163,10 @@ export const createPayment = async (
             `${app.firstName || ""} ${app.lastName || ""}`.trim();
           customerEmailFinal = app.email || "";
           customerPhoneFinal = app.phoneNumber || "";
-          console.log(
-            `✅ Got customer from fetched application: ${customerNameFinal}`,
-          );
         }
       }
     }
 
-    // If still no name, try to get from user
     if (!customerNameFinal && userId) {
       const user = await User.findById(userId);
       if (user) {
@@ -231,20 +174,15 @@ export const createPayment = async (
           `${user.firstName || ""} ${user.lastName || ""}`.trim();
         customerEmailFinal = user.email || "";
         customerPhoneFinal = user.phoneNumber || "";
-        console.log(`✅ Got customer from user: ${customerNameFinal}`);
       }
     }
 
-    // If still no name, use application ID
     if (!customerNameFinal && billing.applicationId) {
       customerNameFinal = billing.applicationId.toString();
-      console.log(`⚠️ Using application ID as name: ${customerNameFinal}`);
     }
 
-    // If still no name, use "Unknown Customer"
     if (!customerNameFinal) {
       customerNameFinal = "Unknown Customer";
-      console.log(`⚠️ No name found, using "Unknown Customer"`);
     }
 
     const paymentData: any = {
@@ -271,15 +209,11 @@ export const createPayment = async (
       },
     };
 
-    // If billing has applicationId (string), use it
     if (billing.applicationId) {
       paymentData.applicationId = billing.applicationId;
     }
 
     const payment = await Payment.create(paymentData);
-    console.log(
-      `✅ Payment created with customer name: ${payment.customerName}`,
-    );
 
     res.status(201).json({
       success: true,
@@ -307,7 +241,6 @@ export const getPayments = async (
       .populate("billingId")
       .lean();
 
-    // Manually fetch application data for each payment
     const enrichedPayments = await Promise.all(
       payments.map(async (payment) => {
         const enriched: any = { ...payment };
@@ -419,7 +352,6 @@ export const payMongoWebhook = async (
     res.status(200).json({ received: true });
   } catch (error) {
     console.error("PayMongo webhook error:", error);
-    // Always return 200 to acknowledge receipt
     res.status(200).json({ received: true, error: "Processing error" });
   }
 };
@@ -488,7 +420,6 @@ export const getPaymentStats = async (
       },
     ]);
 
-    // Get subscription revenue
     const subscriptionRevenue = await Payment.aggregate([
       {
         $match: {
@@ -505,7 +436,6 @@ export const getPaymentStats = async (
       },
     ]);
 
-    // Get installation fee revenue
     const installationFeeRevenue = await Payment.aggregate([
       {
         $match: {
@@ -522,7 +452,6 @@ export const getPaymentStats = async (
       },
     ]);
 
-    // Get this month's revenue
     const thisMonthRevenue = await Payment.aggregate([
       {
         $match: {
@@ -541,7 +470,6 @@ export const getPaymentStats = async (
       },
     ]);
 
-    // Get pending payments total
     const pendingPayments = await Payment.aggregate([
       {
         $match: { status: "pending" },
@@ -600,9 +528,7 @@ export const refundPayment = async (
   }
 };
 
-// @desc    Confirm payment (Admin only) - MANUAL APPROVAL
-// @route   PUT /api/payments/:id/confirm
-// @access  Private/Admin
+// ==================== CONFIRM PAYMENT (ADMIN ONLY) - WITH PDF ATTACHMENT ====================
 export const confirmPayment = async (
   req: AuthRequest,
   res: Response,
@@ -621,7 +547,6 @@ export const confirmPayment = async (
       return res.status(400).json({ message: "Invalid payment ID" });
     }
 
-    // Get payment with populated data
     const payment = await Payment.findById(id)
       .populate("userId")
       .populate("billingId")
@@ -637,16 +562,15 @@ export const confirmPayment = async (
       return res.status(400).json({ message: "Payment already confirmed" });
     }
 
-    // Update payment type if specified
     if (paymentType) {
       payment.paymentType = paymentType;
     }
 
-    // Get readable application ID and customer info
     let readableApplicationId = "";
     let customerEmail = "";
     let customerName = "";
     let customer: any = null;
+    let location = "";
 
     if (payment.applicationId) {
       const application = await Application.findOne({
@@ -658,7 +582,11 @@ export const confirmPayment = async (
         customerEmail = application.email;
         customerName =
           `${application.firstName || ""} ${application.lastName || ""}`.trim();
-        // Update payment with customer info if not set
+        try {
+          location = await getLocationFromEntity(application);
+        } catch (error) {
+          console.error("Error getting location:", error);
+        }
         if (!payment.customerName || payment.customerName === "") {
           payment.customerName = customerName;
           payment.customerEmail = customerEmail;
@@ -670,6 +598,11 @@ export const confirmPayment = async (
       customerEmail = customer.email;
       customerName =
         `${customer.firstName || ""} ${customer.lastName || ""}`.trim();
+      try {
+        location = await getLocationFromEntity(customer);
+      } catch (error) {
+        console.error("Error getting location:", error);
+      }
       if (!payment.customerName || payment.customerName === "") {
         payment.customerName = customerName;
         payment.customerEmail = customerEmail;
@@ -696,7 +629,7 @@ export const confirmPayment = async (
     };
     await payment.save({ session });
 
-    // Update billing record
+    // Update billing
     const billing = await Billing.findById(payment.billingId).session(session);
     if (billing) {
       billing.status = "paid";
@@ -708,7 +641,6 @@ export const confirmPayment = async (
       }
       await billing.save({ session });
 
-      // Update billing cycle
       const billingCycle = await BillingCycle.findById(
         billing.billingCycleId,
       ).session(session);
@@ -728,7 +660,6 @@ export const confirmPayment = async (
           }
         }
 
-        // Mark installation fee as paid in billing cycle
         if (
           billing.isInstallationBill ||
           (billing.installationFee && billing.installationFee > 0)
@@ -740,7 +671,7 @@ export const confirmPayment = async (
       }
     }
 
-    // Update customer status
+    // Update user
     if (payment.userId) {
       const user = await User.findById(payment.userId).session(session);
       if (user) {
@@ -766,7 +697,6 @@ export const confirmPayment = async (
       if (app) {
         app.billingStarted = true;
         app.serviceStatus = "active";
-        // If this payment is for installation fee, mark it as paid
         if (
           payment.paymentType === "installation" ||
           (billing && billing.isInstallationBill)
@@ -779,40 +709,269 @@ export const confirmPayment = async (
 
     await session.commitTransaction();
 
-    // Send confirmation email
-    if (customerEmail && billing) {
-      const isInstallationPayment =
-        billing.isInstallationBill || payment.paymentType === "installation";
+    // ============================================================
+    // SEND PAYMENT CONFIRMATION WITH INVOICE PDF ATTACHMENT
+    // ============================================================
+    if (customerEmail) {
+      try {
+        console.log(`========================================`);
+        console.log(`📧 SENDING PAYMENT CONFIRMATION WITH PDF`);
+        console.log(`   To: ${customerEmail}`);
+        console.log(`   Payment ID: ${payment._id}`);
+        console.log(`   Amount: ₱${payment.amount}`);
+        console.log(`   Location: ${location || "NONE"}`);
+        console.log(`========================================`);
 
-      let emailBody = `<div style="font-family: Arial, sans-serif; max-width: 600px;">
-          <h2 style="color: #28a745;">✅ Payment Confirmed!</h2>
-          <p>Dear ${customerName || "Customer"},</p>
-          <p>Your payment of <strong>₱${payment.amount.toLocaleString()}</strong> has been confirmed.</p>
-          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px;">
-            <p><strong>Invoice:</strong> ${billing.invoiceNumber}</p>
-            ${readableApplicationId ? `<p><strong>Application ID:</strong> ${readableApplicationId}</p>` : ""}
-            <p><strong>Amount:</strong> ₱${payment.amount.toLocaleString()}</p>
-            <p><strong>Reference:</strong> ${payment.referenceNumber}</p>`;
+        // STEP 1: Find or create invoice
+        let invoice = await Invoice.findOne({
+          billingId: billing?._id,
+          applicationId: payment.applicationId,
+        }).lean();
 
-      if (isInstallationPayment) {
-        emailBody += `<p><strong>Payment Type:</strong> Installation Fee</p>`;
-        emailBody += `<p><strong>Installation Fee:</strong> ₱${(billing.installationFee || payment.amount).toLocaleString()} (Paid)</p>`;
-        emailBody += `<p><strong>Next Step:</strong> Your installation will be scheduled within 24-48 hours.</p>`;
+        console.log(
+          `📄 Invoice found: ${invoice ? "YES (" + invoice.invoiceNumber + ")" : "NO"}`,
+        );
+
+        // STEP 2: If no invoice exists, create one from billing data
+        if (!invoice && billing) {
+          console.log(`📄 Creating new invoice for payment ${payment._id}`);
+
+          // Get application and plan for invoice
+          const app = await Application.findOne({
+            applicationId: payment.applicationId,
+          }).lean();
+
+          let plan = null;
+          if (app?.planId) {
+            plan = await Plan.findById(app.planId).lean();
+          }
+
+          // Generate invoice number
+          const date = new Date();
+          const year = date.getFullYear();
+          const month = (date.getMonth() + 1).toString().padStart(2, "0");
+          const day = date.getDate().toString().padStart(2, "0");
+          const timestamp = Date.now().toString().slice(-6);
+          const random = Math.floor(Math.random() * 1000)
+            .toString()
+            .padStart(3, "0");
+          const invoiceNumberGen = `INV-${year}${month}${day}-${timestamp}${random}`;
+
+          // Build items from billing
+          const invoiceItems: any[] = [];
+          let subtotal = 0;
+
+          if (billing.items && billing.items.length > 0) {
+            for (const item of billing.items) {
+              invoiceItems.push({
+                description: item.description,
+                quantity: item.quantity || 1,
+                rate: item.rate,
+                amount: item.amount,
+                type: (item as any).type || "subscription",
+              });
+              subtotal += item.amount;
+            }
+          } else {
+            // Create default items
+            const monthlyRate = (plan as any)?.price || 0;
+
+            // Pro-rated
+            if (billing.isProRated) {
+              const proRatedDays = billing.proRatedDays || 0;
+              const dailyRate = (monthlyRate * 12) / 365;
+              const proRatedAmount =
+                Math.round(dailyRate * proRatedDays * 100) / 100;
+              invoiceItems.push({
+                description: `Pro-rated (${billing.billingPeriod?.start ? new Date(billing.billingPeriod.start).toLocaleDateString() : "N/A"} - ${billing.billingPeriod?.end ? new Date(billing.billingPeriod.end).toLocaleDateString() : "N/A"})`,
+                quantity: proRatedDays,
+                rate: dailyRate,
+                amount: proRatedAmount,
+                type: "pro-rated",
+              });
+              subtotal += proRatedAmount;
+            }
+
+            // Installation fee
+            const installationFeeAmount = billing.installationFee || 0;
+            if (installationFeeAmount > 0) {
+              invoiceItems.push({
+                description: "Installation Fee (One-time)",
+                quantity: 1,
+                rate: installationFeeAmount,
+                amount: installationFeeAmount,
+                type: "installation",
+              });
+              subtotal += installationFeeAmount;
+            }
+
+            // Monthly subscription
+            if (!billing.isProRated) {
+              invoiceItems.push({
+                description: `Monthly Subscription - ${billing.billingPeriod?.start ? new Date(billing.billingPeriod.start).toLocaleDateString() : "N/A"} to ${billing.billingPeriod?.end ? new Date(billing.billingPeriod.end).toLocaleDateString() : "N/A"}`,
+                quantity: 1,
+                rate: monthlyRate,
+                amount: monthlyRate,
+                type: "subscription",
+              });
+              subtotal += monthlyRate;
+            }
+          }
+
+          // Determine invoice type
+          let invoiceTypeFinal = "monthly";
+          const isInstallationFee =
+            billing.isInstallationBill || billing.installationFee > 0;
+          const isProRated = billing.isProRated || false;
+
+          if (isInstallationFee && isProRated) {
+            invoiceTypeFinal = "combined";
+          } else if (isInstallationFee) {
+            invoiceTypeFinal = "installation";
+          } else if (isProRated) {
+            invoiceTypeFinal = "pro-rated";
+          }
+
+          const total = subtotal;
+          const customerAddress =
+            (app as any)?.buildingName || (app as any)?.address || "N/A";
+          const planName = (plan as any)?.name || "N/A";
+          const collectionEmail = getCollectionEmailByLocation(location);
+
+          // Create invoice
+          const invoiceData = {
+            invoiceNumber: invoiceNumberGen,
+            invoiceType: invoiceTypeFinal,
+            applicationId: payment.applicationId,
+            userId: payment.userId,
+            customerName: payment.customerName || customerName,
+            customerAddress: customerAddress,
+            customerEmail: customerEmail,
+            customerPhone: payment.customerPhone || "",
+            companyName: "Fyberblizz Network Corporation",
+            companyAddress:
+              "UNIT 6 BLDG 2 G/F EL PUEBLO CONDO, ANONAS ST., STA. MESA, MANILA",
+            companyVat: "697-461-165-00000",
+            companyContact: "0969-341-4876",
+            companyEmail: collectionEmail || "admin@misterfyber.com",
+            billingPeriod: {
+              start: billing.billingPeriod?.start || new Date(),
+              end: billing.billingPeriod?.end || new Date(),
+            },
+            dueDate: billing.dueDate || new Date(),
+            issuedDate: new Date(),
+            items: invoiceItems,
+            subtotal: subtotal,
+            taxRate: 0,
+            taxAmount: 0,
+            discountAmount: 0,
+            total: total,
+            bankName: "BDO",
+            accountName: "FYBERBLIZZ NETWORK CORPORATION",
+            accountNumber: "013448002421",
+            status: "paid",
+            billingId: billing._id,
+            billingCycleId: billing.billingCycleId,
+            isInstallationFee: isInstallationFee,
+            isProRated: isProRated,
+            proRatedDays: billing.proRatedDays || 0,
+            planName: planName,
+            notes: billing.notes || "",
+            termsAndConditions:
+              "Please be advised that failure to settle your account on or before the due date may result in temporary service interruption.",
+            location: location || "",
+            collectionEmail: collectionEmail || "admin@misterfyber.com",
+            paidAt: new Date(),
+            paymentId: payment._id,
+          };
+
+          invoice = await Invoice.create(invoiceData);
+          invoice = invoice.toObject();
+          console.log(`✅ Invoice created: ${invoice.invoiceNumber}`);
+        }
+
+        // STEP 3: If we have an invoice, generate PDF and send email
+        if (invoice) {
+          console.log(`📄 Using invoice: ${invoice.invoiceNumber}`);
+
+          // Generate PDF for the invoice
+          let pdfBuffer: Buffer;
+          let pdfFileName = `${invoice.invoiceNumber}.pdf`;
+
+          // Check if PDF already exists
+          if (invoice.pdfUrl) {
+            const filePath = path.join(__dirname, "../..", invoice.pdfUrl);
+            if (fs.existsSync(filePath)) {
+              pdfBuffer = fs.readFileSync(filePath);
+              console.log(`📄 Using existing PDF: ${invoice.pdfUrl}`);
+            } else {
+              console.log(
+                `📄 PDF not found at ${filePath}, generating new one`,
+              );
+              pdfBuffer = await generateInvoicePDF(invoice);
+              const pdfDir = path.join(__dirname, "../../uploads/invoices");
+              if (!fs.existsSync(pdfDir)) {
+                fs.mkdirSync(pdfDir, { recursive: true });
+              }
+              const pdfPath = path.join(pdfDir, pdfFileName);
+              fs.writeFileSync(pdfPath, pdfBuffer);
+              await Invoice.findByIdAndUpdate(invoice._id, {
+                pdfUrl: `/uploads/invoices/${pdfFileName}`,
+                pdfGeneratedAt: new Date(),
+              });
+            }
+          } else {
+            console.log(
+              `📄 Generating new PDF for invoice: ${invoice.invoiceNumber}`,
+            );
+            pdfBuffer = await generateInvoicePDF(invoice);
+            const pdfDir = path.join(__dirname, "../../uploads/invoices");
+            if (!fs.existsSync(pdfDir)) {
+              fs.mkdirSync(pdfDir, { recursive: true });
+            }
+            const pdfPath = path.join(pdfDir, pdfFileName);
+            fs.writeFileSync(pdfPath, pdfBuffer);
+            await Invoice.findByIdAndUpdate(invoice._id, {
+              pdfUrl: `/uploads/invoices/${pdfFileName}`,
+              pdfGeneratedAt: new Date(),
+            });
+          }
+
+          // STEP 4: Send payment confirmation with PDF attachment
+          console.log(`📧 Sending email with PDF attachment: ${pdfFileName}`);
+          console.log(`📧 PDF size: ${pdfBuffer.length} bytes`);
+
+          // ================================================================
+          // Use sendPaidInvoiceEmail for PDF attachment
+          // ================================================================
+          const emailSent = await emailService.sendPaidInvoiceEmail(
+            invoice,
+            pdfBuffer,
+            pdfFileName,
+            payment,
+            location,
+            false, // useAdminSender
+          );
+
+          if (emailSent) {
+            console.log(
+              `✅ Payment confirmation email sent to ${customerEmail} with invoice PDF attachment (${pdfFileName})`,
+            );
+          } else {
+            console.warn(
+              `⚠️ Failed to send payment confirmation email to ${customerEmail}`,
+            );
+          }
+        } else {
+          console.error(
+            `❌ No invoice found or created for payment ${payment._id}`,
+          );
+        }
+      } catch (emailError) {
+        console.error("Error sending payment confirmation email:", emailError);
       }
-
-      emailBody += `</div><p>Thank you for your payment!</p>
-          <hr>
-          <p style="color: #666; font-size: 12px;">Mister Fyber - Your trusted internet provider</p>
-        </div>`;
-
-      await emailService.sendEmail(
-        customerEmail,
-        `Payment Confirmed - ${billing.invoiceNumber}`,
-        emailBody,
-      );
     }
 
-    // Get populated payment for response
     const populatedPayment = await getPopulatedPayment(payment._id.toString());
 
     res.status(200).json({
@@ -849,13 +1008,11 @@ export const getPendingPayments = async (
       .sort({ createdAt: -1 })
       .lean();
 
-    // Get all unique application IDs
     const applicationIds = payments
       .filter((p) => p.applicationId)
       .map((p) => p.applicationId)
       .filter((value, index, self) => self.indexOf(value) === index);
 
-    // Fetch all applications in ONE query
     const applications = await Application.find({
       applicationId: { $in: applicationIds },
     }).lean();
@@ -865,7 +1022,6 @@ export const getPendingPayments = async (
       applicationMap.set(app.applicationId, app);
     });
 
-    // Enrich payments with application data
     const enrichedPayments = payments.map((payment) => {
       const enriched: any = { ...payment };
 
@@ -887,7 +1043,6 @@ export const getPendingPayments = async (
         };
         enriched.applicationId = app.applicationId;
 
-        // Set customer name if not already set
         if (!enriched.customerName || enriched.customerName === "") {
           enriched.customerName =
             `${app.firstName || ""} ${app.lastName || ""}`.trim();
@@ -941,7 +1096,7 @@ export const getPendingPayments = async (
   }
 };
 
-// @desc    Get all payments with pagination (Admin) - FIXED VERSION
+// @desc    Get all payments with pagination (Admin)
 // @route   GET /api/payments/admin/all
 // @access  Private/Admin
 export const getAllPaymentsAdmin = async (
@@ -965,7 +1120,6 @@ export const getAllPaymentsAdmin = async (
       query.paymentType = paymentType;
     }
 
-    // Search functionality
     if (search) {
       query.$or = [
         { referenceNumber: { $regex: search, $options: "i" } },
@@ -992,7 +1146,6 @@ export const getAllPaymentsAdmin = async (
       Payment.countDocuments(query),
     ]);
 
-    // Calculate stats
     const [
       totalStats,
       monthlyStats,
@@ -1057,13 +1210,11 @@ export const getAllPaymentsAdmin = async (
       ]),
     ]);
 
-    // Get ALL unique application IDs from payments
     const applicationIds = payments
       .filter((p) => p.applicationId)
       .map((p) => p.applicationId)
       .filter((value, index, self) => self.indexOf(value) === index);
 
-    // Fetch all applications in ONE query
     let applicationMap = new Map();
     if (applicationIds.length > 0) {
       const applications = await Application.find({
@@ -1075,11 +1226,9 @@ export const getAllPaymentsAdmin = async (
       });
     }
 
-    // Helper function to enrich a single payment with application data
     const enrichPaymentWithAppData = (payment: any) => {
       const enriched: any = { ...payment };
 
-      // Get application data from map
       if (payment.applicationId && applicationMap.has(payment.applicationId)) {
         const app = applicationMap.get(payment.applicationId);
         enriched.application = {
@@ -1097,7 +1246,6 @@ export const getAllPaymentsAdmin = async (
           applicantName: `${app.firstName || ""} ${app.lastName || ""}`.trim(),
           fullName: `${app.firstName || ""} ${app.lastName || ""}`.trim(),
         };
-        // Set customer name fields if not already set
         if (!enriched.customerName || enriched.customerName === "") {
           enriched.customerName =
             `${app.firstName || ""} ${app.lastName || ""}`.trim();
@@ -1106,7 +1254,6 @@ export const getAllPaymentsAdmin = async (
         }
       }
 
-      // If we have userId but no application data, try to get name from user
       if (
         !enriched.application &&
         payment.userId &&
@@ -1130,7 +1277,6 @@ export const getAllPaymentsAdmin = async (
         }
       }
 
-      // If still no name, use applicationId as last resort
       if (!enriched.customerName || enriched.customerName === "") {
         enriched.customerName = payment.applicationId || "Unknown Customer";
       }
@@ -1144,7 +1290,6 @@ export const getAllPaymentsAdmin = async (
       return enriched;
     };
 
-    // Enrich payments with application data (synchronous - no await needed)
     const enrichedPayments = payments.map(enrichPaymentWithAppData);
 
     res.status(200).json({
@@ -1208,31 +1353,38 @@ export const rejectPayment = async (
       return res.status(400).json({ message: "Payment already rejected" });
     }
 
-    // Fetch customer data
-    let customer = null;
     let customerEmail = "";
     let customerName = payment.customerName || "";
+    let location = "";
 
     if (payment.applicationId) {
       const application = await Application.findOne({
         applicationId: payment.applicationId,
       }).lean();
       if (application) {
-        customer = application;
         customerEmail = application.email;
         if (!customerName || customerName === "") {
           customerName =
             `${application.firstName || ""} ${application.lastName || ""}`.trim();
         }
+        try {
+          location = await getLocationFromEntity(application);
+        } catch (error) {
+          console.error("Error getting location:", error);
+        }
       }
     } else if (payment.userId) {
       const user = await User.findById(payment.userId).lean();
       if (user) {
-        customer = user;
         customerEmail = user.email;
         if (!customerName || customerName === "") {
           customerName =
             `${user.firstName || ""} ${user.lastName || ""}`.trim();
+        }
+        try {
+          location = await getLocationFromEntity(user);
+        } catch (error) {
+          console.error("Error getting location:", error);
         }
       }
     }
@@ -1252,37 +1404,43 @@ export const rejectPayment = async (
 
     const updatedPayment = await Payment.findById(id).lean();
 
+    // Send rejection email
     if (customerEmail) {
-      const isInstallationPayment =
-        payment.paymentType === "installation" ||
-        (payment.billingId &&
-          typeof payment.billingId === "object" &&
-          (payment.billingId as any).isInstallationBill);
+      try {
+        const isInstallationPayment =
+          payment.paymentType === "installation" ||
+          (payment.billingId &&
+            typeof payment.billingId === "object" &&
+            (payment.billingId as any).isInstallationBill);
 
-      let emailBody = `<div style="font-family: Arial, sans-serif; max-width: 600px;">
-          <h2 style="color: #dc3545;">❌ Payment Verification Failed</h2>
-          <p>Dear ${customerName || "Customer"},</p>
-          <p>Your payment of <strong>₱${payment.amount.toLocaleString()}</strong> could not be verified.</p>
-          <p><strong>Reason:</strong> ${reason || "Please contact support for more information"}</p>`;
-
-      if (isInstallationPayment) {
-        emailBody += `<p><strong>Note:</strong> This payment was for an installation fee of ₱${payment.amount.toLocaleString()}.</p>`;
-        emailBody += `<p>Please submit your installation fee payment again to proceed with your installation.</p>`;
-      } else {
-        emailBody += `<p>Please submit your payment again or contact our support team.</p>`;
-      }
-
-      emailBody += `<hr>
-          <p style="color: #666; font-size: 12px;">Mister Fyber - Your trusted internet provider</p>
-        </div>`;
-
-      await emailService.sendEmail(
-        customerEmail,
-        isInstallationPayment
+        const subject = isInstallationPayment
           ? "Installation Fee Payment Failed - Mister Fyber"
-          : "Payment Verification Failed - Mister Fyber",
-        emailBody,
-      );
+          : "Payment Verification Failed - Mister Fyber";
+
+        const message = `
+          Dear ${customerName || "Customer"},
+          
+          Your payment of ₱${payment.amount.toLocaleString()} could not be verified.
+          
+          Reason: ${reason || "Please contact support for more information"}
+          
+          ${isInstallationPayment ? "Please submit your installation fee payment again to proceed with your installation." : "Please submit your payment again or contact our support team."}
+          
+          Mister Fyber - Your trusted internet provider
+        `;
+
+        await emailService.sendEmail(
+          customerEmail,
+          subject,
+          message,
+          true,
+          location,
+        );
+
+        console.log(`✅ Rejection email sent to ${customerEmail}`);
+      } catch (emailError) {
+        console.error("Error sending rejection email:", emailError);
+      }
     }
 
     const responsePayment = {
@@ -1319,7 +1477,6 @@ export const getInstallationPaymentSummary = async (
   next: NextFunction,
 ) => {
   try {
-    // Get all installation payments
     const installationPayments = await Payment.find({
       paymentType: "installation",
       status: "completed",
@@ -1398,7 +1555,6 @@ export const deletePayment = async (
       return res.status(404).json({ message: "Payment not found" });
     }
 
-    // Store payment data for response before deletion
     const paymentData = {
       _id: payment._id,
       amount: payment.amount,
@@ -1410,7 +1566,6 @@ export const deletePayment = async (
       createdAt: payment.createdAt,
     };
 
-    // Delete the payment
     await Payment.findByIdAndDelete(id);
 
     res.status(200).json({

@@ -27,7 +27,6 @@ import invoiceRoutes from "./routes/invoiceRoutes";
 
 import {
   autoGenerateMonthlyBills,
-  autoSendReminders,
   autoSuspendOverdue,
 } from "./controllers/billingController";
 import { ensureIndexes } from "./models/Index";
@@ -327,17 +326,6 @@ const initializeScheduledJobs = () => {
       console.log("✅ Auto-generate monthly bills completed");
     } catch (error) {
       console.error("❌ Auto-generate monthly bills failed:", error);
-    }
-  });
-
-  // Run at 9 AM daily - send reminders
-  cron.schedule("0 9 * * *", async () => {
-    try {
-      console.log("🔄 Running auto-send reminders job...");
-      await autoSendReminders();
-      console.log("✅ Auto-send reminders completed");
-    } catch (error) {
-      console.error("❌ Auto-send reminders failed:", error);
     }
   });
 

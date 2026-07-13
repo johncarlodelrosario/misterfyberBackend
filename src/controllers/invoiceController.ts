@@ -171,16 +171,16 @@ export const createInvoiceFromBilling = async (
       }
 
       // Installation fee
-      const installationFee = billing?.installationFee || 0;
-      if (installationFee > 0) {
+      const installationFeeAmount = billing?.installationFee || 0;
+      if (installationFeeAmount > 0) {
         invoiceItems.push({
           description: "Installation Fee (One-time)",
           quantity: 1,
-          rate: installationFee,
-          amount: installationFee,
+          rate: installationFeeAmount,
+          amount: installationFeeAmount,
           type: "installation",
         });
-        subtotal += installationFee;
+        subtotal += installationFeeAmount;
         isInstallationFee = true;
       }
 
@@ -285,7 +285,7 @@ export const createInvoiceFromBilling = async (
         status: "sent",
       });
 
-      // Send email with PDF
+      // Send email with PDF using emailService
       await emailService.sendInvoiceWithPDF(
         invoice,
         pdfBuffer,
@@ -624,8 +624,6 @@ export const markInvoiceAsPaid = async (
         userLocation = await getLocationFromEntity(application);
       }
 
-      const emailCollectionEmail = getCollectionEmailByLocation(userLocation);
-
       // Generate PDF for the paid invoice
       let pdfBuffer: Buffer;
       let pdfFileName = `${invoice.invoiceNumber}.pdf`;
@@ -661,191 +659,26 @@ export const markInvoiceAsPaid = async (
         });
       }
 
-      // Create customer object for email
-      const customer = {
-        firstName: invoice.customerName?.split(" ")[0] || "Customer",
-        lastName: invoice.customerName?.split(" ").slice(1).join(" ") || "",
-        email: invoice.customerEmail,
-        phoneNumber: invoice.customerPhone || "",
-      };
-
-      // Build email content
-      const isInstallation =
-        invoice.isInstallationFee || invoice.invoiceType === "installation";
-      const amount = invoice.total || 0;
-      const paidAt = invoice.paidAt
-        ? new Date(invoice.paidAt).toLocaleString()
-        : new Date().toLocaleString();
-
-      // Generate HTML email body
-      const emailHtml = `
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Payment Confirmation - Invoice ${invoice.invoiceNumber}</title>
-    <style>
-        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-        .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
-        .header { text-align: center; border-bottom: 2px solid #28a745; padding-bottom: 20px; }
-        .header h1 { color: #28a745; margin: 0; }
-        .content { padding: 20px 0; }
-        .details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
-        .button { display: inline-block; background-color: #28a745; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; }
-        .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
-        .status-badge { display: inline-block; background: #28a745; color: white; padding: 4px 12px; border-radius: 12px; font-size: 12px; }
-        .location-badge { display: inline-block; background: #1a56db; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin-top: 10px; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>✅ Payment Confirmed!</h1>
-            <p>Mister Fyber</p>
-            ${userLocation ? `<div class="location-badge">📍 ${userLocation.toUpperCase()}</div>` : ""}
-        </div>
-        <div class="content">
-            <p>Dear <strong>${invoice.customerName || "Customer"}</strong>,</p>
-            <p>We are pleased to confirm that your payment has been received and processed successfully.</p>
-            
-            <div class="details">
-                <h3 style="margin-top: 0;">📋 Payment Details</h3>
-                <p><strong>Invoice Number:</strong> ${invoice.invoiceNumber}</p>
-                <p><strong>Amount Paid:</strong> <span style="color: #28a745; font-size: 18px; font-weight: bold;">₱${amount.toFixed(2)}</span></p>
-                <p><strong>Payment Date:</strong> ${paidAt}</p>
-                <p><strong>Reference Number:</strong> ${payment[0].referenceNumber || "N/A"}</p>
-                <p><strong>Invoice Type:</strong> <span class="status-badge">${invoice.invoiceType || "Monthly"}</span></p>
-                ${isInstallation ? `<p><strong>Note:</strong> This is an installation fee payment. Your installation will be scheduled within 24-48 hours.</p>` : ""}
-                ${userLocation ? `<p><strong>Location:</strong> ${userLocation.toUpperCase()}</p>` : ""}
-                <p><strong>Collection Email:</strong> <a href="mailto:${emailCollectionEmail}">${emailCollectionEmail}</a></p>
-            </div>
-
-            ${
-              invoice.items && invoice.items.length > 0
-                ? `
-            <div style="margin: 20px 0;">
-                <h4>Invoice Items:</h4>
-                <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
-                    <thead>
-                        <tr style="background-color: #f8f9fa;">
-                            <th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Description</th>
-                            <th style="padding: 8px; text-align: center; border: 1px solid #ddd;">Qty</th>
-                            <th style="padding: 8px; text-align: right; border: 1px solid #ddd;">Amount</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${invoice.items
-                          .map(
-                            (item: any) => `
-                        <tr>
-                            <td style="padding: 8px; border: 1px solid #ddd;">${item.description}</td>
-                            <td style="padding: 8px; text-align: center; border: 1px solid #ddd;">${item.quantity || 1}</td>
-                            <td style="padding: 8px; text-align: right; border: 1px solid #ddd;">₱${(item.amount || 0).toFixed(2)}</td>
-                        </tr>
-                        `,
-                          )
-                          .join("")}
-                        <tr style="font-weight: bold; background-color: #f8f9fa;">
-                            <td colspan="2" style="padding: 10px; text-align: right; border: 1px solid #ddd;">Total:</td>
-                            <td style="padding: 10px; text-align: right; border: 1px solid #ddd; color: #28a745;">₱${amount.toFixed(2)}</td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-            `
-                : ""
-            }
-
-            <div style="background: #e7f3ff; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                <p style="margin: 0; color: #1a56db;">
-                    <strong>📎 Invoice PDF:</strong> A copy of your paid invoice is attached to this email for your records.
-                </p>
-            </div>
-
-            ${
-              isInstallation
-                ? `
-            <div style="background: #fff3cd; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                <p style="margin: 0; color: #856404;">
-                    <strong>🔧 Installation Fee Paid:</strong> Your installation fee of ₱${amount.toFixed(2)} has been paid. Our technical team will contact you within 24-48 hours to schedule your installation.
-                </p>
-            </div>
-            `
-                : `
-            <div style="background: #d1ecf1; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                <p style="margin: 0; color: #0c5460;">
-                    <strong>📌 Monthly Subscription:</strong> Your monthly subscription payment has been confirmed. Your service will continue without interruption.
-                </p>
-            </div>
-            `
-            }
-
-            <p>Thank you for choosing Mister Fyber as your trusted internet provider.</p>
-            <p><strong>Best regards,</strong><br>Mister Fyber Team</p>
-        </div>
-        <div class="footer">
-            <p>Mister Fyber - Your trusted internet provider</p>
-            <p><small>Need help? Contact us at <a href="mailto:${process.env.SUPPORT_EMAIL || "support@misterfyber.com"}">${process.env.SUPPORT_EMAIL || "support@misterfyber.com"}</a></small></p>
-            <p><small>Collection Email: <a href="mailto:${emailCollectionEmail}">${emailCollectionEmail}</a></small></p>
-            <p><small>This is a computer-generated receipt. No signature required.</small></p>
-        </div>
-    </div>
-</body>
-</html>
-      `;
-
-      // Send email with PDF attachment
-      await emailService.sendEmail(
-        invoice.customerEmail,
-        `✅ Payment Confirmed - ${invoice.invoiceNumber}`,
-        emailHtml,
-        true,
+      // Send payment confirmation email with invoice PDF ATTACHMENT
+      // Use the dedicated sendPaidInvoiceEmail method
+      const emailSent = await emailService.sendPaidInvoiceEmail(
+        invoice,
+        pdfBuffer,
+        pdfFileName,
+        payment[0],
         userLocation,
-        {
-          attachments: [
-            {
-              filename: pdfFileName,
-              content: pdfBuffer.toString("base64"),
-            },
-          ],
-          bcc: [
-            emailCollectionEmail,
-            process.env.ADMIN_EMAIL || "admin@misterfyber.com",
-          ],
-          replyTo: emailCollectionEmail,
-        },
+        false, // useAdminSender
       );
 
-      console.log(
-        `✅ Payment confirmation email sent to ${invoice.customerEmail} with paid invoice attachment`,
-      );
-
-      // Also send to collection email
-      await emailService.sendEmail(
-        emailCollectionEmail,
-        `💰 Payment Received - ${invoice.invoiceNumber}`,
-        `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-            <h2 style="color: #28a745;">💰 Payment Received</h2>
-            <p><strong>Invoice:</strong> ${invoice.invoiceNumber}</p>
-            <p><strong>Customer:</strong> ${invoice.customerName}</p>
-            <p><strong>Amount:</strong> ₱${amount.toFixed(2)}</p>
-            <p><strong>Payment Type:</strong> ${invoice.isInstallationFee ? "Installation Fee" : "Subscription"}</p>
-            <p><strong>Reference:</strong> ${payment[0].referenceNumber}</p>
-            <p><strong>Location:</strong> ${userLocation || "N/A"}</p>
-            <p><strong>Confirmed By:</strong> ${req.user?.firstName || "Admin"} ${req.user?.lastName || ""}</p>
-            <p><strong>Confirmed At:</strong> ${new Date().toLocaleString()}</p>
-            ${notes ? `<p><strong>Notes:</strong> ${notes}</p>` : ""}
-            <hr>
-            <p style="color: #666; font-size: 12px;">Mister Fyber - Collection Department</p>
-        </div>
-        `,
-        false,
-        userLocation,
-        {
-          replyTo: invoice.customerEmail,
-        },
-      );
+      if (emailSent) {
+        console.log(
+          `✅ Payment confirmation email sent to ${invoice.customerEmail} with paid invoice attachment`,
+        );
+      } else {
+        console.warn(
+          `⚠️ Failed to send payment confirmation email to ${invoice.customerEmail}`,
+        );
+      }
     } catch (emailError) {
       console.error("Failed to send payment confirmation email:", emailError);
       // Don't fail the transaction if email fails

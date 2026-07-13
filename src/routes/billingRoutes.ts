@@ -23,7 +23,6 @@ import {
   confirmProRatedPayment,
   startMonthlyBilling,
   autoGenerateMonthlyBills,
-  autoSendReminders,
   autoSuspendOverdue,
   getApplicationCurrentBilling,
   getApplicationBillingHistory,
@@ -78,7 +77,6 @@ router.post("/disconnect", adminMiddleware, disconnectClient);
 router.post("/reconnect", adminMiddleware, reconnectClient);
 router.delete("/delete-cycle", adminMiddleware, deleteBillingCycle);
 router.post("/auto-generate", adminMiddleware, autoGenerateMonthlyBills);
-router.post("/auto-reminders", adminMiddleware, autoSendReminders);
 router.post("/auto-suspend", adminMiddleware, autoSuspendOverdue);
 router.post("/recover-missing-bills", adminMiddleware, recoverMissingBills);
 router.post(

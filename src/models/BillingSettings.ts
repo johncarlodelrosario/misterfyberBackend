@@ -1,3 +1,5 @@
+// backend/src/models/BillingSettings.ts
+
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IBillingSettings extends Document {
@@ -5,7 +7,6 @@ export interface IBillingSettings extends Document {
   dueDateDaysAfterPeriod: number;
   gracePeriodDays: number;
   autoGenerateBills: boolean;
-  autoSendReminders: boolean;
   autoSuspendOnNonPayment: boolean;
   billingCycleDay: number;
   freeDays: number;
@@ -27,7 +28,6 @@ const BillingSettingsSchema: Schema = new Schema(
     dueDateDaysAfterPeriod: { type: Number, default: 5 },
     gracePeriodDays: { type: Number, default: 5 },
     autoGenerateBills: { type: Boolean, default: true },
-    autoSendReminders: { type: Boolean, default: true },
     autoSuspendOnNonPayment: { type: Boolean, default: true },
     billingCycleDay: { type: Number, default: 1 },
     freeDays: { type: Number, default: 0 },
@@ -51,7 +51,6 @@ BillingSettingsSchema.statics.getDefaultSettings = async function () {
       dueDateDaysAfterPeriod: 5,
       gracePeriodDays: 5,
       autoGenerateBills: true,
-      autoSendReminders: true,
       autoSuspendOnNonPayment: true,
       billingCycleDay: 1,
       freeDays: 0,

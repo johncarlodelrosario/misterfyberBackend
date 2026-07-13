@@ -1,9 +1,15 @@
+// backend/src/services/emailService.ts - COMPLETE FIXED WITH PROPER PDF ATTACHMENT
+
 import { IUser } from "../models/User";
 import Admin from "../models/Admin";
 import Building from "../models/Building";
 import Application from "../models/Application";
+import Invoice from "../models/Invoice";
+import Payment from "../models/Payment";
 import dotenv from "dotenv";
 import path from "path";
+import fs from "fs";
+import { generateInvoicePDF } from "./pdfService";
 
 // Load environment variables
 const envPath = path.resolve(process.cwd(), ".env");
@@ -91,111 +97,60 @@ export const getCollectionEmailByLocation = (location: string): string => {
 };
 
 /**
- * Get location from entity - FIXED: Look at building name properly
+ * Get location from entity
  */
 export const getLocationFromEntity = async (entity: any): Promise<string> => {
   try {
-    console.log(
-      "🔍 Getting location from entity:",
-      JSON.stringify(entity, null, 2),
-    );
-
-    // Check if entity has location directly
     if (entity && entity.location) {
-      console.log(`📍 Entity has location directly: ${entity.location}`);
       return entity.location;
     }
 
-    // Check buildingName directly on entity
     if (entity && entity.buildingName) {
       const buildingName = entity.buildingName.toLowerCase().trim();
-      console.log(`🏢 Building name from entity: "${buildingName}"`);
-      if (buildingName.includes("breeze")) {
-        console.log("✅ Location detected: BREEZE from buildingName");
-        return "breeze";
-      }
-      if (buildingName.includes("sil") || buildingName.includes("silk")) {
-        console.log("✅ Location detected: SIL from buildingName");
+      if (buildingName.includes("breeze")) return "breeze";
+      if (buildingName.includes("sil") || buildingName.includes("silk"))
         return "sil";
-      }
     }
 
-    // Check if entity has buildingId
     if (entity && entity.buildingId) {
-      console.log(`🏢 Looking up building by ID: ${entity.buildingId}`);
       const building = await Building.findById(entity.buildingId);
       if (building) {
-        console.log(`🏢 Building found:`, building);
-        if (building.location) {
-          console.log(`📍 Building location: ${building.location}`);
-          return building.location;
-        }
-        // FIXED: Use buildingName instead of name
+        if (building.location) return building.location;
         if (building.buildingName) {
           const buildingName = building.buildingName.toLowerCase().trim();
-          console.log(`🏢 Building name: "${buildingName}"`);
-          if (buildingName.includes("breeze")) {
-            console.log("✅ Location detected: BREEZE from building name");
-            return "breeze";
-          }
-          if (buildingName.includes("sil") || buildingName.includes("silk")) {
-            console.log("✅ Location detected: SIL from building name");
+          if (buildingName.includes("breeze")) return "breeze";
+          if (buildingName.includes("sil") || buildingName.includes("silk"))
             return "sil";
-          }
         }
       }
     }
 
-    // Check if entity is an application with ID
     if (entity && entity.applicationId) {
-      console.log(`📋 Looking up application by ID: ${entity.applicationId}`);
       const application = await Application.findOne({
         applicationId: entity.applicationId,
       });
       if (application) {
-        console.log(`📋 Application found:`, application);
         if (application.buildingName) {
           const buildingName = application.buildingName.toLowerCase().trim();
-          console.log(`🏢 Application building name: "${buildingName}"`);
-          if (buildingName.includes("breeze")) {
-            console.log(
-              "✅ Location detected: BREEZE from application buildingName",
-            );
-            return "breeze";
-          }
-          if (buildingName.includes("sil") || buildingName.includes("silk")) {
-            console.log(
-              "✅ Location detected: SIL from application buildingName",
-            );
+          if (buildingName.includes("breeze")) return "breeze";
+          if (buildingName.includes("sil") || buildingName.includes("silk"))
             return "sil";
-          }
         }
         if (application.buildingId) {
           const building = await Building.findById(application.buildingId);
           if (building) {
-            if (building.location) {
-              console.log(`📍 Building location: ${building.location}`);
-              return building.location;
-            }
-            // FIXED: Use buildingName instead of name
+            if (building.location) return building.location;
             if (building.buildingName) {
               const buildingName = building.buildingName.toLowerCase().trim();
-              if (buildingName.includes("breeze")) {
-                return "breeze";
-              }
-              if (
-                buildingName.includes("sil") ||
-                buildingName.includes("silk")
-              ) {
+              if (buildingName.includes("breeze")) return "breeze";
+              if (buildingName.includes("sil") || buildingName.includes("silk"))
                 return "sil";
-              }
             }
           }
         }
       }
     }
 
-    console.log("⚠️ No location found, returning empty string");
     return "";
   } catch (error) {
     console.error("❌ Error getting location from entity:", error);
@@ -279,6 +234,201 @@ class EmailService {
     }
   }
 
+  // ==================== HTML EMAIL TEMPLATE GENERATORS ====================
+
+  /**
+   * Generate payment confirmation HTML with full invoice details and PDF attachment note
+   */
+  generatePaymentConfirmationHTML(
+    invoice: any,
+    payment: any,
+    amount: number,
+    paidAt: string,
+    location?: string,
+    collectionEmail?: string,
+    isInstallation: boolean = false,
+  ): string {
+    const locationBadge = location
+      ? `<div style="display: inline-block; background: ${location.toLowerCase() === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin-top: 10px;">📍 ${location.toUpperCase()}</div>`
+      : "";
+
+    const itemsHtml =
+      invoice.items && invoice.items.length > 0
+        ? `
+    <div style="margin: 20px 0;">
+      <h4>Invoice Items:</h4>
+      <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+        <thead>
+          <tr style="background-color: #f8f9fa;">
+            <th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Description</th>
+            <th style="padding: 8px; text-align: center; border: 1px solid #ddd;">Qty</th>
+            <th style="padding: 8px; text-align: right; border: 1px solid #ddd;">Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${invoice.items
+            .map(
+              (item: any) => `
+          <tr>
+            <td style="padding: 8px; border: 1px solid #ddd;">${item.description}</td>
+            <td style="padding: 8px; text-align: center; border: 1px solid #ddd;">${item.quantity || 1}</td>
+            <td style="padding: 8px; text-align: right; border: 1px solid #ddd;">₱${(item.amount || 0).toFixed(2)}</td>
+          </tr>
+          `,
+            )
+            .join("")}
+          <tr style="font-weight: bold; background-color: #f8f9fa;">
+            <td colspan="2" style="padding: 10px; text-align: right; border: 1px solid #ddd;">Total:</td>
+            <td style="padding: 10px; text-align: right; border: 1px solid #ddd; color: #28a745;">₱${amount.toFixed(2)}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    `
+        : "";
+
+    const installationNote = isInstallation
+      ? `
+    <div style="background: #fff3cd; padding: 15px; border-radius: 5px; margin: 20px 0;">
+      <p style="margin: 0; color: #856404;">
+        <strong>🔧 Installation Fee Paid:</strong> Your installation fee of ₱${amount.toFixed(2)} has been paid. Our technical team will contact you within 24-48 hours to schedule your installation.
+      </p>
+    </div>
+    `
+      : `
+    <div style="background: #d1ecf1; padding: 15px; border-radius: 5px; margin: 20px 0;">
+      <p style="margin: 0; color: #0c5460;">
+        <strong>📌 Monthly Subscription:</strong> Your monthly subscription payment has been confirmed. Your service will continue without interruption.
+      </p>
+    </div>
+    `;
+
+    return `
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Payment Confirmation - Invoice ${invoice.invoiceNumber}</title>
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
+        .header { text-align: center; border-bottom: 2px solid #28a745; padding-bottom: 20px; }
+        .header h1 { color: #28a745; margin: 0; }
+        .content { padding: 20px 0; }
+        .details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
+        .button { display: inline-block; background-color: #28a745; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; }
+        .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
+        .status-badge { display: inline-block; background: #28a745; color: white; padding: 4px 12px; border-radius: 12px; font-size: 12px; }
+        .attachments-note { background: #e7f3ff; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #1a56db; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>✅ Payment Confirmed!</h1>
+            <p>Mister Fyber</p>
+            ${locationBadge}
+        </div>
+        <div class="content">
+            <p>Dear <strong>${invoice.customerName || "Customer"}</strong>,</p>
+            <p>We are pleased to confirm that your payment has been received and processed successfully.</p>
+            
+            <div class="details">
+                <h3 style="margin-top: 0;">📋 Payment Details</h3>
+                <p><strong>Invoice Number:</strong> ${invoice.invoiceNumber}</p>
+                <p><strong>Amount Paid:</strong> <span style="color: #28a745; font-size: 18px; font-weight: bold;">₱${amount.toFixed(2)}</span></p>
+                <p><strong>Payment Date:</strong> ${paidAt}</p>
+                <p><strong>Reference Number:</strong> ${payment?.referenceNumber || "N/A"}</p>
+                <p><strong>Invoice Type:</strong> <span class="status-badge">${invoice.invoiceType || "Monthly"}</span></p>
+                ${isInstallation ? `<p><strong>Note:</strong> This is an installation fee payment. Your installation will be scheduled within 24-48 hours.</p>` : ""}
+                ${location ? `<p><strong>Location:</strong> ${location.toUpperCase()}</p>` : ""}
+                ${collectionEmail ? `<p><strong>Collection Email:</strong> <a href="mailto:${collectionEmail}">${collectionEmail}</a></p>` : ""}
+            </div>
+
+            ${itemsHtml}
+
+            <div class="attachments-note">
+                <p style="margin: 0; color: #1a56db;">
+                    <strong>📎 Invoice PDF Attached:</strong> A copy of your paid invoice (${invoice.invoiceNumber}) is attached to this email for your records.
+                </p>
+            </div>
+
+            ${installationNote}
+
+            <p>Thank you for choosing Mister Fyber as your trusted internet provider.</p>
+            <p><strong>Best regards,</strong><br>Mister Fyber Team</p>
+        </div>
+        <div class="footer">
+            <p>Mister Fyber - Your trusted internet provider</p>
+            <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
+            ${collectionEmail ? `<p><small>Collection Email: <a href="mailto:${collectionEmail}">${collectionEmail}</a></small></p>` : ""}
+            <p><small>This is a computer-generated receipt. No signature required.</small></p>
+        </div>
+    </div>
+</body>
+</html>
+    `;
+  }
+
+  /**
+   * Generate test location email HTML
+   */
+  generateTestLocationEmailHTML(
+    location: string,
+    collectionEmail: string,
+  ): string {
+    return `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Test Email - ${location}</title>
+      </head>
+      <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h1 style="color: #1a56db;">🧪 Test Email</h1>
+        <p>This is a test email sent to the collection team for location: <strong>${location}</strong></p>
+        <div style="background: #f3f4f6; padding: 15px; border-radius: 6px; margin: 15px 0;">
+          <p><strong>Location:</strong> ${location}</p>
+          <p><strong>Collection Email:</strong> ${collectionEmail}</p>
+          <p><strong>Timestamp:</strong> ${new Date().toLocaleString()}</p>
+          <p><strong>Status:</strong> ✅ Test successful</p>
+        </div>
+        <p style="color: #6b7280; font-size: 14px;">This is an automated test email from Mister Fyber billing system.</p>
+      </body>
+      </html>
+    `;
+  }
+
+  /**
+   * Generate service status HTML (for pause/resume notifications)
+   */
+  generateServiceStatusHTML(
+    firstName: string,
+    lastName: string,
+    status: string,
+    message: string,
+  ): string {
+    const statusColors: Record<string, string> = {
+      paused: "#dc3545",
+      resumed: "#28a745",
+      active: "#28a745",
+      suspended: "#dc3545",
+    };
+
+    const color = statusColors[status] || "#007bff";
+
+    return `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+        <h2 style="color: ${color}; text-align: center;">Service ${status.charAt(0).toUpperCase() + status.slice(1)}</h2>
+        <p>Dear ${firstName} ${lastName},</p>
+        <p>${message}</p>
+        <p>If you have any questions, please contact our support team.</p>
+        <hr>
+        <p style="color: #666; font-size: 12px;">Mister Fyber - Your trusted internet provider</p>
+        <p style="color: #666; font-size: 12px;">Need help? Contact us at support@misterfyber.com</p>
+      </div>
+    `;
+  }
+
   isConfigured(): boolean {
     const configured =
       this.initialized && !!this.apiKey && this.apiKey.length > 10;
@@ -325,6 +475,55 @@ class EmailService {
       );
       return true;
     }
+  }
+
+  // ==================== HELPER: FORMAT DATE ====================
+  private formatDateForDisplay(date: any): string {
+    if (!date) return "N/A";
+    const d = new Date(date);
+    if (isNaN(d.getTime())) return "N/A";
+    const month = d.getMonth() + 1;
+    const day = d.getDate();
+    const year = d.getFullYear();
+    return `${month}/${day}/${year}`;
+  }
+
+  private getSenderEmail(): string {
+    let senderEmail = "admin@misterfyber.com";
+    if (this.emailFrom) {
+      const match = this.emailFrom.match(/<(.+)>/);
+      if (match) {
+        senderEmail = match[1];
+      } else if (this.emailFrom.includes("@")) {
+        senderEmail = this.emailFrom;
+      }
+    }
+    return senderEmail;
+  }
+
+  /**
+   * Get available sender options for a specific location
+   */
+  getSenderOptions(location?: string): { value: string; label: string }[] {
+    const options = [];
+
+    options.push({
+      value: "admin",
+      label: "Admin (admin@misterfyber.com)",
+    });
+
+    if (location) {
+      const collectionEmail = getCollectionEmailByLocation(location);
+      if (collectionEmail && collectionEmail !== DEFAULT_COLLECTION_EMAIL) {
+        let locationName = location.charAt(0).toUpperCase() + location.slice(1);
+        options.push({
+          value: "collection",
+          label: `${locationName} Collection (${collectionEmail})`,
+        });
+      }
+    }
+
+    return options;
   }
 
   // ==================== CORE EMAIL SENDING WITH LOCATION SUPPORT ====================
@@ -397,7 +596,6 @@ class EmailService {
         return false;
       }
 
-      // Get collection email based on location
       let collectionEmail = DEFAULT_COLLECTION_EMAIL;
       if (location) {
         collectionEmail = getCollectionEmailByLocation(location);
@@ -410,17 +608,14 @@ class EmailService {
         );
       }
 
-      // ========== DETERMINE SENDER ==========
       let senderName = "Mister Fyber";
       let senderEmailAddress = senderEmail;
 
-      // If useAdminSender is true, use admin email as sender
       if (options?.useAdminSender) {
         senderEmailAddress = "admin@misterfyber.com";
         senderName = "Mister Fyber Admin";
         console.log(`📧 Using admin email as sender: ${senderEmailAddress}`);
       } else if (isCustomerEmail && location) {
-        // Otherwise use collection email - THIS IS THE FIX!
         const collectionEmailForLocation =
           getCollectionEmailByLocation(location);
         if (collectionEmailForLocation) {
@@ -443,13 +638,11 @@ class EmailService {
         console.log(`📧 Using default sender: ${senderEmailAddress}`);
       }
 
-      // Build BCC list - ALWAYS include collection email for customer emails
       let bccEmails: string[] = [];
       if (options?.bcc) {
         bccEmails = Array.isArray(options.bcc) ? options.bcc : [options.bcc];
       }
 
-      // Add collection email to BCC for customer emails
       if (isCustomerEmail && collectionEmail) {
         const collectionEmailToAdd = collectionEmail;
         if (!bccEmails.includes(collectionEmailToAdd)) {
@@ -460,7 +653,6 @@ class EmailService {
         }
       }
 
-      // Add admin email to BCC for customer emails
       if (isCustomerEmail && this.adminEmail) {
         if (!bccEmails.includes(this.adminEmail)) {
           bccEmails.push(this.adminEmail);
@@ -512,17 +704,92 @@ class EmailService {
         requestBody.replyTo = { email: collectionEmail };
       }
 
+      // CRITICAL FIX: Handle attachments properly for Brevo API
       if (options?.attachments && options.attachments.length > 0) {
-        requestBody.attachment = options.attachments.map((att: any) => ({
-          name: att.filename || "attachment",
-          content: att.content?.toString("base64") || "",
-        }));
+        console.log(
+          `📎 Processing ${options.attachments.length} attachment(s) for Brevo API`,
+        );
+
+        requestBody.attachment = options.attachments.map((att: any) => {
+          let content = att.content;
+
+          // If content is a Buffer, convert to base64
+          if (Buffer.isBuffer(content)) {
+            console.log(`📎 Converting Buffer to base64 for: ${att.filename}`);
+            content = content.toString("base64");
+          }
+          // If content is already a string, check if it's already base64
+          else if (typeof content === "string") {
+            // Check if it already has a data URI prefix, remove it
+            if (content.startsWith("data:")) {
+              const parts = content.split(",");
+              if (parts.length > 1) {
+                content = parts[1];
+                console.log(
+                  `📎 Removed data URI prefix from attachment: ${att.filename}`,
+                );
+              }
+            }
+            // Check if it's a file path
+            else if (content.startsWith("/") || content.includes(".pdf")) {
+              try {
+                // Try to read the file
+                const filePath = path.isAbsolute(content)
+                  ? content
+                  : path.join(process.cwd(), content);
+                if (fs.existsSync(filePath)) {
+                  const fileBuffer = fs.readFileSync(filePath);
+                  content = fileBuffer.toString("base64");
+                  console.log(
+                    `📎 Read file from path and converted to base64: ${att.filename}`,
+                  );
+                }
+              } catch (fileError) {
+                console.error(
+                  `📎 Failed to read file for attachment: ${att.filename}`,
+                  fileError,
+                );
+              }
+            }
+          }
+
+          const contentLength =
+            typeof content === "string" ? content.length : 0;
+          console.log(
+            `📎 Attachment: ${att.filename}, base64 length: ${contentLength} chars`,
+          );
+
+          // Verify the content looks like base64 (no spaces, no data URI prefix)
+          if (typeof content === "string" && content.includes(" ")) {
+            console.warn(
+              `⚠️ Attachment content contains spaces - removing them: ${att.filename}`,
+            );
+            content = content.replace(/\s/g, "");
+          }
+
+          return {
+            name: att.filename || "attachment.pdf",
+            content: content,
+          };
+        });
+
+        console.log(
+          `📎 Attachments added to request: ${requestBody.attachment.length} file(s)`,
+        );
+      } else {
+        console.log(`⚠️ No attachments to send`);
       }
 
       console.log("📧 Request body prepared successfully");
       console.log("📧 Sender:", requestBody.sender);
       console.log("📧 To:", requestBody.to);
       console.log("📧 BCC:", requestBody.bcc || "None");
+      console.log(
+        "📧 Attachments:",
+        requestBody.attachment
+          ? `${requestBody.attachment.length} file(s)`
+          : "None",
+      );
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 30000);
@@ -549,6 +816,11 @@ class EmailService {
           console.log(`   Message ID: ${data.messageId || "N/A"}`);
           console.log(`   Sender: ${senderName} <${senderEmailAddress}>`);
           console.log(`   Collection Email (BCC): ${collectionEmail}`);
+          if (options?.attachments && options.attachments.length > 0) {
+            console.log(
+              `   ✅ Attachments: ${options.attachments.length} file(s) sent`,
+            );
+          }
           return true;
         } else {
           const errorText = await response.text();
@@ -640,47 +912,626 @@ class EmailService {
     );
   }
 
-  // ==================== SEND BILLING EMAIL WITH LOCATION ====================
-  async sendBillingEmail(
-    user: IUser | any,
-    billing: any,
+  /**
+   * Generate collection email notification HTML
+   */
+  generateCollectionNotificationHTML(
+    invoice: any,
+    amount: number,
+    payment: any,
     location?: string,
-    options?: {
-      cc?: string | string[];
-      attachments?: any[];
-      replyTo?: string;
-      useAdminSender?: boolean;
-    },
-  ): Promise<boolean> {
-    try {
-      const userLocation = location || (await getLocationFromEntity(user));
-      const collectionEmail = getCollectionEmailByLocation(userLocation);
-
-      const subject = `🧾 Invoice #${billing.invoiceNumber || billing._id} - Mister Fyber`;
-
-      const html = this.generateInvoiceHTML(user, billing, userLocation);
-
-      return await this.sendEmail(
-        user.email,
-        subject,
-        html,
-        true,
-        userLocation,
-        {
-          cc: options?.cc,
-          attachments: options?.attachments,
-          replyTo: options?.replyTo || collectionEmail,
-          bcc: [collectionEmail, this.adminEmail],
-          useAdminSender: options?.useAdminSender || false,
-        },
-      );
-    } catch (error) {
-      console.error(`❌ Error sending billing email:`, error);
-      return false;
-    }
+    notes?: string,
+    adminName?: string,
+  ): string {
+    return `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+        <h2 style="color: #28a745;">💰 Payment Received</h2>
+        <p><strong>Invoice:</strong> ${invoice.invoiceNumber}</p>
+        <p><strong>Customer:</strong> ${invoice.customerName}</p>
+        <p><strong>Amount:</strong> ₱${amount.toFixed(2)}</p>
+        <p><strong>Payment Type:</strong> ${invoice.isInstallationFee ? "Installation Fee" : "Subscription"}</p>
+        <p><strong>Reference:</strong> ${payment?.referenceNumber || "N/A"}</p>
+        ${location ? `<p><strong>Location:</strong> ${location.toUpperCase()}</p>` : ""}
+        <p><strong>Confirmed By:</strong> ${adminName || "Admin"}</p>
+        <p><strong>Confirmed At:</strong> ${new Date().toLocaleString()}</p>
+        ${notes ? `<p><strong>Notes:</strong> ${notes}</p>` : ""}
+        <hr>
+        <p style="color: #666; font-size: 12px;">Mister Fyber - Collection Department</p>
+    </div>
+    `;
   }
 
-  // ==================== SEND PAID INVOICE EMAIL WITH PDF ATTACHMENT ====================
+  /**
+   * Generate payment reminder HTML email
+   */
+  generatePaymentReminderHTML(
+    user: any,
+    billing: any,
+    amount: number,
+    dueDate: string,
+    location?: string,
+    collectionEmail?: string,
+    isInstallationBill: boolean = false,
+    isProRated: boolean = false,
+  ): string {
+    const locationBadge = location
+      ? `
+      <div style="display: inline-block; background: ${location.toLowerCase() === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin-bottom: 10px;">
+        📍 ${location.toUpperCase()}
+      </div>
+    `
+      : "";
+
+    let reminderMessage = "";
+    if (isInstallationBill) {
+      reminderMessage = `<p><strong>Note:</strong> This is your installation fee. Once paid, our team will schedule your installation.</p>`;
+    } else if (isProRated) {
+      reminderMessage = `<p><strong>Note:</strong> This is your pro-rated first bill. Once paid, your service will be fully activated.</p>`;
+    }
+
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Payment Reminder</title>
+        <style>
+            .sender-info { background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center; }
+        </style>
+    </head>
+    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+        <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+            <h2 style="color: #f39c12;">⚠️ Payment Reminder</h2>
+            <p>Hello ${user.firstName || user.email},</p>
+            <p>This is a friendly reminder that your Mister Fyber payment is due soon.</p>
+            ${locationBadge}
+            <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
+                <p><strong>Due Date:</strong> ${dueDate}</p>
+                ${reminderMessage}
+                ${location ? `<p><strong>Location:</strong> ${location.toUpperCase()}</p>` : ""}
+                ${collectionEmail ? `<p><strong>Collection Email:</strong> ${collectionEmail}</p>` : ""}
+            </div>
+            <div style="text-align: center; margin: 30px 0;">
+                <a href="${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/billing" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">Pay Now</a>
+            </div>
+            <p>Please pay before the due date to avoid service interruption.</p>
+            <hr>
+            <p style="color: #666; font-size: 12px;">This is an automated reminder from Mister Fyber.</p>
+            ${collectionEmail ? `<p style="color: #666; font-size: 12px;">Collection Email: <a href="mailto:${collectionEmail}">${collectionEmail}</a></p>` : ""}
+        </div>
+    </body>
+    </html>
+    `;
+  }
+
+  /**
+   * Generate due date reminder HTML email
+   */
+  generateDueDateReminderHTML(
+    user: any,
+    billing: any,
+    amount: number,
+    dueDate: string,
+    location?: string,
+    collectionEmail?: string,
+    isInstallationBill: boolean = false,
+    isProRated: boolean = false,
+  ): string {
+    const locationBadge = location
+      ? `
+      <div style="display: inline-block; background: ${location.toLowerCase() === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin-bottom: 10px;">
+        📍 ${location.toUpperCase()}
+      </div>
+    `
+      : "";
+
+    let reminderMessage = "";
+    if (isInstallationBill) {
+      reminderMessage = `<p><strong>⚠️ IMPORTANT:</strong> This is your installation fee. Payment is due TODAY. Once paid, our team will schedule your installation.</p>`;
+    } else if (isProRated) {
+      reminderMessage = `<p><strong>⚠️ IMPORTANT:</strong> This is your pro-rated first bill. Payment is due TODAY. Once paid, your service will be fully activated.</p>`;
+    } else {
+      reminderMessage = `<p><strong>⚠️ IMPORTANT:</strong> Your monthly subscription payment is due TODAY. Please pay immediately to avoid service interruption.</p>`;
+    }
+
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>⚠️ PAYMENT DUE TODAY - Mister Fyber</title>
+        <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
+            .header { text-align: center; border-bottom: 2px solid #dc3545; padding-bottom: 20px; }
+            .header h1 { color: #dc3545; margin: 0; }
+            .content { padding: 20px 0; }
+            .bill-details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
+            .button { display: inline-block; background-color: #dc3545; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; }
+            .warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }
+            .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>⚠️ PAYMENT DUE TODAY</h1>
+            </div>
+            <div class="content">
+                <p>Hello ${user.firstName || user.email},</p>
+                <p><strong>Your Mister Fyber payment is due TODAY.</strong> Please settle your bill immediately to avoid service interruption.</p>
+                ${locationBadge}
+                <div class="bill-details">
+                    <h3 style="margin-top: 0;">📋 Invoice Details</h3>
+                    <p><strong>Invoice Number:</strong> ${billing.invoiceNumber || billing._id}</p>
+                    <p><strong>Amount Due:</strong> <span style="color: #dc3545; font-size: 18px;">₱${safeToFixed(amount)}</span></p>
+                    <p><strong>Due Date:</strong> <span style="color: #dc3545; font-weight: bold;">${dueDate} (TODAY)</span></p>
+                    ${isProRated ? `<p><strong>Bill Type:</strong> Pro-rated (First Bill)</p>` : ""}
+                    ${isInstallationBill ? `<p><strong>Bill Type:</strong> Installation Fee</p>` : ""}
+                    ${location ? `<p><strong>Location:</strong> ${location.toUpperCase()}</p>` : ""}
+                    ${collectionEmail ? `<p><strong>Collection Email:</strong> ${collectionEmail}</p>` : ""}
+                </div>
+                ${reminderMessage}
+                <div class="warning">
+                    <strong>📌 After Today:</strong> If payment is not received, your account will enter a grace period. After the grace period, your service will be suspended.
+                </div>
+                <div style="text-align: center; margin: 30px 0;">
+                    <a href="${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/billing" class="button">💰 PAY NOW</a>
+                </div>
+                <p><strong>Payment Methods Accepted:</strong> GCash, Maya, Bank Transfer, Over-the-Counter</p>
+                <p>If you have already made the payment, please disregard this notice.</p>
+            </div>
+            <div class="footer">
+                <p>Mister Fyber - Your trusted internet provider</p>
+                <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
+                ${collectionEmail ? `<p><small>Collection Email: <a href="mailto:${collectionEmail}">${collectionEmail}</a></small></p>` : ""}
+                <p><small>Late payments may incur service interruption after grace period.</small></p>
+            </div>
+        </div>
+    </body>
+    </html>
+    `;
+  }
+
+  /**
+   * Generate welcome email HTML
+   */
+  generateWelcomeHTML(user: IUser): string {
+    const loginUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/login`;
+    const dashboardUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/dashboard`;
+
+    return `
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Welcome to Mister Fyber</title>
+        <style>
+            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f4f4f4; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; background-color: #ffffff; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            .header { text-align: center; padding: 20px 0; border-bottom: 3px solid #28a745; background-color: #f8f9fa; border-radius: 10px 10px 0 0; }
+            .header h1 { color: #28a745; margin: 0; font-size: 28px; }
+            .content { padding: 30px 20px; }
+            .details-box { background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #28a745; }
+            .button-container { text-align: center; margin: 30px 0; }
+            .btn { display: inline-block; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; margin: 0 10px; }
+            .btn-primary { background-color: #007bff; color: white; }
+            .btn-success { background-color: #28a745; color: white; }
+            .footer { text-align: center; padding: 20px; border-top: 1px solid #e0e0e0; font-size: 12px; color: #666; background-color: #f8f9fa; border-radius: 0 0 10px 10px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>🎉 Welcome Aboard!</h1>
+                <p>Mister Fyber</p>
+            </div>
+            <div class="content">
+                <p>Hello <strong>${user.firstName || user.email}</strong>!</p>
+                <p>Thank you for choosing <strong>Mister Fyber</strong>. We're excited to have you on board!</p>
+                <p>Your account has been successfully created and is now ready to use.</p>
+                <div class="details-box">
+                    <h3 style="margin-top: 0;">📋 Account Details</h3>
+                    <p><strong>Username:</strong> ${user.username || user.email}</p>
+                    <p><strong>Email:</strong> ${user.email}</p>
+                    <p><strong>Full Name:</strong> ${user.firstName || ""} ${user.lastName || ""}</p>
+                    <p><strong>Phone:</strong> ${user.phoneNumber || "Not provided"}</p>
+                    <p><strong>Status:</strong> ${(user.status || "pending").toUpperCase()}</p>
+                </div>
+                <div class="button-container">
+                    <a href="${loginUrl}" class="btn btn-primary">🔐 Login to Account</a>
+                    <a href="${dashboardUrl}" class="btn btn-success">📊 Go to Dashboard</a>
+                </div>
+                <p><strong>Note:</strong> Your billing will be started by our admin team. You will receive another email with your first invoice.</p>
+            </div>
+            <div class="footer">
+                <p>This is an automated message from Mister Fyber.</p>
+                <p>© ${new Date().getFullYear()} Mister Fyber. All rights reserved.</p>
+                <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
+            </div>
+        </div>
+    </body>
+    </html>
+    `;
+  }
+
+  /**
+   * Generate password reset HTML
+   */
+  generatePasswordResetHTML(user: IUser, resetToken: string): string {
+    const frontendUrl =
+      process.env.FRONTEND_URL || "https://www.misterfyber.com";
+    const resetUrl = `${frontendUrl}/reset-password/${resetToken}`;
+
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Password Reset Request</title>
+    </head>
+    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+        <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+            <h2 style="color: #333;">Password Reset Request</h2>
+            <p>Hello ${user.firstName || user.email},</p>
+            <p>You requested a password reset for your Mister Fyber account. Click the button below to reset your password:</p>
+            <div style="text-align: center; margin: 30px 0;">
+                <a href="${resetUrl}" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">Reset Password</a>
+            </div>
+            <p>Or copy and paste this link: ${resetUrl}</p>
+            <p>This link will expire in <strong>10 minutes</strong>.</p>
+            <p>If you didn't request this, please ignore this email.</p>
+            <hr>
+            <p style="color: #666; font-size: 12px;">Mister Fyber</p>
+        </div>
+    </body>
+    </html>
+    `;
+  }
+
+  /**
+   * Generate account credentials HTML
+   */
+  generateAccountCredentialsHTML(
+    user: IUser,
+    username: string,
+    password: string,
+    applicationId: string,
+  ): string {
+    const loginUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/login`;
+
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Your Mister Fyber Account Credentials</title>
+        <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
+            .header { text-align: center; border-bottom: 2px solid #007bff; padding-bottom: 20px; }
+            .header h1 { color: #007bff; margin: 0; }
+            .content { padding: 20px 0; }
+            .credentials { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
+            .button { display: inline-block; background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; }
+            .warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }
+            .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>🔐 Your Account Credentials</h1>
+            </div>
+            <div class="content">
+                <p>Hello ${user.firstName},</p>
+                <p>Your Mister Fyber account has been set up by our admin team. Here are your login credentials:</p>
+                <div class="credentials">
+                    <h3 style="margin-top: 0;">📋 Login Information</h3>
+                    <p><strong>Username:</strong> ${username}</p>
+                    <p><strong>Password:</strong> ${password}</p>
+                    <p><strong>Application ID:</strong> ${applicationId}</p>
+                </div>
+                <div class="warning">
+                    <strong>⚠️ Important:</strong> Please change your password after your first login for security purposes.
+                </div>
+                <div style="text-align: center;">
+                    <a href="${loginUrl}" class="button">🔑 Login to Your Account</a>
+                </div>
+            </div>
+            <div class="footer">
+                <p>Mister Fyber - Your trusted internet provider</p>
+                <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
+            </div>
+        </div>
+    </body>
+    </html>
+    `;
+  }
+
+  /**
+   * Generate application received HTML
+   */
+  generateApplicationReceivedHTML(application: any, plan: any): string {
+    const planPrice = plan?.price ?? 0;
+
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Application Received</title>
+    </head>
+    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+        <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+            <h2 style="color: #28a745; text-align: center;">✅ Application Received!</h2>
+            <p>Hello ${application.firstName},</p>
+            <p>Thank you for applying for internet service with Mister Fyber. We have received your application and it is currently being reviewed.</p>
+            <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                <h3 style="margin-top: 0;">Application Details:</h3>
+                <p><strong>Application ID:</strong> ${application.applicationId}</p>
+                <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
+                <p><strong>Monthly Price:</strong> ₱${safeToFixed(planPrice)}</p>
+                <p><strong>Status:</strong> <span style="color: #f39c12;">Pending Review</span></p>
+            </div>
+            <p>You will receive another email once your application has been reviewed.</p>
+            <p>Please keep your Application ID for future reference.</p>
+            <hr>
+            <p style="color: #666; font-size: 12px;">Mister Fyber</p>
+        </div>
+    </body>
+    </html>
+    `;
+  }
+
+  /**
+   * Generate application approved HTML
+   */
+  generateApplicationApprovedHTML(application: any, plan: any): string {
+    const registerUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/register`;
+    const planPrice = plan?.price ?? 0;
+
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Application Approved - Create Your Account</title>
+        <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
+            .header { text-align: center; border-bottom: 2px solid #28a745; padding-bottom: 20px; }
+            .header h1 { color: #28a745; margin: 0; }
+            .content { padding: 20px 0; }
+            .details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
+            .button { display: inline-block; background-color: #28a745; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; margin: 20px 0; }
+            .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>✅ Application Approved!</h1>
+            </div>
+            <div class="content">
+                <p>Hello ${application.firstName},</p>
+                <p>Great news! Your application to Mister Fyber has been approved.</p>
+                <div class="details">
+                    <h3 style="margin-top: 0;">📋 Application Details</h3>
+                    <p><strong>Application ID:</strong> ${application.applicationId}</p>
+                    <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
+                    <p><strong>Monthly Price:</strong> ₱${safeToFixed(planPrice)}</p>
+                </div>
+                <div style="text-align: center;">
+                    <a href="${registerUrl}" class="button">🎯 Create Your Account Now</a>
+                </div>
+                <p><strong>What's next?</strong></p>
+                <ol>
+                    <li>Click the button above to create your account</li>
+                    <li>Use your email address and create a password</li>
+                    <li>Once registered, the admin will start your billing</li>
+                    <li>You'll receive an invoice via email</li>
+                </ol>
+                ${application.adminNotes ? `<div style="margin-top: 20px; padding: 15px; background-color: #e7f3ff; border-left: 4px solid #007bff;"><p><strong>📝 Admin Notes:</strong><br>${application.adminNotes}</p></div>` : ""}
+            </div>
+            <div class="footer">
+                <p>Mister Fyber - Your trusted internet provider</p>
+                <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
+            </div>
+        </div>
+    </body>
+    </html>
+    `;
+  }
+
+  /**
+   * Generate application rejected HTML
+   */
+  generateApplicationRejectedHTML(application: any, reason: string): string {
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Application Update</title>
+    </head>
+    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+        <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+            <h2 style="color: #dc3545;">Application Update</h2>
+            <p>Hello ${application.firstName},</p>
+            <p>Thank you for your interest in Mister Fyber. Unfortunately, your application has not been approved at this time.</p>
+            <div style="margin-top: 20px; padding: 15px; background-color: #fff3f3; border-left: 4px solid #dc3545;">
+                <p><strong>Reason:</strong></p>
+                <p>${reason || "No specific reason provided"}</p>
+            </div>
+            <p>If you have any questions, please contact our support team.</p>
+            <hr>
+            <p style="color: #666; font-size: 12px;">Mister Fyber</p>
+        </div>
+    </body>
+    </html>
+    `;
+  }
+
+  /**
+   * Generate new application notification HTML for admin
+   */
+  generateNewApplicationNotificationHTML(application: any, plan: any): string {
+    const frontendUrl =
+      process.env.FRONTEND_URL || "https://www.misterfyber.com";
+    const planPrice = plan?.price ?? 0;
+
+    return `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+        <h2 style="color: #333;">🆕 NEW APPLICATION ALERT!</h2>
+        <p>A new application has been submitted to Mister Fyber and requires your review.</p>
+        <div style="margin-top: 20px; padding: 15px; background-color: #f8f9fa; border-radius: 5px;">
+            <h3>Application Details:</h3>
+            <p><strong>Application ID:</strong> ${application.applicationId}</p>
+            <p><strong>Name:</strong> ${application.firstName} ${application.lastName}</p>
+            <p><strong>Email:</strong> ${application.email}</p>
+            <p><strong>Phone:</strong> ${application.phoneNumber}</p>
+            <p><strong>Plan:</strong> ${plan?.name || "N/A"} (₱${safeToFixed(planPrice)})</p>
+            <p><strong>ID Type:</strong> ${application.idType}</p>
+            <p><strong>Submitted:</strong> ${new Date().toLocaleString()}</p>
+        </div>
+        <div style="margin-top: 20px; padding: 15px; background-color: #e7f3ff; border-radius: 5px;">
+            <h3>Address:</h3>
+            <p>${application.buildingName || "N/A"}<br>
+            ${application.floor ? `Floor: ${application.floor}` : ""} ${application.unitNumber ? `Unit: ${application.unitNumber}` : ""}<br>
+            ${application.buildingId?.streetAddress || "N/A"}</p>
+        </div>
+        <div style="text-align: center; margin-top: 30px;">
+            <a href="${frontendUrl}/admin/applications" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">Review Application Now</a>
+        </div>
+    </div>
+    `;
+  }
+
+  /**
+   * Generate plan change notification HTML
+   */
+  generatePlanChangeNotificationHTML(
+    user: IUser,
+    oldPlan: any,
+    newPlan: any,
+  ): string {
+    const newPlanPrice = newPlan?.price ?? 0;
+
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Plan Updated</title>
+    </head>
+    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+        <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+            <h2 style="color: #333;">📡 Plan Updated</h2>
+            <p>Hello ${user.firstName || user.email},</p>
+            <p>Your Mister Fyber plan has been changed successfully.</p>
+            <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                <p><strong>Old Plan:</strong> ${oldPlan?.name || "N/A"}</p>
+                <p><strong>New Plan:</strong> ${newPlan?.name || "N/A"}</p>
+                <p><strong>New Price:</strong> ₱${safeToFixed(newPlanPrice)}</p>
+                <p><strong>New Speed:</strong> ${newPlan?.speed?.download || "N/A"} Mbps / ${newPlan?.speed?.upload || "N/A"} Mbps</p>
+            </div>
+            <p>The changes will take effect immediately.</p>
+            <hr>
+            <p style="color: #666; font-size: 12px;">Mister Fyber</p>
+        </div>
+    </body>
+    </html>
+    `;
+  }
+
+  /**
+   * Generate bill without account HTML
+   */
+  generateBillWithoutAccountHTML(
+    application: any,
+    bill: any,
+    plan: any,
+    amount: number,
+    dueDate: string,
+    location?: string,
+    collectionEmail?: string,
+  ): string {
+    const registerUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/register`;
+    const locationBadge = location
+      ? `
+      <div style="display: inline-block; background: ${location.toLowerCase() === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin-bottom: 10px;">
+        📍 ${location.toUpperCase()}
+      </div>
+    `
+      : "";
+
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Your Mister Fyber Bill is Ready</title>
+        <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
+            .header { text-align: center; border-bottom: 2px solid #007bff; padding-bottom: 20px; }
+            .header h1 { color: #007bff; margin: 0; }
+            .content { padding: 20px 0; }
+            .bill-details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
+            .button { display: inline-block; background-color: #28a745; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; }
+            .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
+            .warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>🧾 Your Bill is Ready</h1>
+            </div>
+            <div class="content">
+                <p>Hello ${application.firstName} ${application.lastName},</p>
+                <p>Your Mister Fyber bill is now ready. Since you haven't created your account yet, please register first using your Application ID.</p>
+                ${locationBadge}
+                <div class="bill-details">
+                    <h3 style="margin-top: 0;">📋 Bill Details</h3>
+                    <p><strong>Invoice Number:</strong> ${bill.invoiceNumber}</p>
+                    <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
+                    <p><strong>Due Date:</strong> ${dueDate}</p>
+                    <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
+                    ${bill.isProRated ? `<p><strong>Bill Type:</strong> Pro-rated (First Bill)</p>` : ""}
+                    ${location ? `<p><strong>Location:</strong> ${location.toUpperCase()}</p>` : ""}
+                    ${collectionEmail ? `<p><strong>Collection Email:</strong> ${collectionEmail}</p>` : ""}
+                </div>
+                <div class="warning">
+                    <strong>📌 Important:</strong> You need to create your account before you can pay your bill.
+                </div>
+                <div style="text-align: center; margin: 30px 0;">
+                    <a href="${registerUrl}" class="button">🎯 Create Your Account First</a>
+                </div>
+                <p><strong>Your Application ID:</strong> ${application.applicationId}</p>
+                <p>Once you create your account, you will be able to view and pay this bill.</p>
+            </div>
+            <div class="footer">
+                <p>Mister Fyber - Your trusted internet provider</p>
+                <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
+                ${collectionEmail ? `<p><small>Collection Email: <a href="mailto:${collectionEmail}">${collectionEmail}</a></small></p>` : ""}
+            </div>
+        </div>
+    </body>
+    </html>
+    `;
+  }
+
+  // ==================== EMAIL SENDING METHODS ====================
+
+  /**
+   * Send paid invoice email with PDF attachment - FIXED VERSION
+   * This is the MAIN method that sends payment confirmation with invoice PDF
+   * ATTACHES THE PDF PROPERLY TO THE EMAIL
+   */
   async sendPaidInvoiceEmail(
     invoiceData: any,
     pdfBuffer: Buffer,
@@ -690,6 +1541,134 @@ class EmailService {
     useAdminSender?: boolean,
   ): Promise<boolean> {
     try {
+      console.log(`📧 ========================================`);
+      console.log(`📧 sendPaidInvoiceEmail called`);
+      console.log(`📧 Invoice: ${invoiceData.invoiceNumber}`);
+      console.log(`📧 Customer: ${invoiceData.customerEmail}`);
+      console.log(`📧 Location: ${location || "Not specified"}`);
+      console.log(`📧 PDF size: ${pdfBuffer ? pdfBuffer.length : 0} bytes`);
+      console.log(`📧 ========================================`);
+
+      // CRITICAL: Ensure we have a valid PDF
+      let finalPdfBuffer = pdfBuffer;
+      let finalPdfFileName = pdfFileName;
+
+      // If PDF buffer is empty or not provided, generate it
+      if (!finalPdfBuffer || finalPdfBuffer.length === 0) {
+        console.log(
+          `📧 PDF buffer is empty, generating PDF for invoice: ${invoiceData.invoiceNumber}`,
+        );
+
+        try {
+          // Try to generate PDF from invoice data
+          finalPdfBuffer = await generateInvoicePDF(invoiceData);
+          finalPdfFileName = `${invoiceData.invoiceNumber}.pdf`;
+          console.log(
+            `📧 PDF generated successfully: ${finalPdfBuffer.length} bytes`,
+          );
+
+          // Save PDF to disk for future use
+          try {
+            const pdfDir = path.join(__dirname, "../../uploads/invoices");
+            if (!fs.existsSync(pdfDir)) {
+              fs.mkdirSync(pdfDir, { recursive: true });
+            }
+            const pdfPath = path.join(pdfDir, finalPdfFileName);
+            fs.writeFileSync(pdfPath, finalPdfBuffer);
+            console.log(`📧 PDF saved to: ${pdfPath}`);
+          } catch (saveError) {
+            console.error(`📧 Failed to save PDF:`, saveError);
+          }
+        } catch (genError) {
+          console.error(`❌ Failed to generate PDF:`, genError);
+          // Try to get existing PDF from invoice
+          if (invoiceData._id) {
+            try {
+              const invoice = await Invoice.findById(invoiceData._id);
+              if (invoice && invoice.pdfUrl) {
+                const pdfPath = path.join(__dirname, "../..", invoice.pdfUrl);
+                if (fs.existsSync(pdfPath)) {
+                  finalPdfBuffer = fs.readFileSync(pdfPath);
+                  finalPdfFileName = `${invoiceData.invoiceNumber}.pdf`;
+                  console.log(
+                    `📧 Using existing PDF from: ${pdfPath} (${finalPdfBuffer.length} bytes)`,
+                  );
+                }
+              }
+            } catch (readError) {
+              console.error(`📧 Failed to read existing PDF:`, readError);
+            }
+          }
+        }
+      }
+
+      // If still no PDF, try to find it from Invoice model
+      if (!finalPdfBuffer || finalPdfBuffer.length === 0) {
+        console.log(`📧 Trying to find PDF from Invoice model...`);
+        try {
+          const invoice = await Invoice.findOne({
+            invoiceNumber: invoiceData.invoiceNumber,
+          });
+          if (invoice && invoice.pdfUrl) {
+            const pdfPath = path.join(__dirname, "../..", invoice.pdfUrl);
+            if (fs.existsSync(pdfPath)) {
+              finalPdfBuffer = fs.readFileSync(pdfPath);
+              finalPdfFileName = `${invoiceData.invoiceNumber}.pdf`;
+              console.log(
+                `📧 Found existing PDF: ${pdfPath} (${finalPdfBuffer.length} bytes)`,
+              );
+            }
+          }
+        } catch (findError) {
+          console.error(`📧 Failed to find invoice:`, findError);
+        }
+      }
+
+      // Check if we have a valid PDF
+      if (!finalPdfBuffer || finalPdfBuffer.length === 0) {
+        console.error(
+          `❌ CRITICAL: No PDF available for invoice ${invoiceData.invoiceNumber}`,
+        );
+        // Send email without PDF
+        const htmlContent = this.generatePaymentConfirmationHTML(
+          invoiceData,
+          paymentData,
+          invoiceData.total || 0,
+          new Date().toLocaleString(),
+          location,
+          getCollectionEmailByLocation(location || ""),
+          invoiceData.isInstallationFee || false,
+        );
+
+        return await this.sendEmail(
+          invoiceData.customerEmail,
+          `✅ Payment Confirmed - ${invoiceData.invoiceNumber}`,
+          htmlContent,
+          true,
+          location,
+          {
+            bcc: [
+              getCollectionEmailByLocation(location || ""),
+              this.adminEmail,
+            ],
+            replyTo: getCollectionEmailByLocation(location || ""),
+          },
+        );
+      }
+
+      // IMPORTANT: Convert Buffer to base64 string for Brevo API
+      // This is the CRITICAL FIX - the PDF must be properly base64 encoded
+      const pdfBase64 = finalPdfBuffer.toString("base64");
+      console.log(
+        `📧 PDF converted to base64, length: ${pdfBase64.length} chars`,
+      );
+
+      // Verify the base64 string doesn't contain spaces or invalid chars
+      const cleanBase64 = pdfBase64.replace(/\s/g, "");
+      if (cleanBase64.length !== pdfBase64.length) {
+        console.log(`📧 Removed spaces from base64 string`);
+      }
+
       const customerEmailsEnabled = await this.areCustomerEmailsEnabled();
       if (!customerEmailsEnabled) {
         console.log(
@@ -714,7 +1693,6 @@ class EmailService {
       const userLocation = location || invoiceData.location || "";
       const collectionEmail = getCollectionEmailByLocation(userLocation);
 
-      // ========== DETERMINE SENDER ==========
       let senderName = "Mister Fyber";
       let senderEmailAddress = "admin@misterfyber.com";
 
@@ -868,6 +1846,7 @@ class EmailService {
         `;
       }
 
+      // COMPLETE HTML WITH PDF ATTACHMENT NOTE
       const html = `
         <!DOCTYPE html>
         <html>
@@ -889,6 +1868,7 @@ class EmailService {
                 .invoice-type { display: inline-block; background: #28a745; color: white; padding: 3px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; }
                 .sender-info { background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center; }
                 .payment-details { background: #e8f5e9; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #28a745; }
+                .attachments-note { background: #e7f3ff; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #1a56db; }
             </style>
         </head>
         <body>
@@ -926,9 +1906,10 @@ class EmailService {
                     ${itemsHtml}
                     ${additionalInfo}
 
-                    <div style="background: #e7f3ff; padding: 15px; border-radius: 5px; margin: 15px 0;">
+                    <!-- CRITICAL: PDF ATTACHMENT NOTE -->
+                    <div class="attachments-note">
                         <p style="margin: 0; color: #1a56db;">
-                            <strong>📎 Invoice PDF:</strong> A copy of your paid invoice is attached to this email for your records.
+                            <strong>📎 Invoice PDF Attached:</strong> A copy of your paid invoice (${invoiceData.invoiceNumber}) is attached to this email for your records.
                         </p>
                     </div>
 
@@ -954,7 +1935,9 @@ class EmailService {
         </html>
       `;
 
-      const pdfBase64 = pdfBuffer.toString("base64");
+      // CRITICAL: Build the Brevo API request with proper PDF attachment
+      // The attachment content MUST be clean base64 string (no data URI prefix, no spaces)
+      const cleanBase64ForRequest = cleanBase64;
 
       const requestBody = {
         sender: {
@@ -971,11 +1954,28 @@ class EmailService {
         replyTo: { email: collectionEmail },
         attachment: [
           {
-            name: pdfFileName,
-            content: pdfBase64,
+            name: finalPdfFileName,
+            content: cleanBase64ForRequest,
           },
         ],
       };
+
+      console.log(`📧 Sending paid invoice email via Brevo API...`);
+      console.log(`📧 To: ${invoiceData.customerEmail}`);
+      console.log(
+        `📧 Subject: ✅ Payment Confirmed - ${invoiceData.invoiceNumber}`,
+      );
+      console.log(`📧 Sender: ${senderName} <${senderEmailAddress}>`);
+      console.log(`📧 BCC: ${collectionEmail}, ${this.adminEmail}`);
+      console.log(
+        `📧 PDF Attachment: ${finalPdfFileName} (${finalPdfBuffer.length} bytes)`,
+      );
+      console.log(
+        `📧 PDF Base64 length: ${cleanBase64ForRequest.length} characters`,
+      );
+      console.log(
+        `📧 PDF Base64 first 50 chars: ${cleanBase64ForRequest.substring(0, 50)}...`,
+      );
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 30000);
@@ -997,19 +1997,23 @@ class EmailService {
         if (response.ok) {
           const data: any = await response.json();
           console.log(
-            `✅ Paid invoice email sent to ${invoiceData.customerEmail}`,
+            `✅ Paid invoice email sent successfully to ${invoiceData.customerEmail}`,
           );
           console.log(`   Invoice: ${invoiceData.invoiceNumber}`);
           console.log(`   Location: ${userLocation || "Not specified"}`);
           console.log(`   Sender: ${senderName} <${senderEmailAddress}>`);
           console.log(`   Collection Email (BCC): ${collectionEmail}`);
           console.log(`   Message ID: ${data.messageId || "N/A"}`);
+          console.log(`   ✅ PDF Attachment: ${finalPdfFileName} sent`);
+          console.log(`   ✅ PDF Size: ${finalPdfBuffer.length} bytes`);
+          console.log(`✅ ========================================`);
           return true;
         } else {
           const errorText = await response.text();
           console.error(
             `❌ Failed to send paid invoice email: ${response.status} - ${errorText}`,
           );
+          console.error(`❌ ========================================`);
           return false;
         }
       } catch (fetchError: any) {
@@ -1018,15 +2022,207 @@ class EmailService {
           `❌ Error sending paid invoice email:`,
           fetchError.message,
         );
+        console.error(`❌ ========================================`);
         return false;
       }
     } catch (error) {
       console.error(`❌ Error sending paid invoice email:`, error);
+      console.error(`❌ ========================================`);
       return false;
     }
   }
 
-  // ==================== SEND INVOICE WITH PDF ATTACHMENT ====================
+  /**
+   * Send payment confirmation email with paid invoice attachment
+   * This method GENERATES the PDF and sends it with the email
+   */
+  async sendPaymentConfirmationEmail(
+    invoice: any,
+    payment: any,
+    pdfBuffer: Buffer,
+    pdfFileName: string,
+    location?: string,
+    useAdminSender?: boolean,
+    notes?: string,
+    adminName?: string,
+  ): Promise<boolean> {
+    console.log(`📧 sendPaymentConfirmationEmail called`);
+
+    try {
+      let finalPdfBuffer = pdfBuffer;
+      let finalPdfFileName = pdfFileName;
+
+      // If PDF buffer is empty or not provided, generate the PDF
+      if (!pdfBuffer || pdfBuffer.length === 0) {
+        console.log(`📧 Generating PDF for invoice: ${invoice.invoiceNumber}`);
+
+        // First try to get existing PDF from invoice
+        if (invoice.pdfUrl) {
+          try {
+            const pdfPath = path.join(__dirname, "../..", invoice.pdfUrl);
+            if (fs.existsSync(pdfPath)) {
+              finalPdfBuffer = fs.readFileSync(pdfPath);
+              finalPdfFileName = `${invoice.invoiceNumber}.pdf`;
+              console.log(
+                `📧 Using existing PDF from: ${pdfPath} (${finalPdfBuffer.length} bytes)`,
+              );
+            }
+          } catch (readError) {
+            console.log(`📧 Could not read existing PDF, generating new one`);
+          }
+        }
+
+        // If still no PDF, generate it
+        if (!finalPdfBuffer || finalPdfBuffer.length === 0) {
+          finalPdfBuffer = await generateInvoicePDF(invoice);
+          finalPdfFileName = `${invoice.invoiceNumber}.pdf`;
+          console.log(
+            `📧 PDF generated: ${finalPdfFileName} (${finalPdfBuffer.length} bytes)`,
+          );
+
+          // Save the PDF for future use
+          try {
+            const pdfDir = path.join(__dirname, "../../uploads/invoices");
+            if (!fs.existsSync(pdfDir)) {
+              fs.mkdirSync(pdfDir, { recursive: true });
+            }
+            const pdfPath = path.join(pdfDir, finalPdfFileName);
+            fs.writeFileSync(pdfPath, finalPdfBuffer);
+            await Invoice.findByIdAndUpdate(invoice._id, {
+              pdfUrl: `/uploads/invoices/${finalPdfFileName}`,
+              pdfGeneratedAt: new Date(),
+            });
+            console.log(`📧 PDF saved to: ${pdfPath}`);
+          } catch (saveError) {
+            console.error(`📧 Failed to save PDF:`, saveError);
+          }
+        }
+      }
+
+      // Prepare invoice data
+      const invoiceData = {
+        _id: invoice._id,
+        invoiceNumber: invoice.invoiceNumber,
+        customerName: invoice.customerName,
+        customerEmail: invoice.customerEmail,
+        customerAddress: invoice.customerAddress,
+        total: invoice.total,
+        subtotal: invoice.subtotal,
+        discountAmount: invoice.discountAmount || 0,
+        taxAmount: invoice.taxAmount || 0,
+        taxRate: invoice.taxRate || 0,
+        items: invoice.items || [],
+        invoiceType: invoice.invoiceType || "Monthly",
+        isInstallationFee: invoice.isInstallationFee || false,
+        isProRated: invoice.isProRated || false,
+        dueDate: invoice.dueDate,
+        paidAt: invoice.paidAt || payment?.paidAt,
+        referenceNumber: payment?.referenceNumber,
+        location: location || invoice.location,
+        notes: invoice.notes || notes,
+        billingPeriod: invoice.billingPeriod,
+        issuedDate: invoice.issuedDate,
+        proRatedDays: invoice.proRatedDays || 0,
+        planName: invoice.planName,
+      };
+
+      console.log(
+        `📧 Sending paid invoice email with PDF (${finalPdfBuffer ? finalPdfBuffer.length : 0} bytes)`,
+      );
+
+      return await this.sendPaidInvoiceEmail(
+        invoiceData,
+        finalPdfBuffer,
+        finalPdfFileName,
+        payment,
+        location,
+        useAdminSender,
+      );
+    } catch (error) {
+      console.error(`❌ Error in sendPaymentConfirmationEmail:`, error);
+
+      // Fallback: send email without PDF
+      try {
+        const htmlContent = this.generatePaymentConfirmationHTML(
+          invoice,
+          payment,
+          invoice.total || 0,
+          new Date().toLocaleString(),
+          location,
+          getCollectionEmailByLocation(location || ""),
+          invoice.isInstallationFee || false,
+        );
+
+        await this.sendEmail(
+          invoice.customerEmail,
+          `✅ Payment Confirmed - ${invoice.invoiceNumber}`,
+          htmlContent,
+          true,
+          location,
+          {
+            bcc: [
+              getCollectionEmailByLocation(location || ""),
+              this.adminEmail,
+            ],
+            replyTo: getCollectionEmailByLocation(location || ""),
+          },
+        );
+        console.log(
+          `✅ Fallback email sent without PDF to ${invoice.customerEmail}`,
+        );
+        return true;
+      } catch (fallbackError) {
+        console.error(`❌ Fallback email also failed:`, fallbackError);
+        return false;
+      }
+    }
+  }
+
+  /**
+   * Send billing email with location
+   */
+  async sendBillingEmail(
+    user: IUser | any,
+    billing: any,
+    location?: string,
+    options?: {
+      cc?: string | string[];
+      attachments?: any[];
+      replyTo?: string;
+      useAdminSender?: boolean;
+    },
+  ): Promise<boolean> {
+    try {
+      const userLocation = location || (await getLocationFromEntity(user));
+      const collectionEmail = getCollectionEmailByLocation(userLocation);
+
+      const subject = `🧾 Invoice #${billing.invoiceNumber || billing._id} - Mister Fyber`;
+
+      const html = this.generateInvoiceHTML(user, billing, userLocation);
+
+      return await this.sendEmail(
+        user.email,
+        subject,
+        html,
+        true,
+        userLocation,
+        {
+          cc: options?.cc,
+          attachments: options?.attachments,
+          replyTo: options?.replyTo || collectionEmail,
+          bcc: [collectionEmail, this.adminEmail],
+          useAdminSender: options?.useAdminSender || false,
+        },
+      );
+    } catch (error) {
+      console.error(`❌ Error sending billing email:`, error);
+      return false;
+    }
+  }
+
+  /**
+   * Send invoice with PDF attachment
+   */
   async sendInvoiceWithPDF(
     invoiceData: any,
     pdfBuffer: Buffer,
@@ -1059,7 +2255,6 @@ class EmailService {
       const userLocation = location || invoiceData.location || "";
       const collectionEmail = getCollectionEmailByLocation(userLocation);
 
-      // ========== DETERMINE SENDER ==========
       let senderName = "Mister Fyber";
       let senderEmailAddress = "admin@misterfyber.com";
 
@@ -1090,6 +2285,10 @@ class EmailService {
           );
         }
       }
+
+      // Convert PDF to base64
+      const pdfBase64 = pdfBuffer.toString("base64");
+      const cleanBase64 = pdfBase64.replace(/\s/g, "");
 
       const dueDate = invoiceData.dueDate
         ? new Date(invoiceData.dueDate).toLocaleDateString()
@@ -1192,6 +2391,7 @@ class EmailService {
         `;
       }
 
+      // COMPLETE HTML WITH PDF ATTACHMENT NOTE
       const html = `
         <!DOCTYPE html>
         <html>
@@ -1212,6 +2412,7 @@ class EmailService {
                 .company-info { text-align: center; font-size: 12px; color: #666; margin: 10px 0; }
                 .invoice-type { display: inline-block; background: #1a237e; color: white; padding: 3px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; }
                 .sender-info { background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center; }
+                .attachments-note { background: #e7f3ff; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #1a56db; }
             </style>
         </head>
         <body>
@@ -1245,6 +2446,13 @@ class EmailService {
                     ${itemsHtml}
                     ${paymentInstructions}
 
+                    <!-- CRITICAL: PDF ATTACHMENT NOTE -->
+                    <div class="attachments-note">
+                        <p style="margin: 0; color: #1a56db;">
+                            <strong>📎 Invoice PDF Attached:</strong> A copy of your invoice (${invoiceData.invoiceNumber}) is attached to this email for your records.
+                        </p>
+                    </div>
+
                     ${invoiceData.notes ? `<div style="background: #e7f3ff; padding: 15px; border-radius: 5px; margin: 20px 0;"><p><strong>Notes:</strong><br>${invoiceData.notes}</p></div>` : ""}
                     
                     <div class="warning">
@@ -1271,8 +2479,7 @@ class EmailService {
         </html>
       `;
 
-      const pdfBase64 = pdfBuffer.toString("base64");
-
+      // Build the request with PDF attachment
       const requestBody = {
         sender: {
           name: senderName,
@@ -1289,10 +2496,21 @@ class EmailService {
         attachment: [
           {
             name: pdfFileName,
-            content: pdfBase64,
+            content: cleanBase64,
           },
         ],
       };
+
+      console.log(`📧 Sending invoice with PDF via Brevo API...`);
+      console.log(`📧 To: ${invoiceData.customerEmail}`);
+      console.log(
+        `📧 Subject: 🧾 Invoice #${invoiceData.invoiceNumber} - Mister Fyber`,
+      );
+      console.log(`📧 Sender: ${senderName} <${senderEmailAddress}>`);
+      console.log(`📧 BCC: ${collectionEmail}, ${this.adminEmail}`);
+      console.log(
+        `📧 PDF Attachment: ${pdfFileName} (${pdfBuffer.length} bytes)`,
+      );
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 30000);
@@ -1321,6 +2539,8 @@ class EmailService {
           console.log(`   Sender: ${senderName} <${senderEmailAddress}>`);
           console.log(`   Collection Email (BCC): ${collectionEmail}`);
           console.log(`   Message ID: ${data.messageId || "N/A"}`);
+          console.log(`   ✅ PDF Attachment: ${pdfFileName} sent`);
+          console.log(`   ✅ PDF Size: ${pdfBuffer.length} bytes`);
           return true;
         } else {
           const errorText = await response.text();
@@ -1340,6 +2560,762 @@ class EmailService {
     }
   }
 
+  /**
+   * Send invoice (customer)
+   */
+  async sendInvoice(
+    user: IUser | any,
+    billing: any,
+    location?: string,
+    useAdminSender?: boolean,
+  ): Promise<void> {
+    try {
+      const userLocation = location || (await getLocationFromEntity(user));
+      await this.sendBillingEmail(user, billing, userLocation, {
+        useAdminSender,
+      });
+    } catch (error) {
+      console.error(`❌ Error sending invoice:`, error);
+    }
+  }
+
+  /**
+   * Send payment reminder
+   */
+  async sendPaymentReminder(
+    user: IUser | any,
+    billing: any,
+    location?: string,
+    useAdminSender?: boolean,
+  ): Promise<void> {
+    try {
+      const userLocation = location || (await getLocationFromEntity(user));
+      const collectionEmail = getCollectionEmailByLocation(userLocation);
+
+      const dueDate = billing.dueDate
+        ? new Date(billing.dueDate).toLocaleDateString()
+        : "N/A";
+      const amount = billing.total || billing.amount || 0;
+
+      const html = this.generatePaymentReminderHTML(
+        user,
+        billing,
+        amount,
+        dueDate,
+        userLocation,
+        collectionEmail,
+        billing.isInstallationBill || false,
+        billing.isProRated || false,
+      );
+
+      await this.sendEmail(
+        user.email,
+        `⚠️ Payment Reminder - Due ${dueDate}`,
+        html,
+        true,
+        userLocation,
+        {
+          bcc: [collectionEmail, this.adminEmail],
+          replyTo: collectionEmail,
+          useAdminSender: useAdminSender || false,
+        },
+      );
+    } catch (error) {
+      console.error(`❌ Error sending payment reminder:`, error);
+    }
+  }
+
+  /**
+   * Send due date reminder
+   */
+  async sendDueDateReminder(
+    user: IUser | any,
+    billing: any,
+    location?: string,
+    useAdminSender?: boolean,
+  ): Promise<void> {
+    try {
+      const userLocation = location || (await getLocationFromEntity(user));
+      const collectionEmail = getCollectionEmailByLocation(userLocation);
+
+      const dueDate = billing.dueDate
+        ? new Date(billing.dueDate).toLocaleDateString()
+        : "N/A";
+      const amount = billing.total || billing.amount || 0;
+
+      const html = this.generateDueDateReminderHTML(
+        user,
+        billing,
+        amount,
+        dueDate,
+        userLocation,
+        collectionEmail,
+        billing.isInstallationBill || false,
+        billing.isProRated || false,
+      );
+
+      await this.sendEmail(
+        user.email,
+        `⚠️ PAYMENT DUE TODAY - ${billing.invoiceNumber || billing._id}`,
+        html,
+        true,
+        userLocation,
+        {
+          bcc: [collectionEmail, this.adminEmail],
+          replyTo: collectionEmail,
+          useAdminSender: useAdminSender || false,
+        },
+      );
+    } catch (error) {
+      console.error(`❌ Error sending due date reminder:`, error);
+    }
+  }
+
+  /**
+   * Send bill without account
+   */
+  async sendBillWithoutAccount(
+    application: any,
+    bill: any,
+    plan: any,
+    location?: string,
+    useAdminSender?: boolean,
+  ): Promise<void> {
+    try {
+      const userLocation =
+        location || (await getLocationFromEntity(application));
+      const collectionEmail = getCollectionEmailByLocation(userLocation);
+
+      const dueDate = bill.dueDate
+        ? new Date(bill.dueDate).toLocaleDateString()
+        : "N/A";
+      const amount = bill.total || 0;
+
+      const html = this.generateBillWithoutAccountHTML(
+        application,
+        bill,
+        plan,
+        amount,
+        dueDate,
+        userLocation,
+        collectionEmail,
+      );
+
+      await this.sendEmail(
+        application.email,
+        `🧾 Your Bill is Ready - ${bill.invoiceNumber}`,
+        html,
+        true,
+        userLocation,
+        {
+          bcc: [collectionEmail, this.adminEmail],
+          replyTo: collectionEmail,
+          useAdminSender: useAdminSender || false,
+        },
+      );
+    } catch (error) {
+      console.error(`❌ Error sending bill without account:`, error);
+    }
+  }
+
+  /**
+   * Send billing reminder (customer)
+   */
+  async sendBillingReminder(
+    user: IUser | any,
+    billing: any,
+    location?: string,
+    useAdminSender?: boolean,
+  ): Promise<void> {
+    try {
+      const userLocation = location || (await getLocationFromEntity(user));
+      const collectionEmail = getCollectionEmailByLocation(userLocation);
+
+      const dueDate = billing.dueDate
+        ? new Date(billing.dueDate).toLocaleDateString()
+        : "N/A";
+      const amount = billing.total || billing.amount || 0;
+      const frontendUrl =
+        process.env.FRONTEND_URL || "https://www.misterfyber.com";
+
+      const locationBadge = userLocation
+        ? `
+        <div style="display: inline-block; background: ${userLocation.toLowerCase() === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin-bottom: 10px;">
+          📍 ${userLocation.toUpperCase()}
+        </div>
+      `
+        : "";
+
+      const html = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <title>Billing Reminder</title>
+        </head>
+        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+            <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+                <h2 style="color: #f39c12;">📅 Billing Reminder</h2>
+                <p>Hello ${user.firstName || user.email},</p>
+                <p>Your Mister Fyber bill is due on ${dueDate}.</p>
+                ${locationBadge}
+                <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                    <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
+                    <p><strong>Due Date:</strong> ${dueDate}</p>
+                    ${userLocation ? `<p><strong>Location:</strong> ${userLocation.toUpperCase()}</p>` : ""}
+                </div>
+                <div style="text-align: center; margin: 30px 0;">
+                    <a href="${frontendUrl}/billing" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">View Bill</a>
+                </div>
+                <hr>
+                <p style="color: #666; font-size: 12px;">This is an automated reminder from Mister Fyber.</p>
+                ${collectionEmail ? `<p style="color: #666; font-size: 12px;">Collection Email: <a href="mailto:${collectionEmail}">${collectionEmail}</a></p>` : ""}
+            </div>
+        </body>
+        </html>
+      `;
+
+      await this.sendEmail(
+        user.email,
+        `📅 Billing Reminder - Due ${dueDate}`,
+        html,
+        true,
+        userLocation,
+        {
+          bcc: [collectionEmail, this.adminEmail],
+          replyTo: collectionEmail,
+          useAdminSender: useAdminSender || false,
+        },
+      );
+    } catch (error) {
+      console.error(`❌ Error sending billing reminder:`, error);
+    }
+  }
+
+  // ==================== OTHER EMAIL METHODS ====================
+
+  /**
+   * Send welcome email
+   */
+  async sendWelcomeEmail(user: IUser): Promise<void> {
+    const html = this.generateWelcomeHTML(user);
+    await this.sendEmail(
+      user.email,
+      `🎉 Welcome to Mister Fyber, ${user.firstName || user.email}!`,
+      html,
+      true,
+    );
+
+    const adminHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+          <h2 style="color: #28a745;">👤 New User Registration</h2>
+          <p>A new user has registered on Mister Fyber.</p>
+          <hr>
+          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px;">
+              <p><strong>Name:</strong> ${user.firstName || ""} ${user.lastName || ""}</p>
+              <p><strong>Username:</strong> ${user.username || user.email}</p>
+              <p><strong>Email:</strong> ${user.email}</p>
+              <p><strong>Phone:</strong> ${user.phoneNumber || "N/A"}</p>
+              <p><strong>Status:</strong> ${user.status || "pending"}</p>
+              <p><strong>Registered:</strong> ${new Date().toLocaleString()}</p>
+          </div>
+      </div>
+    `;
+    await this.sendToAdmin(`New User Registration: ${user.email}`, adminHtml);
+  }
+
+  /**
+   * Send password reset
+   */
+  async sendPasswordReset(user: IUser, resetToken: string): Promise<void> {
+    const html = this.generatePasswordResetHTML(user, resetToken);
+    await this.sendEmail(user.email, "Password Reset Request", html, true);
+  }
+
+  /**
+   * Send account credentials
+   */
+  async sendAccountCredentials(
+    user: IUser,
+    username: string,
+    password: string,
+    applicationId: string,
+  ): Promise<void> {
+    const html = this.generateAccountCredentialsHTML(
+      user,
+      username,
+      password,
+      applicationId,
+    );
+    await this.sendEmail(
+      user.email,
+      `🔐 Your Mister Fyber Account Credentials`,
+      html,
+      true,
+    );
+  }
+
+  /**
+   * Send application received
+   */
+  async sendApplicationReceived(application: any, plan: any): Promise<void> {
+    const html = this.generateApplicationReceivedHTML(application, plan);
+    await this.sendEmail(
+      application.email,
+      `Application Received - ${application.applicationId}`,
+      html,
+      true,
+    );
+
+    const adminHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+          <h2 style="color: #f39c12;">📋 New Application</h2>
+          <p><strong>Application ID:</strong> ${application.applicationId}</p>
+          <p><strong>Name:</strong> ${application.firstName} ${application.lastName}</p>
+          <p><strong>Email:</strong> ${application.email}</p>
+          <p><strong>Phone:</strong> ${application.phoneNumber}</p>
+          <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
+          <p><strong>Submitted:</strong> ${new Date().toLocaleString()}</p>
+      </div>
+    `;
+    await this.sendToAdmin(
+      `New Application: ${application.applicationId} from ${application.firstName} ${application.lastName}`,
+      adminHtml,
+    );
+  }
+
+  /**
+   * Send application approved
+   */
+  async sendApplicationApproved(application: any, plan: any): Promise<void> {
+    const html = this.generateApplicationApprovedHTML(application, plan);
+    await this.sendEmail(
+      application.email,
+      `✅ Application Approved - Create Your Account`,
+      html,
+      true,
+    );
+
+    const adminHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+          <h2 style="color: #28a745;">✅ Application Approved</h2>
+          <p>You have approved application #${application.applicationId} for Mister Fyber.</p>
+          <p><strong>Applicant:</strong> ${application.firstName} ${application.lastName}</p>
+          <p><strong>Email:</strong> ${application.email}</p>
+          <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
+          <p>An email has been sent to the applicant with instructions to create their account.</p>
+      </div>
+    `;
+    await this.sendToAdmin(
+      `Application Approved: ${application.applicationId}`,
+      adminHtml,
+    );
+  }
+
+  /**
+   * Send application rejected
+   */
+  async sendApplicationRejected(
+    application: any,
+    reason: string,
+  ): Promise<void> {
+    const html = this.generateApplicationRejectedHTML(application, reason);
+    await this.sendEmail(
+      application.email,
+      `Application Status Update`,
+      html,
+      true,
+    );
+
+    const adminHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+          <h2 style="color: #dc3545;">Application Rejected</h2>
+          <p>Application #${application.applicationId} for Mister Fyber has been rejected.</p>
+          <p><strong>Applicant:</strong> ${application.firstName} ${application.lastName}</p>
+          <p><strong>Email:</strong> ${application.email}</p>
+          <p><strong>Reason:</strong> ${reason || "Not specified"}</p>
+      </div>
+    `;
+    await this.sendToAdmin(
+      `Application Rejected: ${application.applicationId}`,
+      adminHtml,
+    );
+  }
+
+  /**
+   * Send new application notification
+   */
+  async sendNewApplicationNotification(
+    application: any,
+    plan: any,
+  ): Promise<void> {
+    const html = this.generateNewApplicationNotificationHTML(application, plan);
+    await this.sendToAdmin(
+      `🆕 NEW APPLICATION: ${application.applicationId} from ${application.firstName} ${application.lastName}`,
+      html,
+    );
+  }
+
+  /**
+   * Send password change notification
+   */
+  async sendPasswordChangeNotification(user: IUser): Promise<void> {
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <meta charset="UTF-8">
+          <title>Password Changed</title>
+          <style>
+              body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+              .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
+              .header { text-align: center; border-bottom: 2px solid #28a745; padding-bottom: 20px; }
+              .header h1 { color: #28a745; margin: 0; }
+              .content { padding: 20px 0; }
+              .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
+          </style>
+      </head>
+      <body>
+          <div class="container">
+              <div class="header">
+                  <h1>🔐 Password Changed</h1>
+              </div>
+              <div class="content">
+                  <p>Dear ${user.firstName || user.email},</p>
+                  <p>Your password has been changed successfully.</p>
+                  <p>If you did not perform this action, please contact support immediately.</p>
+              </div>
+              <div class="footer">
+                  <p>Mister Fyber - Your trusted internet provider</p>
+                  <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
+              </div>
+          </div>
+      </body>
+      </html>
+    `;
+    await this.sendEmail(
+      user.email,
+      "Password Changed Successfully",
+      html,
+      true,
+    );
+  }
+
+  /**
+   * Send account deletion request
+   */
+  async sendAccountDeletionRequest(user: IUser, reason: string): Promise<void> {
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <meta charset="UTF-8">
+          <title>Account Deletion Request</title>
+          <style>
+              body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+              .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
+              .header { text-align: center; border-bottom: 2px solid #dc3545; padding-bottom: 20px; }
+              .header h1 { color: #dc3545; margin: 0; }
+              .content { padding: 20px 0; }
+              .details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
+              .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
+          </style>
+      </head>
+      <body>
+          <div class="container">
+              <div class="header">
+                  <h1>🗑️ Account Deletion Request</h1>
+              </div>
+              <div class="content">
+                  <p>A user has requested account deletion.</p>
+                  <div class="details">
+                      <p><strong>Name:</strong> ${user.firstName || ""} ${user.lastName || ""}</p>
+                      <p><strong>Email:</strong> ${user.email}</p>
+                      <p><strong>Username:</strong> ${user.username}</p>
+                      <p><strong>Reason:</strong> ${reason || "Not provided"}</p>
+                      <p><strong>Requested At:</strong> ${new Date().toLocaleString()}</p>
+                  </div>
+              </div>
+              <div class="footer">
+                  <p>Mister Fyber - Admin Notification</p>
+              </div>
+          </div>
+      </body>
+      </html>
+    `;
+    await this.sendToAdmin("Account Deletion Request", html);
+  }
+
+  /**
+   * Send support ticket notification
+   */
+  async sendSupportTicketNotification(
+    userEmail: string,
+    subject: string,
+    category: string,
+    message: string,
+    priority: string,
+  ): Promise<void> {
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <meta charset="UTF-8">
+          <title>New Support Ticket</title>
+          <style>
+              body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+              .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
+              .header { text-align: center; border-bottom: 2px solid #007bff; padding-bottom: 20px; }
+              .header h1 { color: #007bff; margin: 0; }
+              .content { padding: 20px 0; }
+              .details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
+              .message-box { background: white; padding: 10px; border-radius: 5px; border-left: 3px solid #007bff; }
+              .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
+          </style>
+      </head>
+      <body>
+          <div class="container">
+              <div class="header">
+                  <h1>🎫 New Support Ticket</h1>
+              </div>
+              <div class="content">
+                  <div class="details">
+                      <p><strong>User:</strong> ${userEmail}</p>
+                      <p><strong>Subject:</strong> ${subject}</p>
+                      <p><strong>Category:</strong> ${category}</p>
+                      <p><strong>Priority:</strong> ${priority}</p>
+                      <p><strong>Message:</strong></p>
+                      <div class="message-box">${message}</div>
+                      <p><strong>Submitted At:</strong> ${new Date().toLocaleString()}</p>
+                  </div>
+              </div>
+              <div class="footer">
+                  <p>Mister Fyber - Support Ticket</p>
+              </div>
+          </div>
+      </body>
+      </html>
+    `;
+    await this.sendEmail(
+      this.supportEmail,
+      `New Support Ticket: ${subject}`,
+      html,
+      false,
+    );
+  }
+
+  /**
+   * Send plan change request notification
+   */
+  async sendPlanChangeRequestNotification(
+    user: IUser,
+    newPlan: any,
+    currentRate: number,
+    effectiveDate: string,
+  ): Promise<void> {
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <meta charset="UTF-8">
+          <title>Plan Change Request</title>
+          <style>
+              body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+              .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
+              .header { text-align: center; border-bottom: 2px solid #f39c12; padding-bottom: 20px; }
+              .header h1 { color: #f39c12; margin: 0; }
+              .content { padding: 20px 0; }
+              .details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
+              .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
+          </style>
+      </head>
+      <body>
+          <div class="container">
+              <div class="header">
+                  <h1>📡 Plan Change Request</h1>
+              </div>
+              <div class="content">
+                  <p>A user has requested a plan change.</p>
+                  <div class="details">
+                      <p><strong>User:</strong> ${user.firstName || ""} ${user.lastName || ""} (${user.email})</p>
+                      <p><strong>Username:</strong> ${user.username}</p>
+                      <p><strong>Current Monthly Rate:</strong> ₱${safeToFixed(currentRate)}</p>
+                      <p><strong>Requested Plan:</strong> ${newPlan.name}</p>
+                      <p><strong>New Plan Price:</strong> ₱${safeToFixed(newPlan.price)}</p>
+                      <p><strong>Requested Effective Date:</strong> ${effectiveDate || "Immediate"}</p>
+                      <p><strong>Requested At:</strong> ${new Date().toLocaleString()}</p>
+                  </div>
+                  <p>Please review and approve/reject this request in the admin panel.</p>
+              </div>
+              <div class="footer">
+                  <p>Mister Fyber - Admin Notification</p>
+              </div>
+          </div>
+      </body>
+      </html>
+    `;
+    await this.sendToAdmin(`Plan Change Request - ${user.username}`, html);
+  }
+
+  /**
+   * Send account status update
+   */
+  async sendAccountStatusUpdate(user: IUser): Promise<void> {
+    const statusMessages: Record<string, string> = {
+      active:
+        "Your Mister Fyber account has been activated! You can now log in and enjoy our services.",
+      suspended:
+        "Your Mister Fyber account has been suspended. Please contact support for assistance.",
+      inactive:
+        "Your Mister Fyber account is currently inactive. Please contact support for more information.",
+      pending:
+        "Your Mister Fyber account is still pending approval. We will notify you once verified.",
+    };
+    const message =
+      statusMessages[user.status || "pending"] ||
+      `Your Mister Fyber account status has been updated to: ${user.status}`;
+
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <meta charset="UTF-8">
+          <title>Account Status Update</title>
+      </head>
+      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+          <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+              <h2 style="color: #333;">🔄 Account Status Update</h2>
+              <p>Hello ${user.firstName || user.email},</p>
+              <div style="padding: 20px; background-color: #f8f9fa; border-left: 4px solid #007bff;">
+                  <p>${message}</p>
+              </div>
+              <p>If you have any questions, please contact our support team.</p>
+              <hr>
+              <p style="color: #666; font-size: 12px;">Mister Fyber</p>
+          </div>
+      </body>
+      </html>
+    `;
+    await this.sendEmail(
+      user.email,
+      `🔄 Account Status Update: ${user.status || "pending"}`,
+      html,
+      true,
+    );
+
+    const adminHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+          <h2 style="color: #333;">🔄 Account Status Changed</h2>
+          <p>Mister Fyber user ${user.firstName || ""} ${user.lastName || ""} (${user.email}) status changed to: <strong>${user.status || "pending"}</strong></p>
+          <p>Date: ${new Date().toLocaleString()}</p>
+      </div>
+    `;
+    await this.sendToAdmin(
+      `Account Status Changed: ${user.email} → ${user.status || "pending"}`,
+      adminHtml,
+    );
+  }
+
+  /**
+   * Send plan change notification
+   */
+  async sendPlanChangeNotification(
+    user: IUser,
+    oldPlan: any,
+    newPlan: any,
+  ): Promise<void> {
+    const html = this.generatePlanChangeNotificationHTML(
+      user,
+      oldPlan,
+      newPlan,
+    );
+    await this.sendEmail(
+      user.email,
+      `📡 Plan Changed to ${newPlan?.name || "N/A"}`,
+      html,
+      true,
+    );
+  }
+
+  /**
+   * Send service reminder
+   */
+  async sendServiceReminder(user: IUser): Promise<void> {
+    const frontendUrl =
+      process.env.FRONTEND_URL || "https://www.misterfyber.com";
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <meta charset="UTF-8">
+          <title>Weekly Service Update</title>
+      </head>
+      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+          <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+              <h2 style="color: #333;">📊 Weekly Service Update</h2>
+              <p>Hello ${user.firstName || user.email},</p>
+              <p>Thank you for being a valued Mister Fyber customer. Check your usage and billing status in your dashboard.</p>
+              <div style="text-align: center; margin: 30px 0;">
+                  <a href="${frontendUrl}/dashboard" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">Go to Dashboard</a>
+              </div>
+              <hr>
+              <p style="color: #666; font-size: 12px;">Stay updated with your internet usage and billing with Mister Fyber.</p>
+          </div>
+      </body>
+      </html>
+    `;
+    await this.sendEmail(user.email, "Weekly Service Update", html, true);
+  }
+
+  /**
+   * Send service interruption
+   */
+  async sendServiceInterruption(
+    user: IUser,
+    reason: string,
+    estimatedDuration?: Date,
+  ): Promise<void> {
+    const duration = estimatedDuration
+      ? new Date(estimatedDuration).toLocaleString()
+      : "Unknown";
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <meta charset="UTF-8">
+          <title>Service Interruption</title>
+      </head>
+      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+          <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+              <h2 style="color: #dc3545;">⚠️ Service Interruption</h2>
+              <p>Hello ${user.firstName || user.email},</p>
+              <p>We want to inform you about a service interruption with Mister Fyber.</p>
+              <div style="margin-top: 20px; padding: 15px; background-color: #f8f9fa; border-left: 4px solid #dc3545;">
+                  <p><strong>Reason:</strong> ${reason}</p>
+                  <p><strong>Estimated Duration:</strong> ${duration}</p>
+              </div>
+              <p>We apologize for any inconvenience. Our team is working to restore service as soon as possible.</p>
+              <hr>
+              <p style="color: #666; font-size: 12px;">This is an automated notification from Mister Fyber.</p>
+          </div>
+      </body>
+      </html>
+    `;
+    await this.sendEmail(user.email, "Service Interruption Notice", html, true);
+
+    const adminHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+          <h2 style="color: #dc3545;">⚠️ Service Interruption Reported</h2>
+          <p><strong>User:</strong> ${user.firstName || ""} ${user.lastName || ""} (${user.email})</p>
+          <p><strong>Reason:</strong> ${reason}</p>
+          <p><strong>Estimated Duration:</strong> ${duration}</p>
+          <p><strong>Reported:</strong> ${new Date().toLocaleString()}</p>
+      </div>
+    `;
+    await this.sendToAdmin(`Service Interruption: ${user.email}`, adminHtml);
+  }
+
+  // ==================== GENERATE INVOICE HTML ====================
   private generateInvoiceHTML(
     user: any,
     billing: any,
@@ -1452,1456 +3428,9 @@ class EmailService {
     `;
   }
 
-  // ==================== SEND PAYMENT REMINDER ====================
-  async sendPaymentReminder(
-    user: IUser | any,
-    billing: any,
-    location?: string,
-    useAdminSender?: boolean,
-  ): Promise<void> {
-    try {
-      const userLocation = location || (await getLocationFromEntity(user));
-      const collectionEmail = getCollectionEmailByLocation(userLocation);
-
-      const dueDate = billing.dueDate
-        ? new Date(billing.dueDate).toLocaleDateString()
-        : "N/A";
-      const amount = billing.total || billing.amount || 0;
-      const frontendUrl =
-        process.env.FRONTEND_URL || "https://www.misterfyber.com";
-
-      let senderName = "Mister Fyber";
-      let senderEmailAddress = "admin@misterfyber.com";
-
-      if (useAdminSender) {
-        senderEmailAddress = "admin@misterfyber.com";
-        senderName = "Mister Fyber Admin";
-        console.log(
-          `📧 Using admin email as sender for reminder: ${senderEmailAddress}`,
-        );
-      } else if (userLocation) {
-        const collectionEmailForLocation =
-          getCollectionEmailByLocation(userLocation);
-        if (
-          collectionEmailForLocation &&
-          collectionEmailForLocation !== DEFAULT_COLLECTION_EMAIL
-        ) {
-          senderEmailAddress = collectionEmailForLocation;
-          if (collectionEmailForLocation.includes("breeze")) {
-            senderName = "Mister Fyber Breeze Collection";
-          } else if (
-            collectionEmailForLocation.includes("sil") ||
-            collectionEmailForLocation.includes("silk")
-          ) {
-            senderName = "Mister Fyber SIL Collection";
-          } else {
-            senderName = "Mister Fyber Collection";
-          }
-        }
-      }
-
-      const isInstallationBill = billing.isInstallationBill;
-
-      let reminderMessage = "";
-      if (isInstallationBill) {
-        reminderMessage = `<p><strong>Note:</strong> This is your installation fee. Once paid, our team will schedule your installation.</p>`;
-      } else if (billing.isProRated) {
-        reminderMessage = `<p><strong>Note:</strong> This is your pro-rated first bill. Once paid, your service will be fully activated.</p>`;
-      }
-
-      const locationBadge = userLocation
-        ? `
-        <div style="display: inline-block; background: ${userLocation.toLowerCase() === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin-bottom: 10px;">
-          📍 ${userLocation.toUpperCase()}
-        </div>
-      `
-        : "";
-
-      const senderBadge = useAdminSender
-        ? `
-        <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
-          <strong>📧 Sent from:</strong> Admin (admin@misterfyber.com)
-        </div>
-      `
-        : `
-        <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
-          <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
-        </div>
-      `;
-
-      const html = `
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="UTF-8">
-            <title>Payment Reminder</title>
-            <style>
-                .sender-info { background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center; }
-            </style>
-        </head>
-        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-            <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                <h2 style="color: #f39c12;">⚠️ Payment Reminder</h2>
-                <p>Hello ${user.firstName || user.email},</p>
-                <p>This is a friendly reminder that your Mister Fyber payment is due soon.</p>
-                ${senderBadge}
-                ${locationBadge}
-                <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                    <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
-                    <p><strong>Due Date:</strong> ${dueDate}</p>
-                    ${reminderMessage}
-                    ${userLocation ? `<p><strong>Location:</strong> ${userLocation.toUpperCase()}</p>` : ""}
-                </div>
-                <div style="text-align: center; margin: 30px 0;">
-                    <a href="${frontendUrl}/billing" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">Pay Now</a>
-                </div>
-                <p>Please pay before the due date to avoid service interruption.</p>
-                <hr>
-                <p style="color: #666; font-size: 12px;">This is an automated reminder from Mister Fyber.</p>
-                <p style="color: #666; font-size: 12px;">Collection Email: <a href="mailto:${collectionEmail}">${collectionEmail}</a></p>
-                <p style="color: #666; font-size: 12px;">Sent from: ${senderName} (${senderEmailAddress})</p>
-            </div>
-        </body>
-        </html>
-      `;
-
-      await this.sendEmail(
-        user.email,
-        `⚠️ Payment Reminder - Due ${dueDate}`,
-        html,
-        true,
-        userLocation,
-        {
-          bcc: [collectionEmail, this.adminEmail],
-          replyTo: collectionEmail,
-          useAdminSender: useAdminSender || false,
-        },
-      );
-    } catch (error) {
-      console.error(`❌ Error sending payment reminder:`, error);
-    }
-  }
-
-  // ==================== SEND DUE DATE REMINDER ====================
-  async sendDueDateReminder(
-    user: IUser | any,
-    billing: any,
-    location?: string,
-    useAdminSender?: boolean,
-  ): Promise<void> {
-    try {
-      const userLocation = location || (await getLocationFromEntity(user));
-      const collectionEmail = getCollectionEmailByLocation(userLocation);
-
-      let senderName = "Mister Fyber";
-      let senderEmailAddress = "admin@misterfyber.com";
-
-      if (useAdminSender) {
-        senderEmailAddress = "admin@misterfyber.com";
-        senderName = "Mister Fyber Admin";
-        console.log(
-          `📧 Using admin email as sender for due date reminder: ${senderEmailAddress}`,
-        );
-      } else if (userLocation) {
-        const collectionEmailForLocation =
-          getCollectionEmailByLocation(userLocation);
-        if (
-          collectionEmailForLocation &&
-          collectionEmailForLocation !== DEFAULT_COLLECTION_EMAIL
-        ) {
-          senderEmailAddress = collectionEmailForLocation;
-          if (collectionEmailForLocation.includes("breeze")) {
-            senderName = "Mister Fyber Breeze Collection";
-          } else if (
-            collectionEmailForLocation.includes("sil") ||
-            collectionEmailForLocation.includes("silk")
-          ) {
-            senderName = "Mister Fyber SIL Collection";
-          } else {
-            senderName = "Mister Fyber Collection";
-          }
-        }
-      }
-
-      const dueDate = billing.dueDate
-        ? new Date(billing.dueDate).toLocaleDateString()
-        : "N/A";
-      const amount = billing.total || billing.amount || 0;
-      const frontendUrl =
-        process.env.FRONTEND_URL || "https://www.misterfyber.com";
-
-      const isInstallationBill = billing.isInstallationBill;
-
-      let reminderMessage = "";
-      if (isInstallationBill) {
-        reminderMessage = `<p><strong>⚠️ IMPORTANT:</strong> This is your installation fee. Payment is due TODAY. Once paid, our team will schedule your installation.</p>`;
-      } else if (billing.isProRated) {
-        reminderMessage = `<p><strong>⚠️ IMPORTANT:</strong> This is your pro-rated first bill. Payment is due TODAY. Once paid, your service will be fully activated.</p>`;
-      } else {
-        reminderMessage = `<p><strong>⚠️ IMPORTANT:</strong> Your monthly subscription payment is due TODAY. Please pay immediately to avoid service interruption.</p>`;
-      }
-
-      const locationBadge = userLocation
-        ? `
-        <div style="display: inline-block; background: ${userLocation.toLowerCase() === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin-bottom: 10px;">
-          📍 ${userLocation.toUpperCase()}
-        </div>
-      `
-        : "";
-
-      const senderBadge = useAdminSender
-        ? `
-        <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
-          <strong>📧 Sent from:</strong> Admin (admin@misterfyber.com)
-        </div>
-      `
-        : `
-        <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
-          <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
-        </div>
-      `;
-
-      const html = `
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="UTF-8">
-            <title>⚠️ PAYMENT DUE TODAY - Mister Fyber</title>
-            <style>
-                body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-                .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
-                .header { text-align: center; border-bottom: 2px solid #dc3545; padding-bottom: 20px; }
-                .header h1 { color: #dc3545; margin: 0; }
-                .content { padding: 20px 0; }
-                .bill-details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
-                .button { display: inline-block; background-color: #dc3545; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; }
-                .warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }
-                .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
-                .sender-info { background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center; }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="header">
-                    <h1>⚠️ PAYMENT DUE TODAY</h1>
-                </div>
-                <div class="content">
-                    <p>Hello ${user.firstName || user.email},</p>
-                    <p><strong>Your Mister Fyber payment is due TODAY.</strong> Please settle your bill immediately to avoid service interruption.</p>
-                    ${senderBadge}
-                    ${locationBadge}
-                    <div class="bill-details">
-                        <h3 style="margin-top: 0;">📋 Invoice Details</h3>
-                        <p><strong>Invoice Number:</strong> ${billing.invoiceNumber || billing._id}</p>
-                        <p><strong>Amount Due:</strong> <span style="color: #dc3545; font-size: 18px;">₱${safeToFixed(amount)}</span></p>
-                        <p><strong>Due Date:</strong> <span style="color: #dc3545; font-weight: bold;">${dueDate} (TODAY)</span></p>
-                        ${billing.isProRated ? `<p><strong>Bill Type:</strong> Pro-rated (First Bill)</p>` : `<p><strong>Bill Type:</strong> Monthly Subscription</p>`}
-                        ${billing.installationFee && billing.installationFee > 0 && billing.isInstallationBill ? `<p><strong>Installation Fee:</strong> ₱${billing.installationFee.toLocaleString()}</p>` : ""}
-                        ${userLocation ? `<p><strong>Location:</strong> ${userLocation.toUpperCase()}</p>` : ""}
-                    </div>
-                    ${reminderMessage}
-                    <div class="warning">
-                        <strong>📌 After Today:</strong> If payment is not received, your account will enter a grace period. After the grace period, your service will be suspended.
-                    </div>
-                    <div style="text-align: center; margin: 30px 0;">
-                        <a href="${frontendUrl}/billing" class="button">💰 PAY NOW</a>
-                    </div>
-                    <p><strong>Payment Methods Accepted:</strong> GCash, Maya, Bank Transfer, Over-the-Counter</p>
-                    <p>If you have already made the payment, please disregard this notice.</p>
-                </div>
-                <div class="footer">
-                    <p>Mister Fyber - Your trusted internet provider</p>
-                    <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
-                    <p><small>Collection Email: <a href="mailto:${collectionEmail}">${collectionEmail}</a></small></p>
-                    <p><small>Sent from: ${senderName} (${senderEmailAddress})</small></p>
-                    <p><small>Late payments may incur service interruption after grace period.</small></p>
-                </div>
-            </div>
-        </body>
-        </html>
-      `;
-
-      await this.sendEmail(
-        user.email,
-        `⚠️ PAYMENT DUE TODAY - ${billing.invoiceNumber || billing._id}`,
-        html,
-        true,
-        userLocation,
-        {
-          bcc: [collectionEmail, this.adminEmail],
-          replyTo: collectionEmail,
-          useAdminSender: useAdminSender || false,
-        },
-      );
-    } catch (error) {
-      console.error(`❌ Error sending due date reminder:`, error);
-    }
-  }
-
-  // ==================== SEND PAYMENT CONFIRMATION ====================
-  async sendPaymentConfirmation(
-    user: IUser | any,
-    payment: any,
-    billing: any,
-    location?: string,
-    useAdminSender?: boolean,
-  ): Promise<void> {
-    try {
-      const userLocation = location || (await getLocationFromEntity(user));
-      const collectionEmail = getCollectionEmailByLocation(userLocation);
-
-      let senderName = "Mister Fyber";
-      let senderEmailAddress = "admin@misterfyber.com";
-
-      if (useAdminSender) {
-        senderEmailAddress = "admin@misterfyber.com";
-        senderName = "Mister Fyber Admin";
-        console.log(
-          `📧 Using admin email as sender for payment confirmation: ${senderEmailAddress}`,
-        );
-      } else if (userLocation) {
-        const collectionEmailForLocation =
-          getCollectionEmailByLocation(userLocation);
-        if (
-          collectionEmailForLocation &&
-          collectionEmailForLocation !== DEFAULT_COLLECTION_EMAIL
-        ) {
-          senderEmailAddress = collectionEmailForLocation;
-          if (collectionEmailForLocation.includes("breeze")) {
-            senderName = "Mister Fyber Breeze Collection";
-          } else if (
-            collectionEmailForLocation.includes("sil") ||
-            collectionEmailForLocation.includes("silk")
-          ) {
-            senderName = "Mister Fyber SIL Collection";
-          } else {
-            senderName = "Mister Fyber Collection";
-          }
-        }
-      }
-
-      const amount = payment.amount || payment.totalAmount || 0;
-      const isInstallationPayment =
-        payment.paymentType === "installation" ||
-        (billing && billing.isInstallationBill);
-
-      let additionalMessage = "";
-      if (isInstallationPayment) {
-        additionalMessage = `<p><strong>Installation Fee:</strong> Your installation fee has been paid. Our team will schedule your installation within 24-48 hours.</p>`;
-      } else if (billing?.isProRated) {
-        additionalMessage = `<p><strong>Note:</strong> Your pro-rated payment has been confirmed. Your service is now active!</p>`;
-      }
-
-      const locationBadge = userLocation
-        ? `
-        <div style="display: inline-block; background: ${userLocation.toLowerCase() === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin-bottom: 10px;">
-          📍 ${userLocation.toUpperCase()}
-        </div>
-      `
-        : "";
-
-      const senderBadge = useAdminSender
-        ? `
-        <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
-          <strong>📧 Sent from:</strong> Admin (admin@misterfyber.com)
-        </div>
-      `
-        : `
-        <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
-          <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
-        </div>
-      `;
-
-      const html = `
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="UTF-8">
-            <title>Payment Confirmation</title>
-            <style>
-                .sender-info { background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center; }
-            </style>
-        </head>
-        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-            <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                <h2 style="color: #28a745;">💰 Payment Confirmed!</h2>
-                <p>Hello ${user.firstName || user.email},</p>
-                <p>Thank you for your payment to Mister Fyber. Your transaction has been completed successfully.</p>
-                ${senderBadge}
-                ${locationBadge}
-                <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                    <h3 style="margin-top: 0;">Payment Details</h3>
-                    <p><strong>Payment ID:</strong> ${payment._id}</p>
-                    <p><strong>Amount Paid:</strong> ₱${safeToFixed(amount)}</p>
-                    <p><strong>Payment Method:</strong> ${payment.paymentMethod || "N/A"}</p>
-                    <p><strong>Reference:</strong> ${payment.referenceNumber || "N/A"}</p>
-                    <p><strong>Date:</strong> ${new Date().toLocaleString()}</p>
-                    ${additionalMessage}
-                    ${userLocation ? `<p><strong>Location:</strong> ${userLocation.toUpperCase()}</p>` : ""}
-                </div>
-                <hr>
-                <p style="color: #666; font-size: 12px;">Thank you for being a valued Mister Fyber customer!</p>
-                <p style="color: #666; font-size: 12px;">Sent from: ${senderName} (${senderEmailAddress})</p>
-            </div>
-        </body>
-        </html>
-      `;
-
-      await this.sendEmail(
-        user.email,
-        `💰 Payment Confirmation - ₱${safeToFixed(amount)}`,
-        html,
-        true,
-        userLocation,
-        {
-          bcc: [collectionEmail, this.adminEmail],
-          replyTo: collectionEmail,
-          useAdminSender: useAdminSender || false,
-        },
-      );
-    } catch (error) {
-      console.error(`❌ Error sending payment confirmation:`, error);
-    }
-  }
-
-  // ==================== SEND BILL WITHOUT ACCOUNT ====================
-  async sendBillWithoutAccount(
-    application: any,
-    bill: any,
-    plan: any,
-    location?: string,
-    useAdminSender?: boolean,
-  ): Promise<void> {
-    try {
-      const userLocation =
-        location || (await getLocationFromEntity(application));
-      const collectionEmail = getCollectionEmailByLocation(userLocation);
-
-      let senderName = "Mister Fyber";
-      let senderEmailAddress = "admin@misterfyber.com";
-
-      if (useAdminSender) {
-        senderEmailAddress = "admin@misterfyber.com";
-        senderName = "Mister Fyber Admin";
-        console.log(
-          `📧 Using admin email as sender for bill without account: ${senderEmailAddress}`,
-        );
-      } else if (userLocation) {
-        const collectionEmailForLocation =
-          getCollectionEmailByLocation(userLocation);
-        if (
-          collectionEmailForLocation &&
-          collectionEmailForLocation !== DEFAULT_COLLECTION_EMAIL
-        ) {
-          senderEmailAddress = collectionEmailForLocation;
-          if (collectionEmailForLocation.includes("breeze")) {
-            senderName = "Mister Fyber Breeze Collection";
-          } else if (
-            collectionEmailForLocation.includes("sil") ||
-            collectionEmailForLocation.includes("silk")
-          ) {
-            senderName = "Mister Fyber SIL Collection";
-          } else {
-            senderName = "Mister Fyber Collection";
-          }
-        }
-      }
-
-      const registerUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/register`;
-      const dueDate = bill.dueDate
-        ? new Date(bill.dueDate).toLocaleDateString()
-        : "N/A";
-      const amount = bill.total || 0;
-
-      const locationBadge = userLocation
-        ? `
-        <div style="display: inline-block; background: ${userLocation.toLowerCase() === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin-bottom: 10px;">
-          📍 ${userLocation.toUpperCase()}
-        </div>
-      `
-        : "";
-
-      const senderBadge = useAdminSender
-        ? `
-        <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
-          <strong>📧 Sent from:</strong> Admin (admin@misterfyber.com)
-        </div>
-      `
-        : `
-        <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
-          <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
-        </div>
-      `;
-
-      const html = `
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="UTF-8">
-            <title>Your Mister Fyber Bill is Ready</title>
-            <style>
-                body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-                .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
-                .header { text-align: center; border-bottom: 2px solid #007bff; padding-bottom: 20px; }
-                .header h1 { color: #007bff; margin: 0; }
-                .content { padding: 20px 0; }
-                .bill-details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
-                .button { display: inline-block; background-color: #28a745; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; }
-                .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
-                .warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }
-                .sender-info { background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center; }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="header">
-                    <h1>🧾 Your Bill is Ready</h1>
-                </div>
-                <div class="content">
-                    <p>Hello ${application.firstName} ${application.lastName},</p>
-                    <p>Your Mister Fyber bill is now ready. Since you haven't created your account yet, please register first using your Application ID.</p>
-                    ${senderBadge}
-                    ${locationBadge}
-                    <div class="bill-details">
-                        <h3 style="margin-top: 0;">📋 Bill Details</h3>
-                        <p><strong>Invoice Number:</strong> ${bill.invoiceNumber}</p>
-                        <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
-                        <p><strong>Due Date:</strong> ${dueDate}</p>
-                        <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
-                        ${bill.isProRated ? `<p><strong>Bill Type:</strong> Pro-rated (First Bill)</p>` : ""}
-                        ${userLocation ? `<p><strong>Location:</strong> ${userLocation.toUpperCase()}</p>` : ""}
-                        <p><strong>Collection Email:</strong> ${collectionEmail}</p>
-                    </div>
-                    <div class="warning">
-                        <strong>📌 Important:</strong> You need to create your account before you can pay your bill.
-                    </div>
-                    <div style="text-align: center; margin: 30px 0;">
-                        <a href="${registerUrl}" class="button">🎯 Create Your Account First</a>
-                    </div>
-                    <p><strong>Your Application ID:</strong> ${application.applicationId}</p>
-                    <p>Once you create your account, you will be able to view and pay this bill.</p>
-                </div>
-                <div class="footer">
-                    <p>Mister Fyber - Your trusted internet provider</p>
-                    <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
-                    <p><small>Collection Email: <a href="mailto:${collectionEmail}">${collectionEmail}</a></small></p>
-                    <p><small>Sent from: ${senderName} (${senderEmailAddress})</small></p>
-                </div>
-            </div>
-        </body>
-        </html>
-      `;
-
-      await this.sendEmail(
-        application.email,
-        `🧾 Your Bill is Ready - ${bill.invoiceNumber}`,
-        html,
-        true,
-        userLocation,
-        {
-          bcc: [collectionEmail, this.adminEmail],
-          replyTo: collectionEmail,
-          useAdminSender: useAdminSender || false,
-        },
-      );
-    } catch (error) {
-      console.error(`❌ Error sending bill without account:`, error);
-    }
-  }
-
-  // ==================== SEND INVOICE (CUSTOMER) ====================
-  async sendInvoice(
-    user: IUser | any,
-    billing: any,
-    location?: string,
-    useAdminSender?: boolean,
-  ): Promise<void> {
-    try {
-      const userLocation = location || (await getLocationFromEntity(user));
-      await this.sendBillingEmail(user, billing, userLocation, {
-        useAdminSender,
-      });
-    } catch (error) {
-      console.error(`❌ Error sending invoice:`, error);
-    }
-  }
-
-  // ==================== SEND BILLING REMINDER (CUSTOMER) ====================
-  async sendBillingReminder(
-    user: IUser | any,
-    billing: any,
-    location?: string,
-    useAdminSender?: boolean,
-  ): Promise<void> {
-    try {
-      const userLocation = location || (await getLocationFromEntity(user));
-      const collectionEmail = getCollectionEmailByLocation(userLocation);
-
-      let senderName = "Mister Fyber";
-      let senderEmailAddress = "admin@misterfyber.com";
-
-      if (useAdminSender) {
-        senderEmailAddress = "admin@misterfyber.com";
-        senderName = "Mister Fyber Admin";
-      } else if (userLocation) {
-        const collectionEmailForLocation =
-          getCollectionEmailByLocation(userLocation);
-        if (
-          collectionEmailForLocation &&
-          collectionEmailForLocation !== DEFAULT_COLLECTION_EMAIL
-        ) {
-          senderEmailAddress = collectionEmailForLocation;
-          if (collectionEmailForLocation.includes("breeze")) {
-            senderName = "Mister Fyber Breeze Collection";
-          } else if (
-            collectionEmailForLocation.includes("sil") ||
-            collectionEmailForLocation.includes("silk")
-          ) {
-            senderName = "Mister Fyber SIL Collection";
-          } else {
-            senderName = "Mister Fyber Collection";
-          }
-        }
-      }
-
-      const dueDate = billing.dueDate
-        ? new Date(billing.dueDate).toLocaleDateString()
-        : "N/A";
-      const amount = billing.total || billing.amount || 0;
-      const frontendUrl =
-        process.env.FRONTEND_URL || "https://www.misterfyber.com";
-
-      const locationBadge = userLocation
-        ? `
-        <div style="display: inline-block; background: ${userLocation.toLowerCase() === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin-bottom: 10px;">
-          📍 ${userLocation.toUpperCase()}
-        </div>
-      `
-        : "";
-
-      const senderBadge = useAdminSender
-        ? `
-        <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
-          <strong>📧 Sent from:</strong> Admin (admin@misterfyber.com)
-        </div>
-      `
-        : `
-        <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
-          <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
-        </div>
-      `;
-
-      const html = `
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="UTF-8">
-            <title>Billing Reminder</title>
-            <style>
-                .sender-info { background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center; }
-            </style>
-        </head>
-        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-            <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                <h2 style="color: #f39c12;">📅 Billing Reminder</h2>
-                <p>Hello ${user.firstName || user.email},</p>
-                <p>Your Mister Fyber bill is due on ${dueDate}.</p>
-                ${senderBadge}
-                ${locationBadge}
-                <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                    <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
-                    <p><strong>Due Date:</strong> ${dueDate}</p>
-                    ${userLocation ? `<p><strong>Location:</strong> ${userLocation.toUpperCase()}</p>` : ""}
-                </div>
-                <div style="text-align: center; margin: 30px 0;">
-                    <a href="${frontendUrl}/billing" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">View Bill</a>
-                </div>
-                <hr>
-                <p style="color: #666; font-size: 12px;">This is an automated reminder from Mister Fyber.</p>
-                <p style="color: #666; font-size: 12px;">Collection Email: <a href="mailto:${collectionEmail}">${collectionEmail}</a></p>
-                <p style="color: #666; font-size: 12px;">Sent from: ${senderName} (${senderEmailAddress})</p>
-            </div>
-        </body>
-        </html>
-      `;
-
-      await this.sendEmail(
-        user.email,
-        `📅 Billing Reminder - Due ${dueDate}`,
-        html,
-        true,
-        userLocation,
-        {
-          bcc: [collectionEmail, this.adminEmail],
-          replyTo: collectionEmail,
-          useAdminSender: useAdminSender || false,
-        },
-      );
-    } catch (error) {
-      console.error(`❌ Error sending billing reminder:`, error);
-    }
-  }
-
-  // ==================== WELCOME EMAIL ====================
-  async sendWelcomeEmail(user: IUser): Promise<void> {
-    const loginUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/login`;
-    const dashboardUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/dashboard`;
-
-    const html = `
-      <!DOCTYPE html>
-      <html lang="en">
-      <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>Welcome to Mister Fyber</title>
-          <style>
-              body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f4f4f4; }
-              .container { max-width: 600px; margin: 0 auto; padding: 20px; background-color: #ffffff; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-              .header { text-align: center; padding: 20px 0; border-bottom: 3px solid #28a745; background-color: #f8f9fa; border-radius: 10px 10px 0 0; }
-              .header h1 { color: #28a745; margin: 0; font-size: 28px; }
-              .content { padding: 30px 20px; }
-              .details-box { background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #28a745; }
-              .button-container { text-align: center; margin: 30px 0; }
-              .btn { display: inline-block; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; margin: 0 10px; }
-              .btn-primary { background-color: #007bff; color: white; }
-              .btn-success { background-color: #28a745; color: white; }
-              .footer { text-align: center; padding: 20px; border-top: 1px solid #e0e0e0; font-size: 12px; color: #666; background-color: #f8f9fa; border-radius: 0 0 10px 10px; }
-          </style>
-      </head>
-      <body>
-          <div class="container">
-              <div class="header">
-                  <h1>🎉 Welcome Aboard!</h1>
-                  <p>Mister Fyber</p>
-              </div>
-              <div class="content">
-                  <p>Hello <strong>${user.firstName || user.email}</strong>!</p>
-                  <p>Thank you for choosing <strong>Mister Fyber</strong>. We're excited to have you on board!</p>
-                  <p>Your account has been successfully created and is now ready to use.</p>
-                  <div class="details-box">
-                      <h3 style="margin-top: 0;">📋 Account Details</h3>
-                      <p><strong>Username:</strong> ${user.username || user.email}</p>
-                      <p><strong>Email:</strong> ${user.email}</p>
-                      <p><strong>Full Name:</strong> ${user.firstName || ""} ${user.lastName || ""}</p>
-                      <p><strong>Phone:</strong> ${user.phoneNumber || "Not provided"}</p>
-                      <p><strong>Status:</strong> ${(user.status || "pending").toUpperCase()}</p>
-                  </div>
-                  <div class="button-container">
-                      <a href="${loginUrl}" class="btn btn-primary">🔐 Login to Account</a>
-                      <a href="${dashboardUrl}" class="btn btn-success">📊 Go to Dashboard</a>
-                  </div>
-                  <p><strong>Note:</strong> Your billing will be started by our admin team. You will receive another email with your first invoice.</p>
-              </div>
-              <div class="footer">
-                  <p>This is an automated message from Mister Fyber.</p>
-                  <p>© ${new Date().getFullYear()} Mister Fyber. All rights reserved.</p>
-                  <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
-              </div>
-          </div>
-      </body>
-      </html>
-    `;
-    await this.sendEmail(
-      user.email,
-      `🎉 Welcome to Mister Fyber, ${user.firstName || user.email}!`,
-      html,
-      true,
-    );
-
-    const adminHtml = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-          <h2 style="color: #28a745;">👤 New User Registration</h2>
-          <p>A new user has registered on Mister Fyber.</p>
-          <hr>
-          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px;">
-              <p><strong>Name:</strong> ${user.firstName || ""} ${user.lastName || ""}</p>
-              <p><strong>Username:</strong> ${user.username || user.email}</p>
-              <p><strong>Email:</strong> ${user.email}</p>
-              <p><strong>Phone:</strong> ${user.phoneNumber || "N/A"}</p>
-              <p><strong>Status:</strong> ${user.status || "pending"}</p>
-              <p><strong>Registered:</strong> ${new Date().toLocaleString()}</p>
-          </div>
-      </div>
-    `;
-    await this.sendToAdmin(`New User Registration: ${user.email}`, adminHtml);
-  }
-
-  // ==================== PASSWORD RESET ====================
-  async sendPasswordReset(user: IUser, resetToken: string): Promise<void> {
-    const frontendUrl =
-      process.env.FRONTEND_URL || "https://www.misterfyber.com";
-    const resetUrl = `${frontendUrl}/reset-password/${resetToken}`;
-    const html = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-          <meta charset="UTF-8">
-          <title>Password Reset Request</title>
-      </head>
-      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-          <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-              <h2 style="color: #333;">Password Reset Request</h2>
-              <p>Hello ${user.firstName || user.email},</p>
-              <p>You requested a password reset for your Mister Fyber account. Click the button below to reset your password:</p>
-              <div style="text-align: center; margin: 30px 0;">
-                  <a href="${resetUrl}" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">Reset Password</a>
-              </div>
-              <p>Or copy and paste this link: ${resetUrl}</p>
-              <p>This link will expire in <strong>10 minutes</strong>.</p>
-              <p>If you didn't request this, please ignore this email.</p>
-              <hr>
-              <p style="color: #666; font-size: 12px;">Mister Fyber</p>
-          </div>
-      </body>
-      </html>
-    `;
-    await this.sendEmail(user.email, "Password Reset Request", html, true);
-  }
-
-  // ==================== ACCOUNT CREDENTIALS ====================
-  async sendAccountCredentials(
-    user: IUser,
-    username: string,
-    password: string,
-    applicationId: string,
-  ): Promise<void> {
-    const loginUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/login`;
-    const html = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-          <meta charset="UTF-8">
-          <title>Your Mister Fyber Account Credentials</title>
-          <style>
-              body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-              .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
-              .header { text-align: center; border-bottom: 2px solid #007bff; padding-bottom: 20px; }
-              .header h1 { color: #007bff; margin: 0; }
-              .content { padding: 20px 0; }
-              .credentials { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
-              .button { display: inline-block; background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; }
-              .warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }
-              .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
-          </style>
-      </head>
-      <body>
-          <div class="container">
-              <div class="header">
-                  <h1>🔐 Your Account Credentials</h1>
-              </div>
-              <div class="content">
-                  <p>Hello ${user.firstName},</p>
-                  <p>Your Mister Fyber account has been set up by our admin team. Here are your login credentials:</p>
-                  <div class="credentials">
-                      <h3 style="margin-top: 0;">📋 Login Information</h3>
-                      <p><strong>Username:</strong> ${username}</p>
-                      <p><strong>Password:</strong> ${password}</p>
-                      <p><strong>Application ID:</strong> ${applicationId}</p>
-                  </div>
-                  <div class="warning">
-                      <strong>⚠️ Important:</strong> Please change your password after your first login for security purposes.
-                  </div>
-                  <div style="text-align: center;">
-                      <a href="${loginUrl}" class="button">🔑 Login to Your Account</a>
-                  </div>
-              </div>
-              <div class="footer">
-                  <p>Mister Fyber - Your trusted internet provider</p>
-                  <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
-              </div>
-          </div>
-      </body>
-      </html>
-    `;
-    await this.sendEmail(
-      user.email,
-      `🔐 Your Mister Fyber Account Credentials`,
-      html,
-      true,
-    );
-  }
-
-  // ==================== APPLICATION RECEIVED ====================
-  async sendApplicationReceived(application: any, plan: any): Promise<void> {
-    const planPrice = plan?.price ?? 0;
-    const html = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-          <meta charset="UTF-8">
-          <title>Application Received</title>
-      </head>
-      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-          <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-              <h2 style="color: #28a745; text-align: center;">✅ Application Received!</h2>
-              <p>Hello ${application.firstName},</p>
-              <p>Thank you for applying for internet service with Mister Fyber. We have received your application and it is currently being reviewed.</p>
-              <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                  <h3 style="margin-top: 0;">Application Details:</h3>
-                  <p><strong>Application ID:</strong> ${application.applicationId}</p>
-                  <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
-                  <p><strong>Monthly Price:</strong> ₱${safeToFixed(planPrice)}</p>
-                  <p><strong>Status:</strong> <span style="color: #f39c12;">Pending Review</span></p>
-              </div>
-              <p>You will receive another email once your application has been reviewed.</p>
-              <p>Please keep your Application ID for future reference.</p>
-              <hr>
-              <p style="color: #666; font-size: 12px;">Mister Fyber</p>
-          </div>
-      </body>
-      </html>
-    `;
-    await this.sendEmail(
-      application.email,
-      `Application Received - ${application.applicationId}`,
-      html,
-      true,
-    );
-
-    const adminHtml = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-          <h2 style="color: #f39c12;">📋 New Application</h2>
-          <p><strong>Application ID:</strong> ${application.applicationId}</p>
-          <p><strong>Name:</strong> ${application.firstName} ${application.lastName}</p>
-          <p><strong>Email:</strong> ${application.email}</p>
-          <p><strong>Phone:</strong> ${application.phoneNumber}</p>
-          <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
-          <p><strong>Submitted:</strong> ${new Date().toLocaleString()}</p>
-      </div>
-    `;
-    await this.sendToAdmin(
-      `New Application: ${application.applicationId} from ${application.firstName} ${application.lastName}`,
-      adminHtml,
-    );
-  }
-
-  // ==================== APPLICATION APPROVED ====================
-  async sendApplicationApproved(application: any, plan: any): Promise<void> {
-    const registerUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/register`;
-    const planPrice = plan?.price ?? 0;
-
-    const html = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-          <meta charset="UTF-8">
-          <title>Application Approved - Create Your Account</title>
-          <style>
-              body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-              .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
-              .header { text-align: center; border-bottom: 2px solid #28a745; padding-bottom: 20px; }
-              .header h1 { color: #28a745; margin: 0; }
-              .content { padding: 20px 0; }
-              .details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
-              .button { display: inline-block; background-color: #28a745; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; margin: 20px 0; }
-              .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
-          </style>
-      </head>
-      <body>
-          <div class="container">
-              <div class="header">
-                  <h1>✅ Application Approved!</h1>
-              </div>
-              <div class="content">
-                  <p>Hello ${application.firstName},</p>
-                  <p>Great news! Your application to Mister Fyber has been approved.</p>
-                  <div class="details">
-                      <h3 style="margin-top: 0;">📋 Application Details</h3>
-                      <p><strong>Application ID:</strong> ${application.applicationId}</p>
-                      <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
-                      <p><strong>Monthly Price:</strong> ₱${safeToFixed(planPrice)}</p>
-                  </div>
-                  <div style="text-align: center;">
-                      <a href="${registerUrl}" class="button">🎯 Create Your Account Now</a>
-                  </div>
-                  <p><strong>What's next?</strong></p>
-                  <ol>
-                      <li>Click the button above to create your account</li>
-                      <li>Use your email address and create a password</li>
-                      <li>Once registered, the admin will start your billing</li>
-                      <li>You'll receive an invoice via email</li>
-                  </ol>
-                  ${application.adminNotes ? `<div style="margin-top: 20px; padding: 15px; background-color: #e7f3ff; border-left: 4px solid #007bff;"><p><strong>📝 Admin Notes:</strong><br>${application.adminNotes}</p></div>` : ""}
-              </div>
-              <div class="footer">
-                  <p>Mister Fyber - Your trusted internet provider</p>
-                  <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
-              </div>
-          </div>
-      </body>
-      </html>
-    `;
-    await this.sendEmail(
-      application.email,
-      `✅ Application Approved - Create Your Account`,
-      html,
-      true,
-    );
-
-    const adminHtml = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-          <h2 style="color: #28a745;">✅ Application Approved</h2>
-          <p>You have approved application #${application.applicationId} for Mister Fyber.</p>
-          <p><strong>Applicant:</strong> ${application.firstName} ${application.lastName}</p>
-          <p><strong>Email:</strong> ${application.email}</p>
-          <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
-          <p>An email has been sent to the applicant with instructions to create their account.</p>
-      </div>
-    `;
-    await this.sendToAdmin(
-      `Application Approved: ${application.applicationId}`,
-      adminHtml,
-    );
-  }
-
-  // ==================== APPLICATION REJECTED ====================
-  async sendApplicationRejected(
-    application: any,
-    reason: string,
-  ): Promise<void> {
-    const html = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-          <meta charset="UTF-8">
-          <title>Application Update</title>
-      </head>
-      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-          <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-              <h2 style="color: #dc3545;">Application Update</h2>
-              <p>Hello ${application.firstName},</p>
-              <p>Thank you for your interest in Mister Fyber. Unfortunately, your application has not been approved at this time.</p>
-              <div style="margin-top: 20px; padding: 15px; background-color: #fff3f3; border-left: 4px solid #dc3545;">
-                  <p><strong>Reason:</strong></p>
-                  <p>${reason || "No specific reason provided"}</p>
-              </div>
-              <p>If you have any questions, please contact our support team.</p>
-              <hr>
-              <p style="color: #666; font-size: 12px;">Mister Fyber</p>
-          </div>
-      </body>
-      </html>
-    `;
-    await this.sendEmail(
-      application.email,
-      `Application Status Update`,
-      html,
-      true,
-    );
-
-    const adminHtml = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-          <h2 style="color: #dc3545;">Application Rejected</h2>
-          <p>Application #${application.applicationId} for Mister Fyber has been rejected.</p>
-          <p><strong>Applicant:</strong> ${application.firstName} ${application.lastName}</p>
-          <p><strong>Email:</strong> ${application.email}</p>
-          <p><strong>Reason:</strong> ${reason || "Not specified"}</p>
-      </div>
-    `;
-    await this.sendToAdmin(
-      `Application Rejected: ${application.applicationId}`,
-      adminHtml,
-    );
-  }
-
-  // ==================== NEW APPLICATION NOTIFICATION ====================
-  async sendNewApplicationNotification(
-    application: any,
-    plan: any,
-  ): Promise<void> {
-    const frontendUrl =
-      process.env.FRONTEND_URL || "https://www.misterfyber.com";
-    const planPrice = plan?.price ?? 0;
-
-    const adminHtml = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-          <h2 style="color: #333;">🆕 NEW APPLICATION ALERT!</h2>
-          <p>A new application has been submitted to Mister Fyber and requires your review.</p>
-          <div style="margin-top: 20px; padding: 15px; background-color: #f8f9fa; border-radius: 5px;">
-              <h3>Application Details:</h3>
-              <p><strong>Application ID:</strong> ${application.applicationId}</p>
-              <p><strong>Name:</strong> ${application.firstName} ${application.lastName}</p>
-              <p><strong>Email:</strong> ${application.email}</p>
-              <p><strong>Phone:</strong> ${application.phoneNumber}</p>
-              <p><strong>Plan:</strong> ${plan?.name || "N/A"} (₱${safeToFixed(planPrice)})</p>
-              <p><strong>ID Type:</strong> ${application.idType}</p>
-              <p><strong>Submitted:</strong> ${new Date().toLocaleString()}</p>
-          </div>
-          <div style="margin-top: 20px; padding: 15px; background-color: #e7f3ff; border-radius: 5px;">
-              <h3>Address:</h3>
-              <p>${application.buildingName || "N/A"}<br>
-              ${application.floor ? `Floor: ${application.floor}` : ""} ${application.unitNumber ? `Unit: ${application.unitNumber}` : ""}<br>
-              ${application.buildingId?.streetAddress || "N/A"}</p>
-          </div>
-          <div style="text-align: center; margin-top: 30px;">
-              <a href="${frontendUrl}/admin/applications" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">Review Application Now</a>
-          </div>
-      </div>
-    `;
-    await this.sendToAdmin(
-      `🆕 NEW APPLICATION: ${application.applicationId} from ${application.firstName} ${application.lastName}`,
-      adminHtml,
-    );
-  }
-
-  // ==================== OTHER EMAIL METHODS ====================
-  async sendPasswordChangeNotification(user: IUser): Promise<void> {
-    const html = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-          <meta charset="UTF-8">
-          <title>Password Changed</title>
-          <style>
-              body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-              .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
-              .header { text-align: center; border-bottom: 2px solid #28a745; padding-bottom: 20px; }
-              .header h1 { color: #28a745; margin: 0; }
-              .content { padding: 20px 0; }
-              .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
-          </style>
-      </head>
-      <body>
-          <div class="container">
-              <div class="header">
-                  <h1>🔐 Password Changed</h1>
-              </div>
-              <div class="content">
-                  <p>Dear ${user.firstName || user.email},</p>
-                  <p>Your password has been changed successfully.</p>
-                  <p>If you did not perform this action, please contact support immediately.</p>
-              </div>
-              <div class="footer">
-                  <p>Mister Fyber - Your trusted internet provider</p>
-                  <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
-              </div>
-          </div>
-      </body>
-      </html>
-    `;
-    await this.sendEmail(
-      user.email,
-      "Password Changed Successfully",
-      html,
-      true,
-    );
-  }
-
-  async sendAccountDeletionRequest(user: IUser, reason: string): Promise<void> {
-    const html = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-          <meta charset="UTF-8">
-          <title>Account Deletion Request</title>
-          <style>
-              body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-              .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
-              .header { text-align: center; border-bottom: 2px solid #dc3545; padding-bottom: 20px; }
-              .header h1 { color: #dc3545; margin: 0; }
-              .content { padding: 20px 0; }
-              .details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
-              .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
-          </style>
-      </head>
-      <body>
-          <div class="container">
-              <div class="header">
-                  <h1>🗑️ Account Deletion Request</h1>
-              </div>
-              <div class="content">
-                  <p>A user has requested account deletion.</p>
-                  <div class="details">
-                      <p><strong>Name:</strong> ${user.firstName || ""} ${user.lastName || ""}</p>
-                      <p><strong>Email:</strong> ${user.email}</p>
-                      <p><strong>Username:</strong> ${user.username}</p>
-                      <p><strong>Reason:</strong> ${reason || "Not provided"}</p>
-                      <p><strong>Requested At:</strong> ${new Date().toLocaleString()}</p>
-                  </div>
-              </div>
-              <div class="footer">
-                  <p>Mister Fyber - Admin Notification</p>
-              </div>
-          </div>
-      </body>
-      </html>
-    `;
-    await this.sendToAdmin("Account Deletion Request", html);
-  }
-
-  async sendSupportTicketNotification(
-    userEmail: string,
-    subject: string,
-    category: string,
-    message: string,
-    priority: string,
-  ): Promise<void> {
-    const html = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-          <meta charset="UTF-8">
-          <title>New Support Ticket</title>
-          <style>
-              body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-              .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
-              .header { text-align: center; border-bottom: 2px solid #007bff; padding-bottom: 20px; }
-              .header h1 { color: #007bff; margin: 0; }
-              .content { padding: 20px 0; }
-              .details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
-              .message-box { background: white; padding: 10px; border-radius: 5px; border-left: 3px solid #007bff; }
-              .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
-          </style>
-      </head>
-      <body>
-          <div class="container">
-              <div class="header">
-                  <h1>🎫 New Support Ticket</h1>
-              </div>
-              <div class="content">
-                  <div class="details">
-                      <p><strong>User:</strong> ${userEmail}</p>
-                      <p><strong>Subject:</strong> ${subject}</p>
-                      <p><strong>Category:</strong> ${category}</p>
-                      <p><strong>Priority:</strong> ${priority}</p>
-                      <p><strong>Message:</strong></p>
-                      <div class="message-box">${message}</div>
-                      <p><strong>Submitted At:</strong> ${new Date().toLocaleString()}</p>
-                  </div>
-              </div>
-              <div class="footer">
-                  <p>Mister Fyber - Support Ticket</p>
-              </div>
-          </div>
-      </body>
-      </html>
-    `;
-    await this.sendEmail(
-      this.supportEmail,
-      `New Support Ticket: ${subject}`,
-      html,
-      false,
-    );
-  }
-
-  async sendPlanChangeRequestNotification(
-    user: IUser,
-    newPlan: any,
-    currentRate: number,
-    effectiveDate: string,
-  ): Promise<void> {
-    const html = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-          <meta charset="UTF-8">
-          <title>Plan Change Request</title>
-          <style>
-              body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-              .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
-              .header { text-align: center; border-bottom: 2px solid #f39c12; padding-bottom: 20px; }
-              .header h1 { color: #f39c12; margin: 0; }
-              .content { padding: 20px 0; }
-              .details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
-              .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
-          </style>
-      </head>
-      <body>
-          <div class="container">
-              <div class="header">
-                  <h1>📡 Plan Change Request</h1>
-              </div>
-              <div class="content">
-                  <p>A user has requested a plan change.</p>
-                  <div class="details">
-                      <p><strong>User:</strong> ${user.firstName || ""} ${user.lastName || ""} (${user.email})</p>
-                      <p><strong>Username:</strong> ${user.username}</p>
-                      <p><strong>Current Monthly Rate:</strong> ₱${safeToFixed(currentRate)}</p>
-                      <p><strong>Requested Plan:</strong> ${newPlan.name}</p>
-                      <p><strong>New Plan Price:</strong> ₱${safeToFixed(newPlan.price)}</p>
-                      <p><strong>Requested Effective Date:</strong> ${effectiveDate || "Immediate"}</p>
-                      <p><strong>Requested At:</strong> ${new Date().toLocaleString()}</p>
-                  </div>
-                  <p>Please review and approve/reject this request in the admin panel.</p>
-              </div>
-              <div class="footer">
-                  <p>Mister Fyber - Admin Notification</p>
-              </div>
-          </div>
-      </body>
-      </html>
-    `;
-    await this.sendToAdmin(`Plan Change Request - ${user.username}`, html);
-  }
-
-  async sendAccountStatusUpdate(user: IUser): Promise<void> {
-    const statusMessages: Record<string, string> = {
-      active:
-        "Your Mister Fyber account has been activated! You can now log in and enjoy our services.",
-      suspended:
-        "Your Mister Fyber account has been suspended. Please contact support for assistance.",
-      inactive:
-        "Your Mister Fyber account is currently inactive. Please contact support for more information.",
-      pending:
-        "Your Mister Fyber account is still pending approval. We will notify you once verified.",
-    };
-    const message =
-      statusMessages[user.status || "pending"] ||
-      `Your Mister Fyber account status has been updated to: ${user.status}`;
-
-    const html = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-          <meta charset="UTF-8">
-          <title>Account Status Update</title>
-      </head>
-      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-          <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-              <h2 style="color: #333;">🔄 Account Status Update</h2>
-              <p>Hello ${user.firstName || user.email},</p>
-              <div style="padding: 20px; background-color: #f8f9fa; border-left: 4px solid #007bff;">
-                  <p>${message}</p>
-              </div>
-              <p>If you have any questions, please contact our support team.</p>
-              <hr>
-              <p style="color: #666; font-size: 12px;">Mister Fyber</p>
-          </div>
-      </body>
-      </html>
-    `;
-    await this.sendEmail(
-      user.email,
-      `🔄 Account Status Update: ${user.status || "pending"}`,
-      html,
-      true,
-    );
-
-    const adminHtml = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-          <h2 style="color: #333;">🔄 Account Status Changed</h2>
-          <p>Mister Fyber user ${user.firstName || ""} ${user.lastName || ""} (${user.email}) status changed to: <strong>${user.status || "pending"}</strong></p>
-          <p>Date: ${new Date().toLocaleString()}</p>
-      </div>
-    `;
-    await this.sendToAdmin(
-      `Account Status Changed: ${user.email} → ${user.status || "pending"}`,
-      adminHtml,
-    );
-  }
-
-  async sendPlanChangeNotification(
-    user: IUser,
-    oldPlan: any,
-    newPlan: any,
-  ): Promise<void> {
-    const newPlanPrice = newPlan?.price ?? 0;
-    const html = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-          <meta charset="UTF-8">
-          <title>Plan Updated</title>
-      </head>
-      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-          <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-              <h2 style="color: #333;">📡 Plan Updated</h2>
-              <p>Hello ${user.firstName || user.email},</p>
-              <p>Your Mister Fyber plan has been changed successfully.</p>
-              <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                  <p><strong>Old Plan:</strong> ${oldPlan?.name || "N/A"}</p>
-                  <p><strong>New Plan:</strong> ${newPlan?.name || "N/A"}</p>
-                  <p><strong>New Price:</strong> ₱${safeToFixed(newPlanPrice)}</p>
-                  <p><strong>New Speed:</strong> ${newPlan?.speed?.download || "N/A"} Mbps / ${newPlan?.speed?.upload || "N/A"} Mbps</p>
-              </div>
-              <p>The changes will take effect immediately.</p>
-              <hr>
-              <p style="color: #666; font-size: 12px;">Mister Fyber</p>
-          </div>
-      </body>
-      </html>
-    `;
-    await this.sendEmail(
-      user.email,
-      `📡 Plan Changed to ${newPlan?.name || "N/A"}`,
-      html,
-      true,
-    );
-  }
-
-  async sendServiceReminder(user: IUser): Promise<void> {
-    const frontendUrl =
-      process.env.FRONTEND_URL || "https://www.misterfyber.com";
-    const html = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-          <meta charset="UTF-8">
-          <title>Weekly Service Update</title>
-      </head>
-      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-          <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-              <h2 style="color: #333;">📊 Weekly Service Update</h2>
-              <p>Hello ${user.firstName || user.email},</p>
-              <p>Thank you for being a valued Mister Fyber customer. Check your usage and billing status in your dashboard.</p>
-              <div style="text-align: center; margin: 30px 0;">
-                  <a href="${frontendUrl}/dashboard" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">Go to Dashboard</a>
-              </div>
-              <hr>
-              <p style="color: #666; font-size: 12px;">Stay updated with your internet usage and billing with Mister Fyber.</p>
-          </div>
-      </body>
-      </html>
-    `;
-    await this.sendEmail(user.email, "Weekly Service Update", html, true);
-  }
-
-  async sendServiceInterruption(
-    user: IUser,
-    reason: string,
-    estimatedDuration?: Date,
-  ): Promise<void> {
-    const duration = estimatedDuration
-      ? new Date(estimatedDuration).toLocaleString()
-      : "Unknown";
-    const html = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-          <meta charset="UTF-8">
-          <title>Service Interruption</title>
-      </head>
-      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-          <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-              <h2 style="color: #dc3545;">⚠️ Service Interruption</h2>
-              <p>Hello ${user.firstName || user.email},</p>
-              <p>We want to inform you about a service interruption with Mister Fyber.</p>
-              <div style="margin-top: 20px; padding: 15px; background-color: #f8f9fa; border-left: 4px solid #dc3545;">
-                  <p><strong>Reason:</strong> ${reason}</p>
-                  <p><strong>Estimated Duration:</strong> ${duration}</p>
-              </div>
-              <p>We apologize for any inconvenience. Our team is working to restore service as soon as possible.</p>
-              <hr>
-              <p style="color: #666; font-size: 12px;">This is an automated notification from Mister Fyber.</p>
-          </div>
-      </body>
-      </html>
-    `;
-    await this.sendEmail(user.email, "Service Interruption Notice", html, true);
-
-    const adminHtml = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-          <h2 style="color: #dc3545;">⚠️ Service Interruption Reported</h2>
-          <p><strong>User:</strong> ${user.firstName || ""} ${user.lastName || ""} (${user.email})</p>
-          <p><strong>Reason:</strong> ${reason}</p>
-          <p><strong>Estimated Duration:</strong> ${duration}</p>
-          <p><strong>Reported:</strong> ${new Date().toLocaleString()}</p>
-      </div>
-    `;
-    await this.sendToAdmin(`Service Interruption: ${user.email}`, adminHtml);
-  }
-
-  // ==================== TEST EMAIL CONFIGURATION ====================
+  /**
+   * Test email configuration
+   */
   async testEmailConfiguration(
     testEmail?: string,
   ): Promise<{ success: boolean; message: string; details?: any }> {
@@ -2989,57 +3518,6 @@ class EmailService {
         details: error,
       };
     }
-  }
-
-  // ==================== HELPER: FORMAT DATE ====================
-  private formatDateForDisplay(date: any): string {
-    if (!date) return "N/A";
-    const d = new Date(date);
-    if (isNaN(d.getTime())) return "N/A";
-    const month = d.getMonth() + 1;
-    const day = d.getDate();
-    const year = d.getFullYear();
-    return `${month}/${day}/${year}`;
-  }
-
-  private getSenderEmail(): string {
-    let senderEmail = "admin@misterfyber.com";
-    if (this.emailFrom) {
-      const match = this.emailFrom.match(/<(.+)>/);
-      if (match) {
-        senderEmail = match[1];
-      } else if (this.emailFrom.includes("@")) {
-        senderEmail = this.emailFrom;
-      }
-    }
-    return senderEmail;
-  }
-
-  /**
-   * Get available sender options for a specific location
-   */
-  getSenderOptions(location?: string): { value: string; label: string }[] {
-    const options = [];
-
-    // Admin sender option
-    options.push({
-      value: "admin",
-      label: "Admin (admin@misterfyber.com)",
-    });
-
-    // Collection email options based on location
-    if (location) {
-      const collectionEmail = getCollectionEmailByLocation(location);
-      if (collectionEmail && collectionEmail !== DEFAULT_COLLECTION_EMAIL) {
-        let locationName = location.charAt(0).toUpperCase() + location.slice(1);
-        options.push({
-          value: "collection",
-          label: `${locationName} Collection (${collectionEmail})`,
-        });
-      }
-    }
-
-    return options;
   }
 }
 

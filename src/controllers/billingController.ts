@@ -1,4 +1,4 @@
-// backend/src/controllers/billingController.ts
+// backend/src/controllers/billingController.ts - COMPLETE FIXED VERSION
 
 import { Request, Response, NextFunction } from "express";
 import Billing from "../models/Billing";
@@ -120,7 +120,6 @@ function formatDateForDisplay(date: Date): string {
   return `${month}/${day}/${year}`;
 }
 
-// MODIFIED: REGULAR MONTHLY DUE DATE - Still 5th of the month
 function getDueDateForMonthly(billingPeriodStart: Date, settings: any): Date {
   const dueDay = settings.monthlyDueDay || 5;
   const dueDate = new Date(billingPeriodStart);
@@ -145,7 +144,6 @@ function getDueDateForMonthly(billingPeriodStart: Date, settings: any): Date {
   return dueDate;
 }
 
-// PRO-RATED DUE DATE FOR 1-24: 25th of CURRENT month
 function getDueDateForProRatedBeforeCutoff(
   installationDate: Date,
   settings: any,
@@ -220,7 +218,6 @@ async function sendInvoiceToApplication(
       save: async () => tempUser,
     } as any;
 
-    // Get location for the email
     const location = await getLocationFromEntity(application);
     await emailService.sendInvoice(tempUser, bill, location);
   }
@@ -233,7 +230,6 @@ async function createInvoiceFromBilling(
   settings: any,
 ): Promise<any> {
   try {
-    // Check if invoice already exists
     const existingInvoice = await Invoice.findOne({
       billingId: billing._id,
     });
@@ -242,17 +238,14 @@ async function createInvoiceFromBilling(
       return existingInvoice;
     }
 
-    // Get plan
     const plan = await Plan.findById(application.planId).lean();
 
-    // Calculate items
     const items = [];
     let subtotal = 0;
     let isInstallationFee = false;
     let isProRated = false;
     let proRatedDays = 0;
 
-    // Add items from billing
     if (billing.items && billing.items.length > 0) {
       for (const item of billing.items) {
         items.push({
@@ -266,14 +259,11 @@ async function createInvoiceFromBilling(
       }
     }
 
-    // Set flags
     isInstallationFee = billing.isInstallationBill || false;
     isProRated = billing.isProRated || false;
     proRatedDays = billing.proRatedDays || 0;
 
-    // If no items, create default
     if (items.length === 0) {
-      // Add pro-rated if applicable
       if (billing.isProRated && billing.proRatedDays) {
         const dailyRate = ((plan?.price || 0) * 12) / 365;
         const proRatedAmount =
@@ -290,7 +280,6 @@ async function createInvoiceFromBilling(
         proRatedDays = billing.proRatedDays;
       }
 
-      // Add installation fee
       if (billing.installationFee && billing.installationFee > 0) {
         items.push({
           description: "Installation Fee (One-time)",
@@ -303,7 +292,6 @@ async function createInvoiceFromBilling(
         isInstallationFee = true;
       }
 
-      // Add monthly subscription
       if (!billing.isProRated || billing.isProRated === false) {
         const monthlyRate = plan?.price || 0;
         if (monthlyRate > 0) {
@@ -319,7 +307,6 @@ async function createInvoiceFromBilling(
       }
     }
 
-    // Determine invoice type
     let invoiceType = "monthly";
     if (isInstallationFee && isProRated) {
       invoiceType = "combined";
@@ -329,19 +316,15 @@ async function createInvoiceFromBilling(
       invoiceType = "pro-rated";
     }
 
-    // Get customer address
     const customerAddress = application.buildingName
       ? `${application.buildingName}, ${application.buildingId?.streetAddress || ""}`
       : application.address || "N/A";
 
-    // Get plan name
     const planName = plan?.name || "N/A";
 
-    // Get location for invoice
     const location = await getLocationFromEntity(application);
     const collectionEmail = getCollectionEmailByLocation(location);
 
-    // Create invoice
     const invoiceData = {
       invoiceNumber: generateInvoiceNumber(),
       invoiceType: invoiceType,
@@ -411,13 +394,10 @@ async function sendInvoiceWithPDFAttachment(
   application: any,
 ): Promise<boolean> {
   try {
-    // Get location
     const location = await getLocationFromEntity(application);
 
-    // Generate PDF
     const pdfBuffer = await generateInvoicePDF(invoice);
 
-    // Save PDF to file
     const pdfDir = path.join(__dirname, "../../uploads/invoices");
     if (!fs.existsSync(pdfDir)) {
       fs.mkdirSync(pdfDir, { recursive: true });
@@ -427,7 +407,6 @@ async function sendInvoiceWithPDFAttachment(
     const pdfPath = path.join(pdfDir, pdfFileName);
     fs.writeFileSync(pdfPath, pdfBuffer);
 
-    // Update invoice with PDF URL
     const pdfUrl = `/uploads/invoices/${pdfFileName}`;
     await Invoice.findByIdAndUpdate(invoice._id, {
       pdfUrl: pdfUrl,
@@ -435,11 +414,9 @@ async function sendInvoiceWithPDFAttachment(
       status: "sent",
     });
 
-    // Add location to invoice data
     invoice.location = location;
     invoice.collectionEmail = getCollectionEmailByLocation(location);
 
-    // Send email with PDF attachment
     const emailSent = await emailService.sendInvoiceWithPDF(
       invoice,
       pdfBuffer,
@@ -508,18 +485,15 @@ async function createInstallationBill(
     { session },
   );
 
-  // Create invoice from installation bill
   const invoice = await createInvoiceFromBilling(
     installationBill[0],
     application,
     settings,
   );
 
-  // Send invoice with PDF
   if (invoice) {
     await sendInvoiceWithPDFAttachment(invoice, application);
   } else {
-    // Fallback to regular email
     try {
       await sendInvoiceToApplication(application, installationBill[0]);
       console.log(`📧 Sent installation fee invoice to ${application.email}`);
@@ -534,7 +508,7 @@ async function createInstallationBill(
   return installationBill[0];
 }
 
-// MODIFIED: CREATE REGULAR MONTHLY BILL (Generated on 1st, Due on 5th)
+// ==================== CREATE REGULAR MONTHLY BILL ====================
 async function createMonthlyBill(
   application: any,
   billingCycleId: mongoose.Types.ObjectId,
@@ -582,18 +556,15 @@ async function createMonthlyBill(
     createdBill = await Billing.create([billData]);
   }
 
-  // Create invoice from monthly bill
   const invoice = await createInvoiceFromBilling(
     createdBill,
     application,
     settings,
   );
 
-  // Send invoice with PDF
   if (invoice) {
     await sendInvoiceWithPDFAttachment(invoice, application);
   } else {
-    // Fallback to regular email
     try {
       await sendInvoiceToApplication(application, createdBill);
       console.log(
@@ -672,18 +643,15 @@ async function createProRatedBill(
     createdBill = await Billing.create([billData]);
   }
 
-  // Create invoice from pro-rated bill
   const invoice = await createInvoiceFromBilling(
     createdBill,
     application,
     settings,
   );
 
-  // Send invoice with PDF
   if (invoice) {
     await sendInvoiceWithPDFAttachment(invoice, application);
   } else {
-    // Fallback to regular email
     try {
       await sendInvoiceToApplication(application, createdBill);
     } catch (emailError) {
@@ -736,25 +704,7 @@ export const testLocationEmail = async (req: AuthRequest, res: Response) => {
     const result = await emailService.sendEmail(
       email || collectionEmail,
       `🧪 Test Email - Location: ${location}`,
-      `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <title>Test Email - ${location}</title>
-        </head>
-        <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-          <h1 style="color: #1a56db;">🧪 Test Email</h1>
-          <p>This is a test email sent to the collection team for location: <strong>${location}</strong></p>
-          <div style="background: #f3f4f6; padding: 15px; border-radius: 6px; margin: 15px 0;">
-            <p><strong>Location:</strong> ${location}</p>
-            <p><strong>Collection Email:</strong> ${collectionEmail}</p>
-            <p><strong>Timestamp:</strong> ${new Date().toLocaleString()}</p>
-            <p><strong>Status:</strong> ✅ Test successful</p>
-          </div>
-          <p style="color: #6b7280; font-size: 14px;">This is an automated test email from Mister Fyber billing system.</p>
-        </body>
-        </html>
-      `,
+      emailService.generateTestLocationEmailHTML(location, collectionEmail),
       false,
       location,
       {
@@ -910,7 +860,6 @@ export const initializeBackdatedBilling = async (
     let totalMonthlyAmount = 0;
     const unpaidMonths = [];
 
-    // Generate pro-rated bill for the first month
     if (startDate.getUTCDate() > 1) {
       const daysInMonth = new Date(
         Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth() + 1, 0),
@@ -963,7 +912,6 @@ export const initializeBackdatedBilling = async (
       generatedBills.push(newBill[0]);
       totalMonthlyAmount += proRatedAmount;
 
-      // Create and send invoice
       const invoice = await createInvoiceFromBilling(
         newBill[0],
         application,
@@ -980,7 +928,6 @@ export const initializeBackdatedBilling = async (
       }
     }
 
-    // Generate regular monthly bills for all full months from next month until today
     let currentBillDate = getStartOfNextMonth(startDate);
 
     while (currentBillDate <= today) {
@@ -1048,7 +995,6 @@ export const initializeBackdatedBilling = async (
           });
         }
 
-        // Create and send invoice
         const invoice = await createInvoiceFromBilling(
           newBill[0],
           application,
@@ -1079,7 +1025,6 @@ export const initializeBackdatedBilling = async (
       currentBillDate.setUTCMonth(currentBillDate.getUTCMonth() + 1);
     }
 
-    // Update next billing date to first day of next month
     const lastGeneratedMonth = new Date(currentBillDate);
     lastGeneratedMonth.setUTCMonth(lastGeneratedMonth.getUTCMonth() - 1);
     lastGeneratedMonth.setUTCDate(1);
@@ -1444,7 +1389,6 @@ export const startBilling = async (
       });
       createdMonthlyBill = monthlyBillResult[0];
 
-      // Create and send invoice for monthly bill
       const monthlyInvoice = await createInvoiceFromBilling(
         createdMonthlyBill,
         application,
@@ -1988,14 +1932,18 @@ export const pauseBilling = async (
 
     await session.commitTransaction();
 
-    // Get location for email
     const location = await getLocationFromEntity(application);
 
     try {
       await emailService.sendEmail(
         application.email,
         "Your Service Has Been Paused - Mister Fyber",
-        `<div><h2>Service Paused</h2><p>Dear ${application.firstName} ${application.lastName},</p><p>Your internet service has been paused.</p></div>`,
+        emailService.generateServiceStatusHTML(
+          application.firstName,
+          application.lastName,
+          "paused",
+          `Your internet service has been paused. Reason: ${reason || "Customer requested pause"}.`,
+        ),
         true,
         location,
       );
@@ -2110,14 +2058,18 @@ export const resumeBilling = async (
 
     await session.commitTransaction();
 
-    // Get location for email
     const location = await getLocationFromEntity(application);
 
     try {
       await emailService.sendEmail(
         application.email,
         "Your Service Has Been Resumed - Mister Fyber",
-        `<div><h2>Service Resumed</h2><p>Dear ${application.firstName} ${application.lastName},</p><p>Your internet service has been resumed.</p></div>`,
+        emailService.generateServiceStatusHTML(
+          application.firstName,
+          application.lastName,
+          "resumed",
+          "Your internet service has been resumed.",
+        ),
         true,
         location,
       );
@@ -2230,7 +2182,6 @@ export const markInstallationBillAsPaid = async (
       { session },
     );
 
-    // Update invoice if exists
     const invoice = await Invoice.findOne({
       billingId: installationBill._id,
     }).session(session);
@@ -2265,15 +2216,25 @@ export const markInstallationBillAsPaid = async (
 
     await session.commitTransaction();
 
-    // Get location for email
     const location = await getLocationFromEntity(application);
 
     try {
       if (application && application.email) {
+        const collectionEmail = getCollectionEmailByLocation(location);
+        const htmlContent = emailService.generatePaymentConfirmationHTML(
+          installationBill,
+          payment[0],
+          installationBill.total,
+          new Date().toLocaleString(),
+          location,
+          collectionEmail,
+          true, // isInstallation
+        );
+
         await emailService.sendEmail(
           application.email,
           `Installation Fee Payment Confirmation - ${installationBill.invoiceNumber}`,
-          `<div><h2>Installation Fee Payment Confirmed!</h2><p>Dear ${application.firstName},</p><p>Your installation fee payment of ₱${installationBill.total.toLocaleString()} has been confirmed.</p></div>`,
+          htmlContent,
           true,
           location,
         );
@@ -2390,7 +2351,6 @@ export const markBillAsPaid = async (
       { session },
     );
 
-    // Update invoice if exists
     const invoice = await Invoice.findOne({
       billingId: existingBill._id,
     }).session(session);
@@ -2425,16 +2385,25 @@ export const markBillAsPaid = async (
 
     await session.commitTransaction();
 
-    // Get location for email
     const location = await getLocationFromEntity(application);
 
     try {
       if (application && application.email) {
-        let emailBody = `<div><h2>Payment Confirmed!</h2><p>Dear ${application.firstName},</p><p>Your payment of ₱${existingBill.total.toLocaleString()} has been confirmed.</p></div>`;
+        const collectionEmail = getCollectionEmailByLocation(location);
+        const htmlContent = emailService.generatePaymentConfirmationHTML(
+          existingBill,
+          payment[0],
+          existingBill.total,
+          new Date().toLocaleString(),
+          location,
+          collectionEmail,
+          false, // isInstallation
+        );
+
         await emailService.sendEmail(
           application.email,
           `Payment Confirmation - ${existingBill.invoiceNumber}`,
-          emailBody,
+          htmlContent,
           true,
           location,
         );
@@ -2652,7 +2621,6 @@ export const confirmProRatedPayment = async (
       { session },
     );
 
-    // Update invoice if exists
     const invoice = await Invoice.findOne({
       billingId: proRatedBill._id,
     }).session(session);
@@ -2700,17 +2668,34 @@ export const confirmProRatedPayment = async (
 
     await session.commitTransaction();
 
-    // Get location for email
     const location = await getLocationFromEntity(application);
 
     if (application.email) {
-      await emailService.sendEmail(
-        application.email,
-        "Pro-rated Payment Confirmed",
-        `<div><h2>Pro-rated Payment Confirmed!</h2><p>Dear ${application.firstName},</p><p>Your payment has been confirmed.</p></div>`,
-        true,
-        location,
-      );
+      try {
+        const collectionEmail = getCollectionEmailByLocation(location);
+        const htmlContent = emailService.generatePaymentConfirmationHTML(
+          proRatedBill,
+          payment[0],
+          proRatedBill.total,
+          new Date().toLocaleString(),
+          location,
+          collectionEmail,
+          false, // isInstallation
+        );
+
+        await emailService.sendEmail(
+          application.email,
+          "Pro-rated Payment Confirmed",
+          htmlContent,
+          true,
+          location,
+        );
+      } catch (emailError) {
+        console.error(
+          "Failed to send pro-rated payment confirmation email:",
+          emailError,
+        );
+      }
     }
 
     clearAllCache();
@@ -3018,7 +3003,6 @@ export const deleteBillingCycle = async (
         .json({ success: false, message: "Billing cycle not found" });
     }
 
-    // Delete related invoices
     await Invoice.deleteMany({ billingCycleId: billingCycle._id }, { session });
     await Billing.deleteMany({ billingCycleId: billingCycle._id }, { session });
     await BillingCycle.deleteOne({ _id: billingCycle._id }, { session });
@@ -3045,7 +3029,7 @@ export const deleteBillingCycle = async (
   }
 };
 
-// ==================== MODIFIED: AUTO-GENERATE MONTHLY BILLS ON 1ST DAY OF MONTH ====================
+// ==================== AUTO-GENERATE MONTHLY BILLS ON 1ST DAY OF MONTH ====================
 export const autoGenerateMonthlyBills = async (
   req?: AuthRequest,
   res?: Response,
@@ -3064,7 +3048,6 @@ export const autoGenerateMonthlyBills = async (
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
 
-    // IMPORTANT: Only generate bills on the 1st day of the month
     if (today.getUTCDate() !== 1) {
       if (res) {
         return res.status(200).json({
@@ -3084,10 +3067,9 @@ export const autoGenerateMonthlyBills = async (
       `📅 Running monthly bill generation for ${formatDateForDisplay(today)} (1st day of month)`,
     );
 
-    // Get the target month (current month since we're on the 1st)
-    const targetMonthStart = getFirstDayOfMonth(today); // e.g., July 1
-    const targetMonthEnd = getEndOfMonth(targetMonthStart); // e.g., July 31
-    const dueDate = getDueDateForMonthly(targetMonthStart, settings); // Due on July 5
+    const targetMonthStart = getFirstDayOfMonth(today);
+    const targetMonthEnd = getEndOfMonth(targetMonthStart);
+    const dueDate = getDueDateForMonthly(targetMonthStart, settings);
 
     console.log(
       `🎯 Generating bills for: ${formatDateForDisplay(targetMonthStart)} to ${formatDateForDisplay(targetMonthEnd)}`,
@@ -3126,7 +3108,6 @@ export const autoGenerateMonthlyBills = async (
         continue;
       }
 
-      // Check if bill for this month already exists
       const existingBill = await Billing.findOne({
         applicationId: cycle.applicationId,
         billingCycleId: cycle._id,
@@ -3182,187 +3163,6 @@ export const autoGenerateMonthlyBills = async (
         message: "Failed to generate bills",
         error: String(error),
       });
-    }
-  }
-};
-
-// ==================== MODIFIED: AUTO SEND REMINDERS ====================
-export const autoSendReminders = async (req?: AuthRequest, res?: Response) => {
-  try {
-    const settings = await getOrCreateSettings();
-    if (!settings.autoSendReminders) {
-      if (res)
-        return res
-          .status(200)
-          .json({ success: true, message: "Auto-send reminders is disabled" });
-      return;
-    }
-
-    const today = new Date();
-    today.setUTCHours(0, 0, 0, 0);
-    const reminderDays = settings.reminderDays || [7, 3, 1];
-    let remindersSent = 0;
-    let dueDateRemindersSent = 0;
-
-    for (const days of reminderDays) {
-      const targetDate = new Date(today);
-      targetDate.setUTCDate(targetDate.getUTCDate() + days);
-      targetDate.setUTCHours(23, 59, 59, 999);
-
-      let reminderField: string;
-      if (days === 7) reminderField = "reminder7DaySent";
-      else if (days === 3) reminderField = "reminder3DaySent";
-      else if (days === 1) reminderField = "reminder1DaySent";
-      else continue;
-
-      const bills = await Billing.find({
-        status: "sent",
-        dueDate: { $lte: targetDate },
-        [reminderField]: { $ne: true },
-        applicationId: { $exists: true, $ne: null },
-        isInstallationBill: false,
-      }).lean();
-
-      for (const bill of bills) {
-        if (!bill.applicationId) continue;
-
-        const application = await Application.findOne({
-          applicationId: bill.applicationId,
-        }).lean();
-
-        if (application && application.email) {
-          const tempUser = {
-            _id: application.applicationId,
-            email: application.email,
-            firstName: application.firstName || "",
-            lastName: application.lastName || "",
-            username: application.email,
-            phoneNumber: application.phoneNumber || "",
-            status: "active",
-            role: "user",
-          } as any;
-
-          // Get location for email
-          const location = await getLocationFromEntity(application);
-          await emailService.sendPaymentReminder(tempUser, bill, location);
-          await Billing.updateOne(
-            { _id: bill._id },
-            { $set: { [reminderField]: true } },
-          );
-          remindersSent++;
-        }
-      }
-    }
-
-    const dueDateBills = await Billing.find({
-      status: "sent",
-      dueDate: {
-        $gte: new Date(today.setUTCHours(0, 0, 0, 0)),
-        $lte: new Date(today.setUTCHours(23, 59, 59, 999)),
-      },
-      reminderDueDateSent: { $ne: true },
-      applicationId: { $exists: true, $ne: null },
-    }).lean();
-
-    for (const bill of dueDateBills) {
-      if (!bill.applicationId) continue;
-
-      const application = await Application.findOne({
-        applicationId: bill.applicationId,
-      }).lean();
-
-      if (application && application.email) {
-        const tempUser = {
-          _id: application.applicationId,
-          email: application.email,
-          firstName: application.firstName || "",
-          lastName: application.lastName || "",
-          username: application.email,
-          phoneNumber: application.phoneNumber || "",
-          status: "active",
-          role: "user",
-        } as any;
-
-        // Get location for email
-        const location = await getLocationFromEntity(application);
-        await emailService.sendDueDateReminder(tempUser, bill, location);
-        await Billing.updateOne(
-          { _id: bill._id },
-          { $set: { reminderDueDateSent: true } },
-        );
-        dueDateRemindersSent++;
-      }
-    }
-
-    const installationBills = await Billing.find({
-      isInstallationBill: true,
-      installationFeePaid: false,
-      status: "sent",
-      dueDate: { $lte: today },
-      reminder1DaySent: { $ne: true },
-      applicationId: { $exists: true, $ne: null },
-    }).lean();
-
-    for (const bill of installationBills) {
-      if (!bill.applicationId) continue;
-
-      const application = await Application.findOne({
-        applicationId: bill.applicationId,
-      }).lean();
-
-      if (application && application.email) {
-        const tempUser = {
-          _id: application.applicationId,
-          email: application.email,
-          firstName: application.firstName || "",
-          lastName: application.lastName || "",
-          username: application.email,
-          phoneNumber: application.phoneNumber || "",
-          status: "active",
-          role: "user",
-        } as any;
-
-        // Get location for email
-        const location = await getLocationFromEntity(application);
-
-        const dueDate = new Date(bill.dueDate);
-        dueDate.setUTCHours(0, 0, 0, 0);
-        const isDueDate = dueDate.getTime() === today.getTime();
-
-        if (isDueDate && !bill.reminderDueDateSent) {
-          await emailService.sendDueDateReminder(tempUser, bill, location);
-          await Billing.updateOne(
-            { _id: bill._id },
-            { $set: { reminderDueDateSent: true } },
-          );
-          dueDateRemindersSent++;
-        } else if (!bill.reminder1DaySent) {
-          await emailService.sendPaymentReminder(tempUser, bill, location);
-          await Billing.updateOne(
-            { _id: bill._id },
-            { $set: { reminder1DaySent: true } },
-          );
-          remindersSent++;
-        }
-      }
-    }
-
-    if (res) {
-      res.status(200).json({
-        success: true,
-        message: `Sent ${remindersSent} advance reminders and ${dueDateRemindersSent} due date reminders`,
-        data: {
-          advanceReminders: remindersSent,
-          dueDateReminders: dueDateRemindersSent,
-        },
-      });
-    }
-  } catch (error) {
-    console.error("Auto-send reminders error:", error);
-    if (res) {
-      res
-        .status(500)
-        .json({ success: false, message: "Failed to send reminders" });
     }
   }
 };
@@ -3730,7 +3530,6 @@ export const getApplicationBillingStatus = async (
       isInstallationBill: true,
     }).lean();
 
-    // Get location and collection email
     const location = await getLocationFromEntity(application);
     const collectionEmail = getCollectionEmailByLocation(location);
 
@@ -3921,7 +3720,6 @@ export const getUnpaidBillsReport = async (
             .lean();
           if (application) {
             (b as any).applicationData = application;
-            // Get location from the application entity
             const location = await getLocationFromEntity(application);
             (b as any).location = location || "";
           }
@@ -4105,6 +3903,7 @@ export const manuallyGenerateBillsForMonth = async (
   }
 };
 
+// ==================== EXPORT DEFAULT ====================
 export default {
   startBilling,
   stopBilling,
@@ -4128,7 +3927,6 @@ export default {
   confirmProRatedPayment,
   startMonthlyBilling,
   autoGenerateMonthlyBills,
-  autoSendReminders,
   autoSuspendOverdue,
   getApplicationCurrentBilling,
   getApplicationBillingHistory,
