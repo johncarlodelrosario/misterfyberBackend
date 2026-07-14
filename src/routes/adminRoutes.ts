@@ -27,6 +27,7 @@ router.get("/dashboard", getDashboardStats);
 router.get("/recent-activities", getRecentActivities);
 
 // ==================== CUSTOMER EMAIL ALERT TOGGLE ROUTES ====================
+// These routes ALWAYS use the EXACT value provided by admin - NO DEFAULTS
 router.put(
   "/customer-email-alerts/toggle",
   adminMiddleware,

@@ -874,7 +874,7 @@ export const createManualCustomer = async (
       startBillingImmediately,
       installationDate,
       notes,
-      includeInstallationFee, // <-- ADDED THIS
+      includeInstallationFee,
     } = req.body;
 
     if (!firstName || !lastName || !email || !phoneNumber) {
@@ -907,7 +907,6 @@ export const createManualCustomer = async (
       });
     }
 
-    // CREATE APPLICATION ONLY - NO USER ACCOUNT YET
     const application = await Application.create(
       [
         {
@@ -937,7 +936,6 @@ export const createManualCustomer = async (
     const appDoc = application[0];
     let billingResult = null;
 
-    // START BILLING IMMEDIATELY IF REQUESTED
     if (startBillingImmediately) {
       try {
         const generatedPassword = Math.random().toString(36).slice(-8);
@@ -990,7 +988,7 @@ export const createManualCustomer = async (
             userId: userDoc._id.toString(),
             startDate: installationDate,
             notes: notes || "Manual customer created by admin",
-            includeInstallationFee: includeInstallationFee !== false, // <-- ADDED THIS
+            includeInstallationFee: includeInstallationFee !== false,
           },
           user: req.user,
         } as any;
@@ -1084,6 +1082,7 @@ export const getCustomersWithoutAccounts = async (
 };
 
 // ==================== CUSTOMER EMAIL ALERTS TOGGLE ====================
+// CRITICAL FIX: NO DEFAULTS - EXACT VALUE ONLY
 export const toggleCustomerEmailAlerts = async (
   req: AuthRequest,
   res: Response,
@@ -1109,8 +1108,12 @@ export const toggleCustomerEmailAlerts = async (
       });
     }
 
+    // Set EXACTLY what admin sends - NO DEFAULTS, NO OVERRIDES
     admin.customerEmailAlertsEnabled = enabled;
     await admin.save();
+
+    // Clear cache
+    dashboardCache = null;
 
     return res.status(200).json({
       success: true,
@@ -1145,6 +1148,7 @@ export const getCustomerEmailAlertsPreference = async (
       });
     }
 
+    // Return EXACT value from database - could be undefined, false, or true
     return res.status(200).json({
       success: true,
       data: {

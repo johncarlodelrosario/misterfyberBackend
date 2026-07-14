@@ -11,7 +11,7 @@ export interface IAdmin extends Document {
   role: "super_admin" | "admin" | "staff";
   status: "active" | "inactive" | "suspended";
   permissions: string[];
-  customerEmailAlertsEnabled: boolean; // Controls CUSTOMER emails
+  customerEmailAlertsEnabled: boolean; // NO DEFAULT - only changes when admin explicitly toggles
   lastLogin?: Date;
   profilePicture?: string;
   createdAt: Date;
@@ -38,7 +38,7 @@ const AdminSchema: Schema = new Schema(
       default: "active",
     },
     permissions: [{ type: String }],
-    customerEmailAlertsEnabled: { type: Boolean, default: true }, // Default: ON (customers receive emails)
+    customerEmailAlertsEnabled: { type: Boolean }, // NO DEFAULT AT ALL
     lastLogin: { type: Date },
     profilePicture: { type: String },
   },
