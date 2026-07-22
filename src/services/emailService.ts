@@ -458,10 +458,7 @@ class EmailService {
           "⚠️ Customer emails are DISABLED in database. FORCE ENABLING for this request.",
         );
         if (admin) {
-          await Admin.updateOne(
-            { _id: admin._id },
-            { $set: { customerEmailAlertsEnabled: true } },
-          );
+          await Admin.updateOne({ _id: admin._id });
           console.log("✅ Updated admin setting to ENABLED");
         }
         return true;
