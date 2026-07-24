@@ -1,4 +1,4 @@
-// models/Application.ts - Keep as is, tower is already optional
+// backend/src/models/Application.ts - COMPLETE WITH ALL FIELDS
 
 import mongoose, { Schema, Document } from "mongoose";
 
@@ -6,53 +6,36 @@ export interface IApplication extends Document {
   applicationId: string;
   firstName: string;
   lastName: string;
+  middleName?: string;
   email: string;
   phoneNumber: string;
-  buildingId?: mongoose.Types.ObjectId;
-  buildingName?: string;
-  tower?: string;
+  birthDate?: Date;
+  gender?: string;
+  idType: string;
+  idNumber: string;
+  idImage?: string;
+  selfiePhoto?: string;
+  buildingId: mongoose.Types.ObjectId;
+  buildingName: string;
   floor?: string;
   unitNumber?: string;
-  notes?: string;
-  planId: mongoose.Types.ObjectId;
-  idType?: string;
-  idNumber?: string;
-  idImage?: string;
+  tower?: string;
   macAddress?: string;
-  status: "pending" | "approved" | "rejected" | "suspended" | "active";
-  serviceStatus: "inactive" | "active" | "suspended" | "pending";
-  adminNotes: string;
-  reviewedBy?: mongoose.Types.ObjectId;
-  reviewedAt?: Date;
-  registeredUserId?: mongoose.Types.ObjectId;
+  planId: mongoose.Types.ObjectId;
+  status: "pending" | "approved" | "rejected" | "suspended";
+  adminNotes?: string;
   billingStarted: boolean;
   billingCycleId?: mongoose.Types.ObjectId;
-  approvalEmailSent: boolean;
+  serviceStatus: "pending" | "active" | "suspended" | "disconnected";
   installationFee: number;
   installationFeePaid: boolean;
+  registeredUserId?: mongoose.Types.ObjectId;
+  notes?: string;
+  reviewedBy?: mongoose.Types.ObjectId;
+  reviewedAt?: Date;
+  approvalEmailSent?: boolean;
   createdAt: Date;
   updatedAt: Date;
-}
-
-function getBuildingAbbreviation(buildingName?: string): string {
-  if (!buildingName) return "MAN";
-  if (buildingName && buildingName.toUpperCase() === "SILK") return "SLK";
-  if (buildingName && buildingName.trim().length >= 3) {
-    return buildingName.trim().toUpperCase().substring(0, 3);
-  }
-  if (buildingName && buildingName.trim().length > 0) {
-    return buildingName.trim().toUpperCase().padEnd(3, "X");
-  }
-  return "MAN";
-}
-
-function generateApplicationIdSync(buildingName?: string): string {
-  const now = new Date();
-  const year = now.getFullYear().toString().slice(-2);
-  const month = (now.getMonth() + 1).toString().padStart(2, "0");
-  const randomNum = Math.floor(1000000 + Math.random() * 9000000).toString();
-  let buildingCode = getBuildingAbbreviation(buildingName);
-  return `${buildingCode}${year}${month}${randomNum}`;
 }
 
 const ApplicationSchema: Schema = new Schema(
@@ -61,66 +44,135 @@ const ApplicationSchema: Schema = new Schema(
       type: String,
       required: true,
       unique: true,
-      default: function (this: any) {
-        return generateApplicationIdSync(this.buildingName);
-      },
     },
-    firstName: { type: String, required: true },
-    lastName: { type: String, required: true },
-    email: { type: String, required: true, lowercase: true, index: true },
-    phoneNumber: { type: String, required: true, index: true },
+    firstName: {
+      type: String,
+      required: true,
+    },
+    lastName: {
+      type: String,
+      required: true,
+    },
+    middleName: {
+      type: String,
+    },
+    email: {
+      type: String,
+      required: true,
+    },
+    phoneNumber: {
+      type: String,
+      required: true,
+    },
+    birthDate: {
+      type: Date,
+    },
+    gender: {
+      type: String,
+      enum: ["male", "female", "other"],
+    },
+    idType: {
+      type: String,
+      required: true,
+    },
+    idNumber: {
+      type: String,
+      required: true,
+    },
+    idImage: {
+      type: String,
+      default: "",
+    },
+    selfiePhoto: {
+      type: String,
+    },
     buildingId: {
       type: Schema.Types.ObjectId,
       ref: "Building",
-      required: false,
+      required: true,
     },
-    buildingName: { type: String, required: false },
-    tower: { type: String, required: false, default: "" },
-    floor: { type: String, required: false, default: "Not Provided" },
-    unitNumber: { type: String, required: false, default: "Not Provided" },
-    notes: { type: String, default: "" },
-    planId: { type: Schema.Types.ObjectId, ref: "Plan", required: true },
-    idType: { type: String, required: false, default: "Not Provided" },
-    idNumber: {
+    buildingName: {
       type: String,
-      required: false,
-      default: "Not Provided",
+      required: true,
     },
-    idImage: { type: String, required: false, default: "" },
-    macAddress: { type: String, required: false, default: "", index: false },
+    floor: {
+      type: String,
+    },
+    unitNumber: {
+      type: String,
+    },
+    tower: {
+      type: String,
+      default: "",
+    },
+    macAddress: {
+      type: String,
+      default: "",
+    },
+    planId: {
+      type: Schema.Types.ObjectId,
+      ref: "Plan",
+      required: true,
+    },
     status: {
       type: String,
-      enum: ["pending", "approved", "rejected", "suspended", "active"],
+      enum: ["pending", "approved", "rejected", "suspended"],
       default: "pending",
-      index: true,
+    },
+    adminNotes: {
+      type: String,
+    },
+    billingStarted: {
+      type: Boolean,
+      default: false,
+    },
+    billingCycleId: {
+      type: Schema.Types.ObjectId,
+      ref: "BillingCycle",
     },
     serviceStatus: {
       type: String,
-      enum: ["inactive", "active", "suspended", "pending"],
+      enum: ["pending", "active", "suspended", "disconnected"],
       default: "pending",
     },
-    adminNotes: { type: String, default: "" },
-    reviewedBy: { type: Schema.Types.ObjectId, ref: "User" },
-    reviewedAt: { type: Date },
-    registeredUserId: { type: Schema.Types.ObjectId, ref: "User", index: true },
-    billingStarted: { type: Boolean, default: false },
-    billingCycleId: { type: Schema.Types.ObjectId, ref: "BillingCycle" },
-    approvalEmailSent: { type: Boolean, default: false },
-    installationFee: { type: Number, default: 0 },
-    installationFeePaid: { type: Boolean, default: false },
+    installationFee: {
+      type: Number,
+      default: 0,
+    },
+    installationFeePaid: {
+      type: Boolean,
+      default: false,
+    },
+    registeredUserId: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+    },
+    notes: {
+      type: String,
+      default: "",
+    },
+    reviewedBy: {
+      type: Schema.Types.ObjectId,
+      ref: "Admin",
+    },
+    reviewedAt: {
+      type: Date,
+    },
+    approvalEmailSent: {
+      type: Boolean,
+      default: false,
+    },
   },
-  { timestamps: true },
+  {
+    timestamps: true,
+  },
 );
 
-// Compound indexes for duplicate prevention
-ApplicationSchema.index({
-  buildingId: 1,
-  tower: 1,
-  floor: 1,
-  unitNumber: 1,
-  status: 1,
-});
-ApplicationSchema.index({ email: 1, status: 1 });
-ApplicationSchema.index({ phoneNumber: 1, status: 1 });
+ApplicationSchema.index({ applicationId: 1 });
+ApplicationSchema.index({ email: 1 });
+ApplicationSchema.index({ buildingId: 1 });
+ApplicationSchema.index({ status: 1 });
+ApplicationSchema.index({ billingStarted: 1 });
+ApplicationSchema.index({ registeredUserId: 1 });
 
 export default mongoose.model<IApplication>("Application", ApplicationSchema);

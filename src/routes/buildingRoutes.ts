@@ -1,4 +1,5 @@
-// routes/buildingRoutes.ts - COMPLETE (ADD super_admin)
+// backend/src/routes/buildingRoutes.ts - COMPLETE WITH INSTALLATION FEE ROUTES
+
 import express from "express";
 import { body } from "express-validator";
 import {
@@ -8,20 +9,24 @@ import {
   updateBuilding,
   deleteBuilding,
   getActiveBuildings,
+  getBuildingInstallationFee,
+  updateBuildingInstallationFee,
 } from "../controllers/buildingController";
-import { protect, authorize } from "../middleware/auth";
+import { protect, adminMiddleware } from "../middleware/auth";
 
 const router = express.Router();
 
 // Public route for active buildings
 router.get("/active", getActiveBuildings);
 
+// Get building installation fee - semi-public (can be accessed with auth)
+router.get("/:buildingId/installation-fee", getBuildingInstallationFee);
+
 // Admin routes
-// FIXED: Include super_admin in allowed roles
 router.post(
   "/",
   protect,
-  authorize("super_admin", "admin", "staff"),
+  adminMiddleware,
   [
     body("buildingName").notEmpty().withMessage("Building name is required"),
     body("region").notEmpty().withMessage("Region is required"),
@@ -33,29 +38,17 @@ router.post(
   createBuilding,
 );
 
-router.get(
-  "/",
-  protect,
-  authorize("super_admin", "admin", "staff"),
-  getAllBuildings,
-);
-router.get(
-  "/:id",
-  protect,
-  authorize("super_admin", "admin", "staff"),
-  getBuilding,
-);
+router.get("/", protect, adminMiddleware, getAllBuildings);
+router.get("/:id", protect, adminMiddleware, getBuilding);
+router.put("/:id", protect, adminMiddleware, updateBuilding);
+router.delete("/:id", protect, adminMiddleware, deleteBuilding);
+
+// Installation fee management routes
 router.put(
-  "/:id",
+  "/:buildingId/installation-fee",
   protect,
-  authorize("super_admin", "admin", "staff"),
-  updateBuilding,
-);
-router.delete(
-  "/:id",
-  protect,
-  authorize("super_admin", "admin", "staff"),
-  deleteBuilding,
+  adminMiddleware,
+  updateBuildingInstallationFee,
 );
 
 export default router;

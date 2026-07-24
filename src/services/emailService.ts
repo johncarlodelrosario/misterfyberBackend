@@ -1,4 +1,4 @@
-// backend/src/services/emailService.ts - COMPLETE FIXED WITH PROPER PDF ATTACHMENT
+// backend/src/services/emailService.ts - COMPLETE FIXED VERSION WITH NO DUPLICATES
 
 import { IUser } from "../models/User";
 import Admin from "../models/Admin";
@@ -159,6 +159,47 @@ export const getLocationFromEntity = async (entity: any): Promise<string> => {
 };
 
 /**
+ * Get building installation fee
+ */
+export const getBuildingInstallationFee = async (
+  buildingId: string,
+): Promise<number> => {
+  try {
+    if (!buildingId) return 0;
+    const building = await Building.findById(buildingId);
+    if (
+      building &&
+      building.installationFee !== undefined &&
+      building.installationFee > 0
+    ) {
+      return building.installationFee;
+    }
+    return 0;
+  } catch (error) {
+    console.error("Error getting building installation fee:", error);
+    return 0;
+  }
+};
+
+/**
+ * Get building name from application
+ */
+export const getBuildingName = async (application: any): Promise<string> => {
+  try {
+    if (!application) return "N/A";
+    if (application.buildingName) return application.buildingName;
+    if (application.buildingId) {
+      const building = await Building.findById(application.buildingId);
+      if (building) return building.buildingName;
+    }
+    return "N/A";
+  } catch (error) {
+    console.error("Error getting building name:", error);
+    return "N/A";
+  }
+};
+
+/**
  * Get collection email for a user
  */
 export const getCollectionEmailForUser = async (
@@ -224,7 +265,6 @@ class EmailService {
       console.warn(
         "⚠️ Email service not initialized - BREVO_API_KEY is missing or invalid",
       );
-
       if (process.env.NODE_ENV === "development") {
         console.log(
           "📧 [DEV MODE] Email service will log emails instead of sending",
@@ -238,6 +278,7 @@ class EmailService {
 
   /**
    * Generate payment confirmation HTML with full invoice details and PDF attachment note
+   * INCLUDES BUILDING INSTALLATION FEE INFORMATION
    */
   generatePaymentConfirmationHTML(
     invoice: any,
@@ -247,10 +288,30 @@ class EmailService {
     location?: string,
     collectionEmail?: string,
     isInstallation: boolean = false,
+    buildingName?: string,
+    buildingInstallationFee?: number,
   ): string {
     const locationBadge = location
       ? `<div style="display: inline-block; background: ${location.toLowerCase() === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin-top: 10px;">📍 ${location.toUpperCase()}</div>`
       : "";
+
+    const buildingInfo = buildingName
+      ? `<div style="display: inline-block; background: #e8f5e9; color: #2e7d32; padding: 4px 12px; border-radius: 12px; font-size: 11px; margin-top: 5px;">🏢 ${buildingName}</div>`
+      : "";
+
+    const installationFeeInfo =
+      isInstallation && buildingInstallationFee
+        ? `
+      <div style="background: #fff3e0; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #ff9800;">
+        <p style="margin: 0; color: #e65100;">
+          <strong>🔧 Installation Fee Details:</strong><br>
+          Building: ${buildingName || "N/A"}<br>
+          Installation Fee: ₱${buildingInstallationFee.toFixed(2)}<br>
+          This is a one-time fee for installation at your building.
+        </p>
+      </div>
+      `
+        : "";
 
     const itemsHtml =
       invoice.items && invoice.items.length > 0
@@ -291,7 +352,7 @@ class EmailService {
       ? `
     <div style="background: #fff3cd; padding: 15px; border-radius: 5px; margin: 20px 0;">
       <p style="margin: 0; color: #856404;">
-        <strong>🔧 Installation Fee Paid:</strong> Your installation fee of ₱${amount.toFixed(2)} has been paid. Our technical team will contact you within 24-48 hours to schedule your installation.
+        <strong>🔧 Installation Fee Paid:</strong> Your installation fee of ₱${amount.toFixed(2)} for ${buildingName || "your building"} has been paid. Our technical team will contact you within 24-48 hours to schedule your installation.
       </p>
     </div>
     `
@@ -328,6 +389,7 @@ class EmailService {
             <h1>✅ Payment Confirmed!</h1>
             <p>Mister Fyber</p>
             ${locationBadge}
+            ${buildingInfo}
         </div>
         <div class="content">
             <p>Dear <strong>${invoice.customerName || "Customer"}</strong>,</p>
@@ -340,11 +402,14 @@ class EmailService {
                 <p><strong>Payment Date:</strong> ${paidAt}</p>
                 <p><strong>Reference Number:</strong> ${payment?.referenceNumber || "N/A"}</p>
                 <p><strong>Invoice Type:</strong> <span class="status-badge">${invoice.invoiceType || "Monthly"}</span></p>
-                ${isInstallation ? `<p><strong>Note:</strong> This is an installation fee payment. Your installation will be scheduled within 24-48 hours.</p>` : ""}
+                ${isInstallation ? `<p><strong>Note:</strong> This is an installation fee payment for ${buildingName || "your building"}.</p>` : ""}
                 ${location ? `<p><strong>Location:</strong> ${location.toUpperCase()}</p>` : ""}
                 ${collectionEmail ? `<p><strong>Collection Email:</strong> <a href="mailto:${collectionEmail}">${collectionEmail}</a></p>` : ""}
+                ${buildingName ? `<p><strong>Building:</strong> ${buildingName}</p>` : ""}
+                ${buildingInstallationFee ? `<p><strong>Installation Fee:</strong> ₱${buildingInstallationFee.toFixed(2)}</p>` : ""}
             </div>
 
+            ${installationFeeInfo}
             ${itemsHtml}
 
             <div class="attachments-note">
@@ -371,8 +436,474 @@ class EmailService {
   }
 
   /**
-   * Generate test location email HTML
+   * Generate invoice HTML with installation fee information
    */
+  generateInvoiceHTML(
+    user: any,
+    billing: any,
+    location: string,
+    buildingName?: string,
+    buildingInstallationFee?: number,
+  ): string {
+    const dueDate = billing.dueDate
+      ? new Date(billing.dueDate).toLocaleDateString()
+      : "N/A";
+    const amount = billing.total || billing.amount || 0;
+    const frontendUrl =
+      process.env.FRONTEND_URL || "https://www.misterfyber.com";
+
+    const collectionEmail = getCollectionEmailByLocation(location);
+
+    const locationBadge = location
+      ? `
+      <div style="display: inline-block; background: ${location.toLowerCase() === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin-top: 10px;">
+        📍 ${location.toUpperCase()}
+      </div>
+    `
+      : "";
+
+    const buildingInfo = buildingName
+      ? `
+      <div style="display: inline-block; background: #e8f5e9; color: #2e7d32; padding: 4px 12px; border-radius: 12px; font-size: 11px; margin-top: 5px;">
+        🏢 ${buildingName}
+      </div>
+    `
+      : "";
+
+    const installationFeeInfo =
+      billing.isInstallationBill && buildingInstallationFee
+        ? `
+      <div style="margin-top: 15px; padding: 10px; background-color: #fff3e0; border-radius: 5px; border-left: 4px solid #ff9800;">
+        <p style="margin: 0; font-size: 12px; color: #e65100;">
+          <strong>🔧 Installation Fee:</strong> ₱${buildingInstallationFee.toLocaleString()} (One-time charge for ${buildingName || "your building"})
+          ${billing.installationFeePaid ? '✅ <span style="color: #28a745;">(Paid)</span>' : '⚠️ <span style="color: #dc3545;">(Pending)</span>'}
+        </p>
+      </div>
+      `
+        : "";
+
+    let additionalInfo = "";
+    if (billing.isProRated && billing.items && billing.items[0]) {
+      const item = billing.items[0];
+      const monthlyRateFromItem = item.rate * 30;
+      const annualRate = monthlyRateFromItem * 12;
+      const dailyRate = annualRate / 365;
+      additionalInfo = `
+        <div style="margin-top: 15px; padding: 10px; background-color: #e8f4f8; border-radius: 5px;">
+          <p style="margin: 0; font-size: 12px; color: #0056b3;">
+            <strong>📌 Pro-rated Calculation:</strong> Daily rate = (₱${safeToFixed(monthlyRateFromItem)} × 12) ÷ 365 = ₱${safeToFixed(dailyRate, 4)}/day<br>
+            Billable days: ${item.quantity} days × ₱${safeToFixed(dailyRate, 4)} = ₱${safeToFixed(amount)}
+          </p>
+        </div>
+      `;
+    }
+
+    let senderName = "Mister Fyber";
+    let senderEmailAddress = "admin@misterfyber.com";
+    if (location) {
+      const collectionEmailForLocation = getCollectionEmailByLocation(location);
+      if (
+        collectionEmailForLocation &&
+        collectionEmailForLocation !== DEFAULT_COLLECTION_EMAIL
+      ) {
+        senderEmailAddress = collectionEmailForLocation;
+        if (collectionEmailForLocation.includes("breeze")) {
+          senderName = "Mister Fyber Breeze Collection";
+        } else if (
+          collectionEmailForLocation.includes("sil") ||
+          collectionEmailForLocation.includes("silk")
+        ) {
+          senderName = "Mister Fyber SIL Collection";
+        } else {
+          senderName = "Mister Fyber Collection";
+        }
+      }
+    }
+
+    // Build items table
+    let itemsTable = "";
+    if (billing.items && billing.items.length > 0) {
+      itemsTable = `
+        <table style="width: 100%; border-collapse: collapse; margin: 10px 0;">
+          <thead>
+            <tr style="background: #f0f0f0;">
+              <th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Description</th>
+              <th style="padding: 8px; text-align: center; border: 1px solid #ddd;">Qty</th>
+              <th style="padding: 8px; text-align: right; border: 1px solid #ddd;">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${billing.items
+              .map(
+                (item: any) => `
+              <tr>
+                <td style="padding: 8px; border: 1px solid #ddd;">${item.description}</td>
+                <td style="padding: 8px; text-align: center; border: 1px solid #ddd;">${item.quantity || 1}</td>
+                <td style="padding: 8px; text-align: right; border: 1px solid #ddd;">₱${(item.amount || 0).toFixed(2)}</td>
+              </tr>
+            `,
+              )
+              .join("")}
+            <tr style="font-weight: bold; background: #f8f9fa;">
+              <td colspan="2" style="padding: 10px; text-align: right; border: 1px solid #ddd;">Total:</td>
+              <td style="padding: 10px; text-align: right; border: 1px solid #ddd; color: #dc3545;">₱${amount.toFixed(2)}</td>
+            </tr>
+          </tbody>
+        </table>
+      `;
+    }
+
+    return `
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <meta charset="UTF-8">
+          <title>Invoice Ready</title>
+      </head>
+      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+          <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+              <h2 style="color: #333;">🧾 Invoice Ready</h2>
+              <p>Hello ${user.firstName || user.email},</p>
+              <p>Your Mister Fyber invoice is now ready for payment.</p>
+              ${locationBadge}
+              ${buildingInfo}
+              <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
+                <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
+              </div>
+              <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                  <h3 style="margin-top: 0;">Invoice Details</h3>
+                  <p><strong>Invoice Number:</strong> ${billing.invoiceNumber || billing._id}</p>
+                  <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
+                  <p><strong>Due Date:</strong> ${dueDate}</p>
+                  ${billing.isProRated ? `<p><strong>Bill Type:</strong> Pro-rated (First Bill)</p>` : ""}
+                  ${billing.isInstallationBill ? `<p><strong>Bill Type:</strong> Installation Fee</p>` : ""}
+                  ${!billing.isProRated && !billing.isInstallationBill ? `<p><strong>Bill Type:</strong> Monthly Subscription</p>` : ""}
+                  ${buildingName ? `<p><strong>Building:</strong> ${buildingName}</p>` : ""}
+                  ${buildingInstallationFee ? `<p><strong>Installation Fee:</strong> ₱${buildingInstallationFee.toLocaleString()}</p>` : ""}
+                  ${location ? `<p><strong>Location:</strong> ${location.toUpperCase()}</p>` : ""}
+                  <p><strong>Collection Email:</strong> ${collectionEmail}</p>
+              </div>
+              ${itemsTable}
+              ${installationFeeInfo}
+              ${additionalInfo}
+              <div style="text-align: center; margin: 30px 0;">
+                  <a href="${frontendUrl}/billing" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">View & Pay Invoice</a>
+              </div>
+              <hr>
+              <p style="color: #666; font-size: 12px;">Mister Fyber</p>
+              <p style="color: #666; font-size: 12px;">Sent from: ${senderName} (${senderEmailAddress})</p>
+          </div>
+      </body>
+      </html>
+    `;
+  }
+
+  /**
+   * Generate payment reminder HTML with installation fee info
+   */
+  generatePaymentReminderHTML(
+    user: any,
+    billing: any,
+    amount: number,
+    dueDate: string,
+    location?: string,
+    collectionEmail?: string,
+    isInstallationBill: boolean = false,
+    isProRated: boolean = false,
+    buildingName?: string,
+    buildingInstallationFee?: number,
+  ): string {
+    const locationBadge = location
+      ? `
+      <div style="display: inline-block; background: ${location.toLowerCase() === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin-bottom: 10px;">
+        📍 ${location.toUpperCase()}
+      </div>
+    `
+      : "";
+
+    const buildingInfo = buildingName
+      ? `
+      <div style="display: inline-block; background: #e8f5e9; color: #2e7d32; padding: 4px 12px; border-radius: 12px; font-size: 11px; margin-bottom: 10px;">
+        🏢 ${buildingName}
+      </div>
+    `
+      : "";
+
+    let reminderMessage = "";
+    if (isInstallationBill) {
+      reminderMessage = `<p><strong>Note:</strong> This is your installation fee for ${buildingName || "your building"}. Once paid, our team will schedule your installation.</p>`;
+    } else if (isProRated) {
+      reminderMessage = `<p><strong>Note:</strong> This is your pro-rated first bill. Once paid, your service will be fully activated.</p>`;
+    }
+
+    const installationFeeInfo =
+      isInstallationBill && buildingInstallationFee
+        ? `
+      <div style="background: #fff3e0; padding: 10px; border-radius: 5px; margin: 10px 0; border-left: 4px solid #ff9800;">
+        <p style="margin: 0; font-size: 12px; color: #e65100;">
+          <strong>🔧 Installation Fee:</strong> ₱${buildingInstallationFee.toLocaleString()} (One-time charge)
+        </p>
+      </div>
+      `
+        : "";
+
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Payment Reminder</title>
+        <style>
+            .sender-info { background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center; }
+        </style>
+    </head>
+    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+        <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+            <h2 style="color: #f39c12;">⚠️ Payment Reminder</h2>
+            <p>Hello ${user.firstName || user.email},</p>
+            <p>This is a friendly reminder that your Mister Fyber payment is due soon.</p>
+            ${locationBadge}
+            ${buildingInfo}
+            <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
+                <p><strong>Due Date:</strong> ${dueDate}</p>
+                ${reminderMessage}
+                ${installationFeeInfo}
+                ${location ? `<p><strong>Location:</strong> ${location.toUpperCase()}</p>` : ""}
+                ${collectionEmail ? `<p><strong>Collection Email:</strong> ${collectionEmail}</p>` : ""}
+                ${buildingName ? `<p><strong>Building:</strong> ${buildingName}</p>` : ""}
+            </div>
+            <div style="text-align: center; margin: 30px 0;">
+                <a href="${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/billing" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">Pay Now</a>
+            </div>
+            <p>Please pay before the due date to avoid service interruption.</p>
+            <hr>
+            <p style="color: #666; font-size: 12px;">This is an automated reminder from Mister Fyber.</p>
+            ${collectionEmail ? `<p style="color: #666; font-size: 12px;">Collection Email: <a href="mailto:${collectionEmail}">${collectionEmail}</a></p>` : ""}
+        </div>
+    </body>
+    </html>
+    `;
+  }
+
+  /**
+   * Generate due date reminder HTML with installation fee info
+   */
+  generateDueDateReminderHTML(
+    user: any,
+    billing: any,
+    amount: number,
+    dueDate: string,
+    location?: string,
+    collectionEmail?: string,
+    isInstallationBill: boolean = false,
+    isProRated: boolean = false,
+    buildingName?: string,
+    buildingInstallationFee?: number,
+  ): string {
+    const locationBadge = location
+      ? `
+      <div style="display: inline-block; background: ${location.toLowerCase() === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin-bottom: 10px;">
+        📍 ${location.toUpperCase()}
+      </div>
+    `
+      : "";
+
+    const buildingInfo = buildingName
+      ? `
+      <div style="display: inline-block; background: #e8f5e9; color: #2e7d32; padding: 4px 12px; border-radius: 12px; font-size: 11px; margin-bottom: 10px;">
+        🏢 ${buildingName}
+      </div>
+    `
+      : "";
+
+    let reminderMessage = "";
+    if (isInstallationBill) {
+      reminderMessage = `<p><strong>⚠️ IMPORTANT:</strong> This is your installation fee for ${buildingName || "your building"}. Payment is due TODAY. Once paid, our team will schedule your installation.</p>`;
+    } else if (isProRated) {
+      reminderMessage = `<p><strong>⚠️ IMPORTANT:</strong> This is your pro-rated first bill. Payment is due TODAY. Once paid, your service will be fully activated.</p>`;
+    } else {
+      reminderMessage = `<p><strong>⚠️ IMPORTANT:</strong> Your monthly subscription payment is due TODAY. Please pay immediately to avoid service interruption.</p>`;
+    }
+
+    const installationFeeInfo =
+      isInstallationBill && buildingInstallationFee
+        ? `
+      <div style="background: #fff3e0; padding: 10px; border-radius: 5px; margin: 10px 0; border-left: 4px solid #ff9800;">
+        <p style="margin: 0; font-size: 12px; color: #e65100;">
+          <strong>🔧 Installation Fee:</strong> ₱${buildingInstallationFee.toLocaleString()} (One-time charge for ${buildingName || "your building"})
+        </p>
+      </div>
+      `
+        : "";
+
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>⚠️ PAYMENT DUE TODAY - Mister Fyber</title>
+        <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
+            .header { text-align: center; border-bottom: 2px solid #dc3545; padding-bottom: 20px; }
+            .header h1 { color: #dc3545; margin: 0; }
+            .content { padding: 20px 0; }
+            .bill-details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
+            .button { display: inline-block; background-color: #dc3545; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; }
+            .warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }
+            .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>⚠️ PAYMENT DUE TODAY</h1>
+            </div>
+            <div class="content">
+                <p>Hello ${user.firstName || user.email},</p>
+                <p><strong>Your Mister Fyber payment is due TODAY.</strong> Please settle your bill immediately to avoid service interruption.</p>
+                ${locationBadge}
+                ${buildingInfo}
+                <div class="bill-details">
+                    <h3 style="margin-top: 0;">📋 Invoice Details</h3>
+                    <p><strong>Invoice Number:</strong> ${billing.invoiceNumber || billing._id}</p>
+                    <p><strong>Amount Due:</strong> <span style="color: #dc3545; font-size: 18px;">₱${safeToFixed(amount)}</span></p>
+                    <p><strong>Due Date:</strong> <span style="color: #dc3545; font-weight: bold;">${dueDate} (TODAY)</span></p>
+                    ${isProRated ? `<p><strong>Bill Type:</strong> Pro-rated (First Bill)</p>` : ""}
+                    ${isInstallationBill ? `<p><strong>Bill Type:</strong> Installation Fee</p>` : ""}
+                    ${installationFeeInfo}
+                    ${location ? `<p><strong>Location:</strong> ${location.toUpperCase()}</p>` : ""}
+                    ${collectionEmail ? `<p><strong>Collection Email:</strong> ${collectionEmail}</p>` : ""}
+                    ${buildingName ? `<p><strong>Building:</strong> ${buildingName}</p>` : ""}
+                </div>
+                ${reminderMessage}
+                <div class="warning">
+                    <strong>📌 After Today:</strong> If payment is not received, your account will enter a grace period. After the grace period, your service will be suspended.
+                </div>
+                <div style="text-align: center; margin: 30px 0;">
+                    <a href="${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/billing" class="button">💰 PAY NOW</a>
+                </div>
+                <p><strong>Payment Methods Accepted:</strong> GCash, Maya, Bank Transfer, Over-the-Counter</p>
+                <p>If you have already made the payment, please disregard this notice.</p>
+            </div>
+            <div class="footer">
+                <p>Mister Fyber - Your trusted internet provider</p>
+                <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
+                ${collectionEmail ? `<p><small>Collection Email: <a href="mailto:${collectionEmail}">${collectionEmail}</a></small></p>` : ""}
+                <p><small>Late payments may incur service interruption after grace period.</small></p>
+            </div>
+        </div>
+    </body>
+    </html>
+    `;
+  }
+
+  /**
+   * Generate bill without account HTML with installation fee info
+   */
+  generateBillWithoutAccountHTML(
+    application: any,
+    bill: any,
+    plan: any,
+    amount: number,
+    dueDate: string,
+    location?: string,
+    collectionEmail?: string,
+    buildingName?: string,
+    buildingInstallationFee?: number,
+  ): string {
+    const registerUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/register`;
+    const locationBadge = location
+      ? `
+      <div style="display: inline-block; background: ${location.toLowerCase() === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin-bottom: 10px;">
+        📍 ${location.toUpperCase()}
+      </div>
+    `
+      : "";
+
+    const buildingInfo = buildingName
+      ? `
+      <div style="display: inline-block; background: #e8f5e9; color: #2e7d32; padding: 4px 12px; border-radius: 12px; font-size: 11px; margin-bottom: 10px;">
+        🏢 ${buildingName}
+      </div>
+    `
+      : "";
+
+    const installationFeeInfo =
+      bill.isInstallationBill && buildingInstallationFee
+        ? `
+      <div style="margin-top: 15px; padding: 10px; background-color: #fff3e0; border-radius: 5px; border-left: 4px solid #ff9800;">
+        <p style="margin: 0; font-size: 12px; color: #e65100;">
+          <strong>🔧 Installation Fee:</strong> ₱${buildingInstallationFee.toLocaleString()} (One-time charge for ${buildingName || "your building"})
+        </p>
+      </div>
+      `
+        : "";
+
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Your Mister Fyber Bill is Ready</title>
+        <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
+            .header { text-align: center; border-bottom: 2px solid #007bff; padding-bottom: 20px; }
+            .header h1 { color: #007bff; margin: 0; }
+            .content { padding: 20px 0; }
+            .bill-details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
+            .button { display: inline-block; background-color: #28a745; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; }
+            .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
+            .warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>🧾 Your Bill is Ready</h1>
+            </div>
+            <div class="content">
+                <p>Hello ${application.firstName} ${application.lastName},</p>
+                <p>Your Mister Fyber bill is now ready. Since you haven't created your account yet, please register first using your Application ID.</p>
+                ${locationBadge}
+                ${buildingInfo}
+                <div class="bill-details">
+                    <h3 style="margin-top: 0;">📋 Bill Details</h3>
+                    <p><strong>Invoice Number:</strong> ${bill.invoiceNumber}</p>
+                    <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
+                    <p><strong>Due Date:</strong> ${dueDate}</p>
+                    <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
+                    ${bill.isProRated ? `<p><strong>Bill Type:</strong> Pro-rated (First Bill)</p>` : ""}
+                    ${bill.isInstallationBill ? `<p><strong>Bill Type:</strong> Installation Fee</p>` : ""}
+                    ${!bill.isProRated && !bill.isInstallationBill ? `<p><strong>Bill Type:</strong> Monthly Subscription</p>` : ""}
+                    ${buildingName ? `<p><strong>Building:</strong> ${buildingName}</p>` : ""}
+                    ${location ? `<p><strong>Location:</strong> ${location.toUpperCase()}</p>` : ""}
+                    ${collectionEmail ? `<p><strong>Collection Email:</strong> ${collectionEmail}</p>` : ""}
+                </div>
+                ${installationFeeInfo}
+                <div class="warning">
+                    <strong>📌 Important:</strong> You need to create your account before you can pay your bill.
+                </div>
+                <div style="text-align: center; margin: 30px 0;">
+                    <a href="${registerUrl}" class="button">🎯 Create Your Account First</a>
+                </div>
+                <p><strong>Your Application ID:</strong> ${application.applicationId}</p>
+                <p>Once you create your account, you will be able to view and pay this bill.</p>
+            </div>
+            <div class="footer">
+                <p>Mister Fyber - Your trusted internet provider</p>
+                <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
+                ${collectionEmail ? `<p><small>Collection Email: <a href="mailto:${collectionEmail}">${collectionEmail}</a></small></p>` : ""}
+            </div>
+        </div>
+    </body>
+    </html>
+    `;
+  }
+
+  // ==================== TEST EMAIL ====================
   generateTestLocationEmailHTML(
     location: string,
     collectionEmail: string,
@@ -429,6 +960,7 @@ class EmailService {
     `;
   }
 
+  // ==================== CONFIGURATION CHECK ====================
   isConfigured(): boolean {
     const configured =
       this.initialized && !!this.apiKey && this.apiKey.length > 10;
@@ -446,7 +978,6 @@ class EmailService {
       }).sort({ role: 1 });
 
       const enabled = admin ? admin.customerEmailAlertsEnabled !== false : true;
-
       console.log(`📧 Customer emails enabled: ${enabled}`);
       console.log(`   Admin found: ${!!admin}`);
       console.log(
@@ -503,12 +1034,10 @@ class EmailService {
    */
   getSenderOptions(location?: string): { value: string; label: string }[] {
     const options = [];
-
     options.push({
       value: "admin",
       label: "Admin (admin@misterfyber.com)",
     });
-
     if (location) {
       const collectionEmail = getCollectionEmailByLocation(location);
       if (collectionEmail && collectionEmail !== DEFAULT_COLLECTION_EMAIL) {
@@ -519,11 +1048,10 @@ class EmailService {
         });
       }
     }
-
     return options;
   }
 
-  // ==================== CORE EMAIL SENDING WITH LOCATION SUPPORT ====================
+  // ==================== CORE EMAIL SENDING ====================
   async sendEmail(
     to: string | string[],
     subject: string,
@@ -701,23 +1229,16 @@ class EmailService {
         requestBody.replyTo = { email: collectionEmail };
       }
 
-      // CRITICAL FIX: Handle attachments properly for Brevo API
       if (options?.attachments && options.attachments.length > 0) {
         console.log(
           `📎 Processing ${options.attachments.length} attachment(s) for Brevo API`,
         );
-
         requestBody.attachment = options.attachments.map((att: any) => {
           let content = att.content;
-
-          // If content is a Buffer, convert to base64
           if (Buffer.isBuffer(content)) {
             console.log(`📎 Converting Buffer to base64 for: ${att.filename}`);
             content = content.toString("base64");
-          }
-          // If content is already a string, check if it's already base64
-          else if (typeof content === "string") {
-            // Check if it already has a data URI prefix, remove it
+          } else if (typeof content === "string") {
             if (content.startsWith("data:")) {
               const parts = content.split(",");
               if (parts.length > 1) {
@@ -726,11 +1247,8 @@ class EmailService {
                   `📎 Removed data URI prefix from attachment: ${att.filename}`,
                 );
               }
-            }
-            // Check if it's a file path
-            else if (content.startsWith("/") || content.includes(".pdf")) {
+            } else if (content.startsWith("/") || content.includes(".pdf")) {
               try {
-                // Try to read the file
                 const filePath = path.isAbsolute(content)
                   ? content
                   : path.join(process.cwd(), content);
@@ -749,27 +1267,22 @@ class EmailService {
               }
             }
           }
-
           const contentLength =
             typeof content === "string" ? content.length : 0;
           console.log(
             `📎 Attachment: ${att.filename}, base64 length: ${contentLength} chars`,
           );
-
-          // Verify the content looks like base64 (no spaces, no data URI prefix)
           if (typeof content === "string" && content.includes(" ")) {
             console.warn(
               `⚠️ Attachment content contains spaces - removing them: ${att.filename}`,
             );
             content = content.replace(/\s/g, "");
           }
-
           return {
             name: att.filename || "attachment.pdf",
             content: content,
           };
         });
-
         console.log(
           `📎 Attachments added to request: ${requestBody.attachment.length} file(s)`,
         );
@@ -824,7 +1337,6 @@ class EmailService {
           console.error(
             `❌ Brevo API error: ${response.status} - ${errorText}`,
           );
-
           try {
             const errorJson = JSON.parse(errorText);
             console.error(
@@ -834,7 +1346,6 @@ class EmailService {
           } catch {
             // Ignore parse error
           }
-
           if (response.status === 401) {
             console.error(
               "   ⚠️ Authentication failed - Please check your BREVO_API_KEY",
@@ -849,7 +1360,6 @@ class EmailService {
               "   ⚠️ Rate limit exceeded - Please wait and try again",
             );
           }
-
           return false;
         }
       } catch (fetchError: any) {
@@ -867,667 +1377,581 @@ class EmailService {
     }
   }
 
-  async forceSendEmail(
-    to: string | string[],
-    subject: string,
-    htmlContent: string,
-    location?: string,
-    options?: {
-      cc?: string | string[];
-      bcc?: string | string[];
-      replyTo?: string;
-      attachments?: any[];
-      useAdminSender?: boolean;
-    },
-  ): Promise<boolean> {
-    console.log(`📧 Force sending email (bypassing customer email setting)...`);
-    return await this.sendEmail(
-      to,
-      subject,
-      htmlContent,
-      false,
-      location,
-      options,
-    );
-  }
-
-  private async sendToAdmin(
-    subject: string,
-    html: string,
-    location?: string,
-  ): Promise<boolean> {
-    if (!this.adminEmail) {
-      console.error("❌ Admin email not configured");
-      return false;
-    }
-    return await this.sendEmail(
-      this.adminEmail,
-      `[ADMIN] ${subject}`,
-      html,
-      false,
-      location,
-    );
-  }
-
-  /**
-   * Generate collection email notification HTML
-   */
-  generateCollectionNotificationHTML(
-    invoice: any,
-    amount: number,
-    payment: any,
-    location?: string,
-    notes?: string,
-    adminName?: string,
-  ): string {
-    return `
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-        <h2 style="color: #28a745;">💰 Payment Received</h2>
-        <p><strong>Invoice:</strong> ${invoice.invoiceNumber}</p>
-        <p><strong>Customer:</strong> ${invoice.customerName}</p>
-        <p><strong>Amount:</strong> ₱${amount.toFixed(2)}</p>
-        <p><strong>Payment Type:</strong> ${invoice.isInstallationFee ? "Installation Fee" : "Subscription"}</p>
-        <p><strong>Reference:</strong> ${payment?.referenceNumber || "N/A"}</p>
-        ${location ? `<p><strong>Location:</strong> ${location.toUpperCase()}</p>` : ""}
-        <p><strong>Confirmed By:</strong> ${adminName || "Admin"}</p>
-        <p><strong>Confirmed At:</strong> ${new Date().toLocaleString()}</p>
-        ${notes ? `<p><strong>Notes:</strong> ${notes}</p>` : ""}
-        <hr>
-        <p style="color: #666; font-size: 12px;">Mister Fyber - Collection Department</p>
-    </div>
-    `;
-  }
-
-  /**
-   * Generate payment reminder HTML email
-   */
-  generatePaymentReminderHTML(
-    user: any,
-    billing: any,
-    amount: number,
-    dueDate: string,
-    location?: string,
-    collectionEmail?: string,
-    isInstallationBill: boolean = false,
-    isProRated: boolean = false,
-  ): string {
-    const locationBadge = location
-      ? `
-      <div style="display: inline-block; background: ${location.toLowerCase() === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin-bottom: 10px;">
-        📍 ${location.toUpperCase()}
-      </div>
-    `
-      : "";
-
-    let reminderMessage = "";
-    if (isInstallationBill) {
-      reminderMessage = `<p><strong>Note:</strong> This is your installation fee. Once paid, our team will schedule your installation.</p>`;
-    } else if (isProRated) {
-      reminderMessage = `<p><strong>Note:</strong> This is your pro-rated first bill. Once paid, your service will be fully activated.</p>`;
-    }
-
-    return `
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>Payment Reminder</title>
-        <style>
-            .sender-info { background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center; }
-        </style>
-    </head>
-    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-        <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-            <h2 style="color: #f39c12;">⚠️ Payment Reminder</h2>
-            <p>Hello ${user.firstName || user.email},</p>
-            <p>This is a friendly reminder that your Mister Fyber payment is due soon.</p>
-            ${locationBadge}
-            <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
-                <p><strong>Due Date:</strong> ${dueDate}</p>
-                ${reminderMessage}
-                ${location ? `<p><strong>Location:</strong> ${location.toUpperCase()}</p>` : ""}
-                ${collectionEmail ? `<p><strong>Collection Email:</strong> ${collectionEmail}</p>` : ""}
-            </div>
-            <div style="text-align: center; margin: 30px 0;">
-                <a href="${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/billing" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">Pay Now</a>
-            </div>
-            <p>Please pay before the due date to avoid service interruption.</p>
-            <hr>
-            <p style="color: #666; font-size: 12px;">This is an automated reminder from Mister Fyber.</p>
-            ${collectionEmail ? `<p style="color: #666; font-size: 12px;">Collection Email: <a href="mailto:${collectionEmail}">${collectionEmail}</a></p>` : ""}
-        </div>
-    </body>
-    </html>
-    `;
-  }
-
-  /**
-   * Generate due date reminder HTML email
-   */
-  generateDueDateReminderHTML(
-    user: any,
-    billing: any,
-    amount: number,
-    dueDate: string,
-    location?: string,
-    collectionEmail?: string,
-    isInstallationBill: boolean = false,
-    isProRated: boolean = false,
-  ): string {
-    const locationBadge = location
-      ? `
-      <div style="display: inline-block; background: ${location.toLowerCase() === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin-bottom: 10px;">
-        📍 ${location.toUpperCase()}
-      </div>
-    `
-      : "";
-
-    let reminderMessage = "";
-    if (isInstallationBill) {
-      reminderMessage = `<p><strong>⚠️ IMPORTANT:</strong> This is your installation fee. Payment is due TODAY. Once paid, our team will schedule your installation.</p>`;
-    } else if (isProRated) {
-      reminderMessage = `<p><strong>⚠️ IMPORTANT:</strong> This is your pro-rated first bill. Payment is due TODAY. Once paid, your service will be fully activated.</p>`;
-    } else {
-      reminderMessage = `<p><strong>⚠️ IMPORTANT:</strong> Your monthly subscription payment is due TODAY. Please pay immediately to avoid service interruption.</p>`;
-    }
-
-    return `
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>⚠️ PAYMENT DUE TODAY - Mister Fyber</title>
-        <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
-            .header { text-align: center; border-bottom: 2px solid #dc3545; padding-bottom: 20px; }
-            .header h1 { color: #dc3545; margin: 0; }
-            .content { padding: 20px 0; }
-            .bill-details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
-            .button { display: inline-block; background-color: #dc3545; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; }
-            .warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }
-            .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="header">
-                <h1>⚠️ PAYMENT DUE TODAY</h1>
-            </div>
-            <div class="content">
-                <p>Hello ${user.firstName || user.email},</p>
-                <p><strong>Your Mister Fyber payment is due TODAY.</strong> Please settle your bill immediately to avoid service interruption.</p>
-                ${locationBadge}
-                <div class="bill-details">
-                    <h3 style="margin-top: 0;">📋 Invoice Details</h3>
-                    <p><strong>Invoice Number:</strong> ${billing.invoiceNumber || billing._id}</p>
-                    <p><strong>Amount Due:</strong> <span style="color: #dc3545; font-size: 18px;">₱${safeToFixed(amount)}</span></p>
-                    <p><strong>Due Date:</strong> <span style="color: #dc3545; font-weight: bold;">${dueDate} (TODAY)</span></p>
-                    ${isProRated ? `<p><strong>Bill Type:</strong> Pro-rated (First Bill)</p>` : ""}
-                    ${isInstallationBill ? `<p><strong>Bill Type:</strong> Installation Fee</p>` : ""}
-                    ${location ? `<p><strong>Location:</strong> ${location.toUpperCase()}</p>` : ""}
-                    ${collectionEmail ? `<p><strong>Collection Email:</strong> ${collectionEmail}</p>` : ""}
-                </div>
-                ${reminderMessage}
-                <div class="warning">
-                    <strong>📌 After Today:</strong> If payment is not received, your account will enter a grace period. After the grace period, your service will be suspended.
-                </div>
-                <div style="text-align: center; margin: 30px 0;">
-                    <a href="${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/billing" class="button">💰 PAY NOW</a>
-                </div>
-                <p><strong>Payment Methods Accepted:</strong> GCash, Maya, Bank Transfer, Over-the-Counter</p>
-                <p>If you have already made the payment, please disregard this notice.</p>
-            </div>
-            <div class="footer">
-                <p>Mister Fyber - Your trusted internet provider</p>
-                <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
-                ${collectionEmail ? `<p><small>Collection Email: <a href="mailto:${collectionEmail}">${collectionEmail}</a></small></p>` : ""}
-                <p><small>Late payments may incur service interruption after grace period.</small></p>
-            </div>
-        </div>
-    </body>
-    </html>
-    `;
-  }
-
-  /**
-   * Generate welcome email HTML
-   */
-  generateWelcomeHTML(user: IUser): string {
-    const loginUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/login`;
-    const dashboardUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/dashboard`;
-
-    return `
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Welcome to Mister Fyber</title>
-        <style>
-            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f4f4f4; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; background-color: #ffffff; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-            .header { text-align: center; padding: 20px 0; border-bottom: 3px solid #28a745; background-color: #f8f9fa; border-radius: 10px 10px 0 0; }
-            .header h1 { color: #28a745; margin: 0; font-size: 28px; }
-            .content { padding: 30px 20px; }
-            .details-box { background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #28a745; }
-            .button-container { text-align: center; margin: 30px 0; }
-            .btn { display: inline-block; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; margin: 0 10px; }
-            .btn-primary { background-color: #007bff; color: white; }
-            .btn-success { background-color: #28a745; color: white; }
-            .footer { text-align: center; padding: 20px; border-top: 1px solid #e0e0e0; font-size: 12px; color: #666; background-color: #f8f9fa; border-radius: 0 0 10px 10px; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="header">
-                <h1>🎉 Welcome Aboard!</h1>
-                <p>Mister Fyber</p>
-            </div>
-            <div class="content">
-                <p>Hello <strong>${user.firstName || user.email}</strong>!</p>
-                <p>Thank you for choosing <strong>Mister Fyber</strong>. We're excited to have you on board!</p>
-                <p>Your account has been successfully created and is now ready to use.</p>
-                <div class="details-box">
-                    <h3 style="margin-top: 0;">📋 Account Details</h3>
-                    <p><strong>Username:</strong> ${user.username || user.email}</p>
-                    <p><strong>Email:</strong> ${user.email}</p>
-                    <p><strong>Full Name:</strong> ${user.firstName || ""} ${user.lastName || ""}</p>
-                    <p><strong>Phone:</strong> ${user.phoneNumber || "Not provided"}</p>
-                    <p><strong>Status:</strong> ${(user.status || "pending").toUpperCase()}</p>
-                </div>
-                <div class="button-container">
-                    <a href="${loginUrl}" class="btn btn-primary">🔐 Login to Account</a>
-                    <a href="${dashboardUrl}" class="btn btn-success">📊 Go to Dashboard</a>
-                </div>
-                <p><strong>Note:</strong> Your billing will be started by our admin team. You will receive another email with your first invoice.</p>
-            </div>
-            <div class="footer">
-                <p>This is an automated message from Mister Fyber.</p>
-                <p>© ${new Date().getFullYear()} Mister Fyber. All rights reserved.</p>
-                <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
-            </div>
-        </div>
-    </body>
-    </html>
-    `;
-  }
-
-  /**
-   * Generate password reset HTML
-   */
-  generatePasswordResetHTML(user: IUser, resetToken: string): string {
-    const frontendUrl =
-      process.env.FRONTEND_URL || "https://www.misterfyber.com";
-    const resetUrl = `${frontendUrl}/reset-password/${resetToken}`;
-
-    return `
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>Password Reset Request</title>
-    </head>
-    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-        <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-            <h2 style="color: #333;">Password Reset Request</h2>
-            <p>Hello ${user.firstName || user.email},</p>
-            <p>You requested a password reset for your Mister Fyber account. Click the button below to reset your password:</p>
-            <div style="text-align: center; margin: 30px 0;">
-                <a href="${resetUrl}" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">Reset Password</a>
-            </div>
-            <p>Or copy and paste this link: ${resetUrl}</p>
-            <p>This link will expire in <strong>10 minutes</strong>.</p>
-            <p>If you didn't request this, please ignore this email.</p>
-            <hr>
-            <p style="color: #666; font-size: 12px;">Mister Fyber</p>
-        </div>
-    </body>
-    </html>
-    `;
-  }
-
-  /**
-   * Generate account credentials HTML
-   */
-  generateAccountCredentialsHTML(
-    user: IUser,
-    username: string,
-    password: string,
-    applicationId: string,
-  ): string {
-    const loginUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/login`;
-
-    return `
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>Your Mister Fyber Account Credentials</title>
-        <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
-            .header { text-align: center; border-bottom: 2px solid #007bff; padding-bottom: 20px; }
-            .header h1 { color: #007bff; margin: 0; }
-            .content { padding: 20px 0; }
-            .credentials { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
-            .button { display: inline-block; background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; }
-            .warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }
-            .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="header">
-                <h1>🔐 Your Account Credentials</h1>
-            </div>
-            <div class="content">
-                <p>Hello ${user.firstName},</p>
-                <p>Your Mister Fyber account has been set up by our admin team. Here are your login credentials:</p>
-                <div class="credentials">
-                    <h3 style="margin-top: 0;">📋 Login Information</h3>
-                    <p><strong>Username:</strong> ${username}</p>
-                    <p><strong>Password:</strong> ${password}</p>
-                    <p><strong>Application ID:</strong> ${applicationId}</p>
-                </div>
-                <div class="warning">
-                    <strong>⚠️ Important:</strong> Please change your password after your first login for security purposes.
-                </div>
-                <div style="text-align: center;">
-                    <a href="${loginUrl}" class="button">🔑 Login to Your Account</a>
-                </div>
-            </div>
-            <div class="footer">
-                <p>Mister Fyber - Your trusted internet provider</p>
-                <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
-            </div>
-        </div>
-    </body>
-    </html>
-    `;
-  }
-
-  /**
-   * Generate application received HTML
-   */
-  generateApplicationReceivedHTML(application: any, plan: any): string {
-    const planPrice = plan?.price ?? 0;
-
-    return `
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>Application Received</title>
-    </head>
-    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-        <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-            <h2 style="color: #28a745; text-align: center;">✅ Application Received!</h2>
-            <p>Hello ${application.firstName},</p>
-            <p>Thank you for applying for internet service with Mister Fyber. We have received your application and it is currently being reviewed.</p>
-            <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                <h3 style="margin-top: 0;">Application Details:</h3>
-                <p><strong>Application ID:</strong> ${application.applicationId}</p>
-                <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
-                <p><strong>Monthly Price:</strong> ₱${safeToFixed(planPrice)}</p>
-                <p><strong>Status:</strong> <span style="color: #f39c12;">Pending Review</span></p>
-            </div>
-            <p>You will receive another email once your application has been reviewed.</p>
-            <p>Please keep your Application ID for future reference.</p>
-            <hr>
-            <p style="color: #666; font-size: 12px;">Mister Fyber</p>
-        </div>
-    </body>
-    </html>
-    `;
-  }
-
-  /**
-   * Generate application approved HTML
-   */
-  generateApplicationApprovedHTML(application: any, plan: any): string {
-    const registerUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/register`;
-    const planPrice = plan?.price ?? 0;
-
-    return `
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>Application Approved - Create Your Account</title>
-        <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
-            .header { text-align: center; border-bottom: 2px solid #28a745; padding-bottom: 20px; }
-            .header h1 { color: #28a745; margin: 0; }
-            .content { padding: 20px 0; }
-            .details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
-            .button { display: inline-block; background-color: #28a745; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; margin: 20px 0; }
-            .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="header">
-                <h1>✅ Application Approved!</h1>
-            </div>
-            <div class="content">
-                <p>Hello ${application.firstName},</p>
-                <p>Great news! Your application to Mister Fyber has been approved.</p>
-                <div class="details">
-                    <h3 style="margin-top: 0;">📋 Application Details</h3>
-                    <p><strong>Application ID:</strong> ${application.applicationId}</p>
-                    <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
-                    <p><strong>Monthly Price:</strong> ₱${safeToFixed(planPrice)}</p>
-                </div>
-                <div style="text-align: center;">
-                    <a href="${registerUrl}" class="button">🎯 Create Your Account Now</a>
-                </div>
-                <p><strong>What's next?</strong></p>
-                <ol>
-                    <li>Click the button above to create your account</li>
-                    <li>Use your email address and create a password</li>
-                    <li>Once registered, the admin will start your billing</li>
-                    <li>You'll receive an invoice via email</li>
-                </ol>
-                ${application.adminNotes ? `<div style="margin-top: 20px; padding: 15px; background-color: #e7f3ff; border-left: 4px solid #007bff;"><p><strong>📝 Admin Notes:</strong><br>${application.adminNotes}</p></div>` : ""}
-            </div>
-            <div class="footer">
-                <p>Mister Fyber - Your trusted internet provider</p>
-                <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
-            </div>
-        </div>
-    </body>
-    </html>
-    `;
-  }
-
-  /**
-   * Generate application rejected HTML
-   */
-  generateApplicationRejectedHTML(application: any, reason: string): string {
-    return `
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>Application Update</title>
-    </head>
-    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-        <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-            <h2 style="color: #dc3545;">Application Update</h2>
-            <p>Hello ${application.firstName},</p>
-            <p>Thank you for your interest in Mister Fyber. Unfortunately, your application has not been approved at this time.</p>
-            <div style="margin-top: 20px; padding: 15px; background-color: #fff3f3; border-left: 4px solid #dc3545;">
-                <p><strong>Reason:</strong></p>
-                <p>${reason || "No specific reason provided"}</p>
-            </div>
-            <p>If you have any questions, please contact our support team.</p>
-            <hr>
-            <p style="color: #666; font-size: 12px;">Mister Fyber</p>
-        </div>
-    </body>
-    </html>
-    `;
-  }
-
-  /**
-   * Generate new application notification HTML for admin
-   */
-  generateNewApplicationNotificationHTML(application: any, plan: any): string {
-    const frontendUrl =
-      process.env.FRONTEND_URL || "https://www.misterfyber.com";
-    const planPrice = plan?.price ?? 0;
-
-    return `
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-        <h2 style="color: #333;">🆕 NEW APPLICATION ALERT!</h2>
-        <p>A new application has been submitted to Mister Fyber and requires your review.</p>
-        <div style="margin-top: 20px; padding: 15px; background-color: #f8f9fa; border-radius: 5px;">
-            <h3>Application Details:</h3>
-            <p><strong>Application ID:</strong> ${application.applicationId}</p>
-            <p><strong>Name:</strong> ${application.firstName} ${application.lastName}</p>
-            <p><strong>Email:</strong> ${application.email}</p>
-            <p><strong>Phone:</strong> ${application.phoneNumber}</p>
-            <p><strong>Plan:</strong> ${plan?.name || "N/A"} (₱${safeToFixed(planPrice)})</p>
-            <p><strong>ID Type:</strong> ${application.idType}</p>
-            <p><strong>Submitted:</strong> ${new Date().toLocaleString()}</p>
-        </div>
-        <div style="margin-top: 20px; padding: 15px; background-color: #e7f3ff; border-radius: 5px;">
-            <h3>Address:</h3>
-            <p>${application.buildingName || "N/A"}<br>
-            ${application.floor ? `Floor: ${application.floor}` : ""} ${application.unitNumber ? `Unit: ${application.unitNumber}` : ""}<br>
-            ${application.buildingId?.streetAddress || "N/A"}</p>
-        </div>
-        <div style="text-align: center; margin-top: 30px;">
-            <a href="${frontendUrl}/admin/applications" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">Review Application Now</a>
-        </div>
-    </div>
-    `;
-  }
-
-  /**
-   * Generate plan change notification HTML
-   */
-  generatePlanChangeNotificationHTML(
-    user: IUser,
-    oldPlan: any,
-    newPlan: any,
-  ): string {
-    const newPlanPrice = newPlan?.price ?? 0;
-
-    return `
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>Plan Updated</title>
-    </head>
-    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-        <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-            <h2 style="color: #333;">📡 Plan Updated</h2>
-            <p>Hello ${user.firstName || user.email},</p>
-            <p>Your Mister Fyber plan has been changed successfully.</p>
-            <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                <p><strong>Old Plan:</strong> ${oldPlan?.name || "N/A"}</p>
-                <p><strong>New Plan:</strong> ${newPlan?.name || "N/A"}</p>
-                <p><strong>New Price:</strong> ₱${safeToFixed(newPlanPrice)}</p>
-                <p><strong>New Speed:</strong> ${newPlan?.speed?.download || "N/A"} Mbps / ${newPlan?.speed?.upload || "N/A"} Mbps</p>
-            </div>
-            <p>The changes will take effect immediately.</p>
-            <hr>
-            <p style="color: #666; font-size: 12px;">Mister Fyber</p>
-        </div>
-    </body>
-    </html>
-    `;
-  }
-
-  /**
-   * Generate bill without account HTML
-   */
-  generateBillWithoutAccountHTML(
-    application: any,
-    bill: any,
-    plan: any,
-    amount: number,
-    dueDate: string,
-    location?: string,
-    collectionEmail?: string,
-  ): string {
-    const registerUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/register`;
-    const locationBadge = location
-      ? `
-      <div style="display: inline-block; background: ${location.toLowerCase() === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin-bottom: 10px;">
-        📍 ${location.toUpperCase()}
-      </div>
-    `
-      : "";
-
-    return `
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>Your Mister Fyber Bill is Ready</title>
-        <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
-            .header { text-align: center; border-bottom: 2px solid #007bff; padding-bottom: 20px; }
-            .header h1 { color: #007bff; margin: 0; }
-            .content { padding: 20px 0; }
-            .bill-details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
-            .button { display: inline-block; background-color: #28a745; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; }
-            .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
-            .warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="header">
-                <h1>🧾 Your Bill is Ready</h1>
-            </div>
-            <div class="content">
-                <p>Hello ${application.firstName} ${application.lastName},</p>
-                <p>Your Mister Fyber bill is now ready. Since you haven't created your account yet, please register first using your Application ID.</p>
-                ${locationBadge}
-                <div class="bill-details">
-                    <h3 style="margin-top: 0;">📋 Bill Details</h3>
-                    <p><strong>Invoice Number:</strong> ${bill.invoiceNumber}</p>
-                    <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
-                    <p><strong>Due Date:</strong> ${dueDate}</p>
-                    <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
-                    ${bill.isProRated ? `<p><strong>Bill Type:</strong> Pro-rated (First Bill)</p>` : ""}
-                    ${location ? `<p><strong>Location:</strong> ${location.toUpperCase()}</p>` : ""}
-                    ${collectionEmail ? `<p><strong>Collection Email:</strong> ${collectionEmail}</p>` : ""}
-                </div>
-                <div class="warning">
-                    <strong>📌 Important:</strong> You need to create your account before you can pay your bill.
-                </div>
-                <div style="text-align: center; margin: 30px 0;">
-                    <a href="${registerUrl}" class="button">🎯 Create Your Account First</a>
-                </div>
-                <p><strong>Your Application ID:</strong> ${application.applicationId}</p>
-                <p>Once you create your account, you will be able to view and pay this bill.</p>
-            </div>
-            <div class="footer">
-                <p>Mister Fyber - Your trusted internet provider</p>
-                <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
-                ${collectionEmail ? `<p><small>Collection Email: <a href="mailto:${collectionEmail}">${collectionEmail}</a></small></p>` : ""}
-            </div>
-        </div>
-    </body>
-    </html>
-    `;
-  }
-
   // ==================== EMAIL SENDING METHODS ====================
 
   /**
-   * Send paid invoice email with PDF attachment - FIXED VERSION
-   * This is the MAIN method that sends payment confirmation with invoice PDF
-   * ATTACHES THE PDF PROPERLY TO THE EMAIL
+   * Send invoice with PDF attachment - INCLUDES BUILDING INSTALLATION FEE
+   */
+  async sendInvoiceWithPDF(
+    invoiceData: any,
+    pdfBuffer: Buffer,
+    pdfFileName: string,
+    location?: string,
+    useAdminSender?: boolean,
+  ): Promise<boolean> {
+    try {
+      const customerEmailsEnabled = await this.areCustomerEmailsEnabled();
+      if (!customerEmailsEnabled) {
+        console.log(
+          `📧 CUSTOMER EMAILS ARE DISABLED. Force sending invoice to ${invoiceData.customerEmail}`,
+        );
+      }
+
+      if (!this.isConfigured()) {
+        console.log(
+          `⚠️ Email service not initialized - skipping invoice to ${invoiceData.customerEmail}`,
+        );
+        if (process.env.NODE_ENV === "development") {
+          console.log(
+            `📧 [DEV MODE] Would send invoice to: ${invoiceData.customerEmail}`,
+          );
+          console.log(`   Invoice: ${invoiceData.invoiceNumber}`);
+          return true;
+        }
+        return false;
+      }
+
+      const userLocation = location || invoiceData.location || "";
+      const collectionEmail = getCollectionEmailByLocation(userLocation);
+
+      // Get building information if available
+      let buildingName = invoiceData.buildingName || "";
+      let buildingInstallationFee = invoiceData.buildingInstallationFee || 0;
+
+      if (!buildingName && invoiceData.applicationId) {
+        try {
+          const application = await Application.findOne({
+            applicationId: invoiceData.applicationId,
+          });
+          if (application) {
+            buildingName = application.buildingName || "";
+            if (application.buildingId) {
+              const building = await Building.findById(application.buildingId);
+              if (building) {
+                buildingInstallationFee = building.installationFee || 0;
+                if (!buildingName) buildingName = building.buildingName;
+              }
+            }
+          }
+        } catch (error) {
+          console.error("Error getting building info for email:", error);
+        }
+      }
+
+      let senderName = "Mister Fyber";
+      let senderEmailAddress = "admin@misterfyber.com";
+
+      if (useAdminSender) {
+        senderEmailAddress = "admin@misterfyber.com";
+        senderName = "Mister Fyber Admin";
+        console.log(`📧 Using admin email as sender: ${senderEmailAddress}`);
+      } else if (userLocation) {
+        const collectionEmailForLocation =
+          getCollectionEmailByLocation(userLocation);
+        if (
+          collectionEmailForLocation &&
+          collectionEmailForLocation !== DEFAULT_COLLECTION_EMAIL
+        ) {
+          senderEmailAddress = collectionEmailForLocation;
+          if (collectionEmailForLocation.includes("breeze")) {
+            senderName = "Mister Fyber Breeze Collection";
+          } else if (
+            collectionEmailForLocation.includes("sil") ||
+            collectionEmailForLocation.includes("silk")
+          ) {
+            senderName = "Mister Fyber SIL Collection";
+          } else {
+            senderName = "Mister Fyber Collection";
+          }
+          console.log(
+            `📧 Using collection email as sender: ${senderEmailAddress} (${senderName})`,
+          );
+        }
+      }
+
+      // Convert PDF to base64
+      const pdfBase64 = pdfBuffer.toString("base64");
+      const cleanBase64 = pdfBase64.replace(/\s/g, "");
+
+      const dueDate = invoiceData.dueDate
+        ? new Date(invoiceData.dueDate).toLocaleDateString()
+        : "N/A";
+      const amount = invoiceData.total || 0;
+      const frontendUrl =
+        process.env.FRONTEND_URL || "https://www.misterfyber.com";
+
+      const isInstallationFee =
+        invoiceData.isInstallationFee ||
+        invoiceData.invoiceType === "installation";
+      const isProRated =
+        invoiceData.isProRated || invoiceData.invoiceType === "pro-rated";
+
+      let itemsHtml = "";
+      if (invoiceData.items && invoiceData.items.length > 0) {
+        itemsHtml = `<table style="width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 13px;">
+          <thead>
+            <tr style="background-color: #1a237e; color: white;">
+              <th style="padding: 10px; text-align: left; border: 1px solid #ddd;">Description</th>
+              <th style="padding: 10px; text-align: center; border: 1px solid #ddd;">Qty</th>
+              <th style="padding: 10px; text-align: right; border: 1px solid #ddd;">Rate</th>
+              <th style="padding: 10px; text-align: right; border: 1px solid #ddd;">Amount</th>
+            </tr>
+          </thead>
+          <tbody>`;
+
+        for (const item of invoiceData.items) {
+          itemsHtml += `<tr>
+            <td style="padding: 8px; border: 1px solid #ddd;">${item.description}</td>
+            <td style="padding: 8px; text-align: center; border: 1px solid #ddd;">${item.quantity || 1}</td>
+            <td style="padding: 8px; text-align: right; border: 1px solid #ddd;">₱${safeToFixed(item.rate)}</td>
+            <td style="padding: 8px; text-align: right; border: 1px solid #ddd;">₱${safeToFixed(item.amount)}</td>
+          </tr>`;
+        }
+
+        itemsHtml += `<tr style="font-weight: bold; background-color: #f8f9fa;">
+          <td colspan="3" style="padding: 10px; text-align: right; border: 1px solid #ddd;">Subtotal:</td>
+          <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">₱${safeToFixed(invoiceData.subtotal)}</td>
+        </tr>`;
+
+        if (invoiceData.discountAmount > 0) {
+          itemsHtml += `<tr style="background-color: #f8f9fa;">
+            <td colspan="3" style="padding: 10px; text-align: right; border: 1px solid #ddd;">Discount:</td>
+            <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">-₱${safeToFixed(invoiceData.discountAmount)}</td>
+          </tr>`;
+        }
+
+        if (invoiceData.taxAmount > 0) {
+          itemsHtml += `<tr style="background-color: #f8f9fa;">
+            <td colspan="3" style="padding: 10px; text-align: right; border: 1px solid #ddd;">Tax (${invoiceData.taxRate}%):</td>
+            <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">₱${safeToFixed(invoiceData.taxAmount)}</td>
+          </tr>`;
+        }
+
+        itemsHtml += `<tr style="font-weight: bold; background-color: #1a237e; color: white;">
+          <td colspan="3" style="padding: 12px; text-align: right; border: 1px solid #1a237e;">TOTAL:</td>
+          <td style="padding: 12px; text-align: right; border: 1px solid #1a237e;">₱${safeToFixed(amount)}</td>
+        </tr>`;
+
+        itemsHtml += `</tbody></table>`;
+      }
+
+      const locationBadge = userLocation
+        ? `
+        <div style="display: inline-block; background: ${userLocation.toLowerCase() === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin-top: 10px;">
+          📍 ${userLocation.toUpperCase()}
+        </div>
+      `
+        : "";
+
+      const buildingInfo = buildingName
+        ? `
+        <div style="display: inline-block; background: #e8f5e9; color: #2e7d32; padding: 4px 12px; border-radius: 12px; font-size: 11px; margin-top: 5px;">
+          🏢 ${buildingName}
+        </div>
+      `
+        : "";
+
+      const installationFeeInfo =
+        isInstallationFee && buildingInstallationFee
+          ? `
+        <div style="background: #fff3e0; padding: 12px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #ff9800;">
+          <p style="margin: 0; font-size: 13px; color: #e65100;">
+            <strong>🔧 Installation Fee Details:</strong><br>
+            Building: ${buildingName || "N/A"}<br>
+            Installation Fee: ₱${buildingInstallationFee.toFixed(2)}<br>
+            This is a one-time charge for installation at your building.
+          </p>
+        </div>
+        `
+          : "";
+
+      const senderBadge = useAdminSender
+        ? `
+        <div style="background: #e7f3ff; padding: 10px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
+          <strong>📧 Sent from:</strong> Admin (admin@misterfyber.com)
+        </div>
+      `
+        : `
+        <div style="background: #e7f3ff; padding: 10px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
+          <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
+        </div>
+      `;
+
+      const collectionBCCNote = `
+        <div style="background: #e7f3ff; padding: 10px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db;">
+          <strong>📧 Collection Email (BCC):</strong> ${collectionEmail}
+        </div>
+      `;
+
+      let paymentInstructions = "";
+      if (
+        invoiceData.bankName &&
+        invoiceData.accountName &&
+        invoiceData.accountNumber
+      ) {
+        paymentInstructions = `
+          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+            <h4 style="margin-top: 0; color: #1a237e;">Payment Method (Bank Transfer):</h4>
+            <p><strong>Bank Name:</strong> ${invoiceData.bankName}</p>
+            <p><strong>Account Name:</strong> ${invoiceData.accountName}</p>
+            <p><strong>Account Number:</strong> ${invoiceData.accountNumber}</p>
+            <p style="font-size: 12px; color: #666; margin-top: 10px;">
+              Kindly send your proof of payment via Viber ${invoiceData.companyContact || "0969-341-4876"} or at ${collectionEmail} after completing the transaction.
+            </p>
+          </div>
+        `;
+      }
+
+      // Build HTML with installation fee info
+      const html = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <title>Your Mister Fyber Invoice</title>
+            <style>
+                body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+                .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
+                .header { text-align: center; border-bottom: 2px solid #1a237e; padding-bottom: 20px; }
+                .header h1 { color: #1a237e; margin: 0; font-size: 24px; }
+                .header p { color: #666; margin: 5px 0; }
+                .content { padding: 20px 0; }
+                .bill-details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
+                .button { display: inline-block; background-color: #1a237e; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; }
+                .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
+                .warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }
+                .company-info { text-align: center; font-size: 12px; color: #666; margin: 10px 0; }
+                .invoice-type { display: inline-block; background: #1a237e; color: white; padding: 3px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; }
+                .sender-info { background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center; }
+                .attachments-note { background: #e7f3ff; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #1a56db; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>FYBERBLIZZ NETWORK CORPORATION</h1>
+                    <p>UNIT 6 BLDG 2 G/F EL PUEBLO CONDO, ANONAS ST., STA. MESA, MANILA</p>
+                    <p>VAT-REG.: 697-461-165-00000 | CONTACT NO.: 0969-341-4876</p>
+                    <h2 style="color: #1a237e; margin-top: 15px;">MISTER FYBER</h2>
+                    <h3 style="color: #1a237e; margin: 5px 0;">INVOICE</h3>
+                    <p><span class="invoice-type">${invoiceData.invoiceType || "Monthly"}</span></p>
+                    ${locationBadge}
+                    ${buildingInfo}
+                    ${senderBadge}
+                </div>
+                <div class="content">
+                    <p><strong>Subscriber's Name:</strong> ${invoiceData.customerName}</p>
+                    <p><strong>Address:</strong> ${invoiceData.customerAddress}</p>
+                    ${buildingName ? `<p><strong>Building:</strong> ${buildingName}</p>` : ""}
+                    ${invoiceData.planName ? `<p><strong>Plan Rate:</strong> ${invoiceData.planName}</p>` : ""}
+                    
+                    <div class="bill-details">
+                        <p><strong>Invoice Number:</strong> ${invoiceData.invoiceNumber}</p>
+                        <p><strong>Billing Period:</strong> ${this.formatDateForDisplay(invoiceData.billingPeriod?.start)} - ${this.formatDateForDisplay(invoiceData.billingPeriod?.end)}</p>
+                        <p><strong>Issue Date:</strong> ${this.formatDateForDisplay(invoiceData.issuedDate)}</p>
+                        <p><strong>Due Date:</strong> ${dueDate}</p>
+                        ${isProRated ? `<p><strong>Pro-rated Days:</strong> ${invoiceData.proRatedDays || 0} days</p>` : ""}
+                        ${isInstallationFee ? `<p><strong>Invoice Type:</strong> Installation Fee</p>` : ""}
+                        ${buildingInstallationFee ? `<p><strong>Installation Fee:</strong> ₱${buildingInstallationFee.toFixed(2)}</p>` : ""}
+                    </div>
+
+                    ${collectionBCCNote}
+                    ${installationFeeInfo}
+                    ${itemsHtml}
+                    ${paymentInstructions}
+
+                    <div class="attachments-note">
+                        <p style="margin: 0; color: #1a56db;">
+                            <strong>📎 Invoice PDF Attached:</strong> A copy of your invoice (${invoiceData.invoiceNumber}) is attached to this email for your records.
+                        </p>
+                    </div>
+
+                    ${invoiceData.notes ? `<div style="background: #e7f3ff; padding: 15px; border-radius: 5px; margin: 20px 0;"><p><strong>Notes:</strong><br>${invoiceData.notes}</p></div>` : ""}
+                    
+                    <div class="warning">
+                        <strong>IMPORTANT NOTICE:</strong> Please be advised that failure to settle your account on or before the due date may result in temporary service interruption.
+                    </div>
+                    
+                    <div style="text-align: center; margin: 30px 0;">
+                        <a href="${frontendUrl}/invoices" class="button">📄 View All Invoices</a>
+                    </div>
+                    
+                    <p>Should you have any questions or need clarification, feel free to reach out.</p>
+                    <p><strong>Thank you for choosing our service!</strong></p>
+                    <p><strong>Best regards,</strong><br>Mister Fyber Admin</p>
+                </div>
+                <div class="footer">
+                    <p>Mister Fyber - Your trusted internet provider</p>
+                    <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
+                    <p><small>This is a computer-generated invoice. No signature required.</small></p>
+                    <p><small>Collection email: <a href="mailto:${collectionEmail}">${collectionEmail}</a></small></p>
+                    <p><small>Sent from: ${senderName} (${senderEmailAddress})</small></p>
+                </div>
+            </div>
+        </body>
+        </html>
+      `;
+
+      // Build the request with PDF attachment
+      const requestBody = {
+        sender: {
+          name: senderName,
+          email: senderEmailAddress,
+        },
+        to: [{ email: invoiceData.customerEmail.trim() }],
+        subject: `🧾 Invoice #${invoiceData.invoiceNumber} - Mister Fyber`,
+        htmlContent: html,
+        bcc: [
+          { email: collectionEmail.trim() },
+          { email: this.adminEmail.trim() },
+        ],
+        replyTo: { email: collectionEmail },
+        attachment: [
+          {
+            name: pdfFileName,
+            content: cleanBase64,
+          },
+        ],
+      };
+
+      console.log(`📧 Sending invoice with PDF via Brevo API...`);
+      console.log(`📧 To: ${invoiceData.customerEmail}`);
+      console.log(
+        `📧 Subject: 🧾 Invoice #${invoiceData.invoiceNumber} - Mister Fyber`,
+      );
+      console.log(`📧 Sender: ${senderName} <${senderEmailAddress}>`);
+      console.log(`📧 BCC: ${collectionEmail}, ${this.adminEmail}`);
+      console.log(
+        `📧 PDF Attachment: ${pdfFileName} (${pdfBuffer.length} bytes)`,
+      );
+      if (isInstallationFee) {
+        console.log(
+          `📧 Installation Fee: ₱${buildingInstallationFee} for ${buildingName || "N/A"}`,
+        );
+      }
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+      try {
+        const response = await fetch(this.brevoApiUrl, {
+          method: "POST",
+          headers: {
+            accept: "application/json",
+            "api-key": this.apiKey,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeoutId);
+
+        if (response.ok) {
+          const data: any = await response.json();
+          console.log(
+            `✅ Invoice sent with PDF to ${invoiceData.customerEmail}`,
+          );
+          console.log(`   Invoice: ${invoiceData.invoiceNumber}`);
+          console.log(`   Location: ${userLocation || "Not specified"}`);
+          console.log(`   Building: ${buildingName || "N/A"}`);
+          console.log(`   Sender: ${senderName} <${senderEmailAddress}>`);
+          console.log(`   Collection Email (BCC): ${collectionEmail}`);
+          console.log(`   Message ID: ${data.messageId || "N/A"}`);
+          console.log(`   ✅ PDF Attachment: ${pdfFileName} sent`);
+          console.log(`   ✅ PDF Size: ${pdfBuffer.length} bytes`);
+          return true;
+        } else {
+          const errorText = await response.text();
+          console.error(
+            `❌ Failed to send invoice with PDF: ${response.status} - ${errorText}`,
+          );
+          return false;
+        }
+      } catch (fetchError: any) {
+        clearTimeout(timeoutId);
+        console.error(`❌ Error sending invoice with PDF:`, fetchError.message);
+        return false;
+      }
+    } catch (error) {
+      console.error(`❌ Error sending invoice with PDF:`, error);
+      return false;
+    }
+  }
+
+  /**
+   * Send payment confirmation email with paid invoice attachment
+   */
+  async sendPaymentConfirmationEmail(
+    invoice: any,
+    payment: any,
+    pdfBuffer: Buffer,
+    pdfFileName: string,
+    location?: string,
+    useAdminSender?: boolean,
+    notes?: string,
+    adminName?: string,
+  ): Promise<boolean> {
+    console.log(`📧 sendPaymentConfirmationEmail called`);
+
+    try {
+      let finalPdfBuffer = pdfBuffer;
+      let finalPdfFileName = pdfFileName;
+
+      if (!pdfBuffer || pdfBuffer.length === 0) {
+        console.log(`📧 Generating PDF for invoice: ${invoice.invoiceNumber}`);
+        if (invoice.pdfUrl) {
+          try {
+            const pdfPath = path.join(__dirname, "../..", invoice.pdfUrl);
+            if (fs.existsSync(pdfPath)) {
+              finalPdfBuffer = fs.readFileSync(pdfPath);
+              finalPdfFileName = `${invoice.invoiceNumber}.pdf`;
+              console.log(
+                `📧 Using existing PDF from: ${pdfPath} (${finalPdfBuffer.length} bytes)`,
+              );
+            }
+          } catch (readError) {
+            console.log(`📧 Could not read existing PDF, generating new one`);
+          }
+        }
+        if (!finalPdfBuffer || finalPdfBuffer.length === 0) {
+          finalPdfBuffer = await generateInvoicePDF(invoice);
+          finalPdfFileName = `${invoice.invoiceNumber}.pdf`;
+          console.log(
+            `📧 PDF generated: ${finalPdfFileName} (${finalPdfBuffer.length} bytes)`,
+          );
+          try {
+            const pdfDir = path.join(__dirname, "../../uploads/invoices");
+            if (!fs.existsSync(pdfDir)) {
+              fs.mkdirSync(pdfDir, { recursive: true });
+            }
+            const pdfPath = path.join(pdfDir, finalPdfFileName);
+            fs.writeFileSync(pdfPath, finalPdfBuffer);
+            await Invoice.findByIdAndUpdate(invoice._id, {
+              pdfUrl: `/uploads/invoices/${finalPdfFileName}`,
+              pdfGeneratedAt: new Date(),
+            });
+            console.log(`📧 PDF saved to: ${pdfPath}`);
+          } catch (saveError) {
+            console.error(`📧 Failed to save PDF:`, saveError);
+          }
+        }
+      }
+
+      // Get building information
+      let buildingName = invoice.buildingName || "";
+      let buildingInstallationFee = invoice.buildingInstallationFee || 0;
+
+      if (!buildingName && invoice.applicationId) {
+        try {
+          const application = await Application.findOne({
+            applicationId: invoice.applicationId,
+          });
+          if (application) {
+            buildingName = application.buildingName || "";
+            if (application.buildingId) {
+              const building = await Building.findById(application.buildingId);
+              if (building) {
+                buildingInstallationFee = building.installationFee || 0;
+                if (!buildingName) buildingName = building.buildingName;
+              }
+            }
+          }
+        } catch (error) {
+          console.error(
+            "Error getting building info for payment confirmation:",
+            error,
+          );
+        }
+      }
+
+      const invoiceData = {
+        _id: invoice._id,
+        invoiceNumber: invoice.invoiceNumber,
+        customerName: invoice.customerName,
+        customerEmail: invoice.customerEmail,
+        customerAddress: invoice.customerAddress,
+        total: invoice.total,
+        subtotal: invoice.subtotal,
+        discountAmount: invoice.discountAmount || 0,
+        taxAmount: invoice.taxAmount || 0,
+        taxRate: invoice.taxRate || 0,
+        items: invoice.items || [],
+        invoiceType: invoice.invoiceType || "Monthly",
+        isInstallationFee: invoice.isInstallationFee || false,
+        isProRated: invoice.isProRated || false,
+        dueDate: invoice.dueDate,
+        paidAt: invoice.paidAt || payment?.paidAt,
+        referenceNumber: payment?.referenceNumber,
+        location: location || invoice.location,
+        notes: invoice.notes || notes,
+        billingPeriod: invoice.billingPeriod,
+        issuedDate: invoice.issuedDate,
+        proRatedDays: invoice.proRatedDays || 0,
+        planName: invoice.planName,
+        buildingName: buildingName,
+        buildingInstallationFee: buildingInstallationFee,
+        applicationId: invoice.applicationId,
+      };
+
+      console.log(
+        `📧 Sending paid invoice email with PDF (${finalPdfBuffer ? finalPdfBuffer.length : 0} bytes)`,
+      );
+      console.log(
+        `📧 Building: ${buildingName}, Installation Fee: ${buildingInstallationFee}`,
+      );
+
+      return await this.sendPaidInvoiceEmail(
+        invoiceData,
+        finalPdfBuffer,
+        finalPdfFileName,
+        payment,
+        location,
+        useAdminSender,
+      );
+    } catch (error) {
+      console.error(`❌ Error in sendPaymentConfirmationEmail:`, error);
+
+      try {
+        const htmlContent = this.generatePaymentConfirmationHTML(
+          invoice,
+          payment,
+          invoice.total || 0,
+          new Date().toLocaleString(),
+          location,
+          getCollectionEmailByLocation(location || ""),
+          invoice.isInstallationFee || false,
+          invoice.buildingName || "",
+          invoice.buildingInstallationFee || 0,
+        );
+
+        await this.sendEmail(
+          invoice.customerEmail,
+          `✅ Payment Confirmed - ${invoice.invoiceNumber}`,
+          htmlContent,
+          true,
+          location,
+          {
+            bcc: [
+              getCollectionEmailByLocation(location || ""),
+              this.adminEmail,
+            ],
+            replyTo: getCollectionEmailByLocation(location || ""),
+          },
+        );
+        console.log(
+          `✅ Fallback email sent without PDF to ${invoice.customerEmail}`,
+        );
+        return true;
+      } catch (fallbackError) {
+        console.error(`❌ Fallback email also failed:`, fallbackError);
+        return false;
+      }
+    }
+  }
+
+  /**
+   * Send paid invoice email with PDF attachment
    */
   async sendPaidInvoiceEmail(
     invoiceData: any,
@@ -1538,33 +1962,29 @@ class EmailService {
     useAdminSender?: boolean,
   ): Promise<boolean> {
     try {
-      console.log(`📧 ========================================`);
       console.log(`📧 sendPaidInvoiceEmail called`);
       console.log(`📧 Invoice: ${invoiceData.invoiceNumber}`);
       console.log(`📧 Customer: ${invoiceData.customerEmail}`);
       console.log(`📧 Location: ${location || "Not specified"}`);
+      console.log(`📧 Building: ${invoiceData.buildingName || "N/A"}`);
+      console.log(
+        `📧 Installation Fee: ${invoiceData.buildingInstallationFee || 0}`,
+      );
       console.log(`📧 PDF size: ${pdfBuffer ? pdfBuffer.length : 0} bytes`);
-      console.log(`📧 ========================================`);
 
-      // CRITICAL: Ensure we have a valid PDF
       let finalPdfBuffer = pdfBuffer;
       let finalPdfFileName = pdfFileName;
 
-      // If PDF buffer is empty or not provided, generate it
       if (!finalPdfBuffer || finalPdfBuffer.length === 0) {
         console.log(
           `📧 PDF buffer is empty, generating PDF for invoice: ${invoiceData.invoiceNumber}`,
         );
-
         try {
-          // Try to generate PDF from invoice data
           finalPdfBuffer = await generateInvoicePDF(invoiceData);
           finalPdfFileName = `${invoiceData.invoiceNumber}.pdf`;
           console.log(
             `📧 PDF generated successfully: ${finalPdfBuffer.length} bytes`,
           );
-
-          // Save PDF to disk for future use
           try {
             const pdfDir = path.join(__dirname, "../../uploads/invoices");
             if (!fs.existsSync(pdfDir)) {
@@ -1578,7 +1998,6 @@ class EmailService {
           }
         } catch (genError) {
           console.error(`❌ Failed to generate PDF:`, genError);
-          // Try to get existing PDF from invoice
           if (invoiceData._id) {
             try {
               const invoice = await Invoice.findById(invoiceData._id);
@@ -1599,7 +2018,6 @@ class EmailService {
         }
       }
 
-      // If still no PDF, try to find it from Invoice model
       if (!finalPdfBuffer || finalPdfBuffer.length === 0) {
         console.log(`📧 Trying to find PDF from Invoice model...`);
         try {
@@ -1621,12 +2039,10 @@ class EmailService {
         }
       }
 
-      // Check if we have a valid PDF
       if (!finalPdfBuffer || finalPdfBuffer.length === 0) {
         console.error(
           `❌ CRITICAL: No PDF available for invoice ${invoiceData.invoiceNumber}`,
         );
-        // Send email without PDF
         const htmlContent = this.generatePaymentConfirmationHTML(
           invoiceData,
           paymentData,
@@ -1635,8 +2051,9 @@ class EmailService {
           location,
           getCollectionEmailByLocation(location || ""),
           invoiceData.isInstallationFee || false,
+          invoiceData.buildingName || "",
+          invoiceData.buildingInstallationFee || 0,
         );
-
         return await this.sendEmail(
           invoiceData.customerEmail,
           `✅ Payment Confirmed - ${invoiceData.invoiceNumber}`,
@@ -1653,14 +2070,10 @@ class EmailService {
         );
       }
 
-      // IMPORTANT: Convert Buffer to base64 string for Brevo API
-      // This is the CRITICAL FIX - the PDF must be properly base64 encoded
       const pdfBase64 = finalPdfBuffer.toString("base64");
       console.log(
         `📧 PDF converted to base64, length: ${pdfBase64.length} chars`,
       );
-
-      // Verify the base64 string doesn't contain spaces or invalid chars
       const cleanBase64 = pdfBase64.replace(/\s/g, "");
       if (cleanBase64.length !== pdfBase64.length) {
         console.log(`📧 Removed spaces from base64 string`);
@@ -1735,6 +2148,15 @@ class EmailService {
       const frontendUrl =
         process.env.FRONTEND_URL || "https://www.misterfyber.com";
 
+      const isInstallationFee =
+        invoiceData.isInstallationFee ||
+        invoiceData.invoiceType === "installation";
+      const isProRated =
+        invoiceData.isProRated || invoiceData.invoiceType === "pro-rated";
+      const buildingName = invoiceData.buildingName || "";
+      const buildingInstallationFee = invoiceData.buildingInstallationFee || 0;
+
+      // Build items table
       let itemsHtml = "";
       if (invoiceData.items && invoiceData.items.length > 0) {
         itemsHtml = `<table style="width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 13px;">
@@ -1792,6 +2214,28 @@ class EmailService {
       `
         : "";
 
+      const buildingInfo = buildingName
+        ? `
+        <div style="display: inline-block; background: #e8f5e9; color: #2e7d32; padding: 4px 12px; border-radius: 12px; font-size: 11px; margin-top: 5px;">
+          🏢 ${buildingName}
+        </div>
+      `
+        : "";
+
+      const installationFeeInfo =
+        isInstallationFee && buildingInstallationFee
+          ? `
+        <div style="background: #fff3e0; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #ff9800;">
+          <p style="margin: 0; color: #e65100;">
+            <strong>🔧 Installation Fee Details:</strong><br>
+            Building: ${buildingName || "N/A"}<br>
+            Installation Fee: ₱${buildingInstallationFee.toFixed(2)}<br>
+            This is a one-time charge for installation at your building.
+          </p>
+        </div>
+        `
+          : "";
+
       const senderBadge = useAdminSender
         ? `
         <div style="background: #e7f3ff; padding: 10px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
@@ -1810,18 +2254,12 @@ class EmailService {
         </div>
       `;
 
-      const isInstallationFee =
-        invoiceData.isInstallationFee ||
-        invoiceData.invoiceType === "installation";
-      const isProRated =
-        invoiceData.isProRated || invoiceData.invoiceType === "pro-rated";
-
       let additionalInfo = "";
       if (isInstallationFee) {
         additionalInfo = `
           <div style="background: #d1ecf1; padding: 15px; border-radius: 5px; margin: 15px 0;">
             <p style="margin: 0; color: #0c5460;">
-              <strong>🔧 Installation Fee Paid:</strong> Your installation fee of ₱${safeToFixed(amount)} has been paid. Our technical team will contact you within 24-48 hours to schedule your installation.
+              <strong>🔧 Installation Fee Paid:</strong> Your installation fee of ₱${safeToFixed(amount)} for ${buildingName || "your building"} has been paid. Our technical team will contact you within 24-48 hours to schedule your installation.
             </p>
           </div>
         `;
@@ -1843,7 +2281,7 @@ class EmailService {
         `;
       }
 
-      // COMPLETE HTML WITH PDF ATTACHMENT NOTE
+      // Build complete HTML with installation fee info
       const html = `
         <!DOCTYPE html>
         <html>
@@ -1881,6 +2319,7 @@ class EmailService {
                     </div>
                     <p><span class="invoice-type">${invoiceData.invoiceType || "Monthly"} - PAID</span></p>
                     ${locationBadge}
+                    ${buildingInfo}
                     ${senderBadge}
                 </div>
                 <div class="content">
@@ -1894,16 +2333,18 @@ class EmailService {
                         <p><strong>Payment Date:</strong> ${paidAt}</p>
                         <p><strong>Reference Number:</strong> ${referenceNumber}</p>
                         <p><strong>Invoice Type:</strong> ${invoiceData.invoiceType || "Monthly"}</p>
-                        ${isInstallationFee ? `<p><strong>Note:</strong> Installation Fee Payment</p>` : ""}
+                        ${isInstallationFee ? `<p><strong>Note:</strong> Installation Fee Payment for ${buildingName || "your building"}</p>` : ""}
                         ${isProRated ? `<p><strong>Note:</strong> Pro-rated First Bill</p>` : ""}
                         ${userLocation ? `<p><strong>Location:</strong> ${userLocation.toUpperCase()}</p>` : ""}
+                        ${buildingName ? `<p><strong>Building:</strong> ${buildingName}</p>` : ""}
+                        ${buildingInstallationFee ? `<p><strong>Installation Fee:</strong> ₱${buildingInstallationFee.toFixed(2)}</p>` : ""}
                     </div>
 
                     ${collectionBCCNote}
+                    ${installationFeeInfo}
                     ${itemsHtml}
                     ${additionalInfo}
 
-                    <!-- CRITICAL: PDF ATTACHMENT NOTE -->
                     <div class="attachments-note">
                         <p style="margin: 0; color: #1a56db;">
                             <strong>📎 Invoice PDF Attached:</strong> A copy of your paid invoice (${invoiceData.invoiceNumber}) is attached to this email for your records.
@@ -1932,8 +2373,6 @@ class EmailService {
         </html>
       `;
 
-      // CRITICAL: Build the Brevo API request with proper PDF attachment
-      // The attachment content MUST be clean base64 string (no data URI prefix, no spaces)
       const cleanBase64ForRequest = cleanBase64;
 
       const requestBody = {
@@ -1967,12 +2406,8 @@ class EmailService {
       console.log(
         `📧 PDF Attachment: ${finalPdfFileName} (${finalPdfBuffer.length} bytes)`,
       );
-      console.log(
-        `📧 PDF Base64 length: ${cleanBase64ForRequest.length} characters`,
-      );
-      console.log(
-        `📧 PDF Base64 first 50 chars: ${cleanBase64ForRequest.substring(0, 50)}...`,
-      );
+      console.log(`📧 Building: ${buildingName || "N/A"}`);
+      console.log(`📧 Installation Fee: ${buildingInstallationFee}`);
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 30000);
@@ -1998,6 +2433,7 @@ class EmailService {
           );
           console.log(`   Invoice: ${invoiceData.invoiceNumber}`);
           console.log(`   Location: ${userLocation || "Not specified"}`);
+          console.log(`   Building: ${buildingName || "N/A"}`);
           console.log(`   Sender: ${senderName} <${senderEmailAddress}>`);
           console.log(`   Collection Email (BCC): ${collectionEmail}`);
           console.log(`   Message ID: ${data.messageId || "N/A"}`);
@@ -2029,155 +2465,8 @@ class EmailService {
     }
   }
 
-  /**
-   * Send payment confirmation email with paid invoice attachment
-   * This method GENERATES the PDF and sends it with the email
-   */
-  async sendPaymentConfirmationEmail(
-    invoice: any,
-    payment: any,
-    pdfBuffer: Buffer,
-    pdfFileName: string,
-    location?: string,
-    useAdminSender?: boolean,
-    notes?: string,
-    adminName?: string,
-  ): Promise<boolean> {
-    console.log(`📧 sendPaymentConfirmationEmail called`);
+  // ==================== SIMPLE EMAIL METHODS ====================
 
-    try {
-      let finalPdfBuffer = pdfBuffer;
-      let finalPdfFileName = pdfFileName;
-
-      // If PDF buffer is empty or not provided, generate the PDF
-      if (!pdfBuffer || pdfBuffer.length === 0) {
-        console.log(`📧 Generating PDF for invoice: ${invoice.invoiceNumber}`);
-
-        // First try to get existing PDF from invoice
-        if (invoice.pdfUrl) {
-          try {
-            const pdfPath = path.join(__dirname, "../..", invoice.pdfUrl);
-            if (fs.existsSync(pdfPath)) {
-              finalPdfBuffer = fs.readFileSync(pdfPath);
-              finalPdfFileName = `${invoice.invoiceNumber}.pdf`;
-              console.log(
-                `📧 Using existing PDF from: ${pdfPath} (${finalPdfBuffer.length} bytes)`,
-              );
-            }
-          } catch (readError) {
-            console.log(`📧 Could not read existing PDF, generating new one`);
-          }
-        }
-
-        // If still no PDF, generate it
-        if (!finalPdfBuffer || finalPdfBuffer.length === 0) {
-          finalPdfBuffer = await generateInvoicePDF(invoice);
-          finalPdfFileName = `${invoice.invoiceNumber}.pdf`;
-          console.log(
-            `📧 PDF generated: ${finalPdfFileName} (${finalPdfBuffer.length} bytes)`,
-          );
-
-          // Save the PDF for future use
-          try {
-            const pdfDir = path.join(__dirname, "../../uploads/invoices");
-            if (!fs.existsSync(pdfDir)) {
-              fs.mkdirSync(pdfDir, { recursive: true });
-            }
-            const pdfPath = path.join(pdfDir, finalPdfFileName);
-            fs.writeFileSync(pdfPath, finalPdfBuffer);
-            await Invoice.findByIdAndUpdate(invoice._id, {
-              pdfUrl: `/uploads/invoices/${finalPdfFileName}`,
-              pdfGeneratedAt: new Date(),
-            });
-            console.log(`📧 PDF saved to: ${pdfPath}`);
-          } catch (saveError) {
-            console.error(`📧 Failed to save PDF:`, saveError);
-          }
-        }
-      }
-
-      // Prepare invoice data
-      const invoiceData = {
-        _id: invoice._id,
-        invoiceNumber: invoice.invoiceNumber,
-        customerName: invoice.customerName,
-        customerEmail: invoice.customerEmail,
-        customerAddress: invoice.customerAddress,
-        total: invoice.total,
-        subtotal: invoice.subtotal,
-        discountAmount: invoice.discountAmount || 0,
-        taxAmount: invoice.taxAmount || 0,
-        taxRate: invoice.taxRate || 0,
-        items: invoice.items || [],
-        invoiceType: invoice.invoiceType || "Monthly",
-        isInstallationFee: invoice.isInstallationFee || false,
-        isProRated: invoice.isProRated || false,
-        dueDate: invoice.dueDate,
-        paidAt: invoice.paidAt || payment?.paidAt,
-        referenceNumber: payment?.referenceNumber,
-        location: location || invoice.location,
-        notes: invoice.notes || notes,
-        billingPeriod: invoice.billingPeriod,
-        issuedDate: invoice.issuedDate,
-        proRatedDays: invoice.proRatedDays || 0,
-        planName: invoice.planName,
-      };
-
-      console.log(
-        `📧 Sending paid invoice email with PDF (${finalPdfBuffer ? finalPdfBuffer.length : 0} bytes)`,
-      );
-
-      return await this.sendPaidInvoiceEmail(
-        invoiceData,
-        finalPdfBuffer,
-        finalPdfFileName,
-        payment,
-        location,
-        useAdminSender,
-      );
-    } catch (error) {
-      console.error(`❌ Error in sendPaymentConfirmationEmail:`, error);
-
-      // Fallback: send email without PDF
-      try {
-        const htmlContent = this.generatePaymentConfirmationHTML(
-          invoice,
-          payment,
-          invoice.total || 0,
-          new Date().toLocaleString(),
-          location,
-          getCollectionEmailByLocation(location || ""),
-          invoice.isInstallationFee || false,
-        );
-
-        await this.sendEmail(
-          invoice.customerEmail,
-          `✅ Payment Confirmed - ${invoice.invoiceNumber}`,
-          htmlContent,
-          true,
-          location,
-          {
-            bcc: [
-              getCollectionEmailByLocation(location || ""),
-              this.adminEmail,
-            ],
-            replyTo: getCollectionEmailByLocation(location || ""),
-          },
-        );
-        console.log(
-          `✅ Fallback email sent without PDF to ${invoice.customerEmail}`,
-        );
-        return true;
-      } catch (fallbackError) {
-        console.error(`❌ Fallback email also failed:`, fallbackError);
-        return false;
-      }
-    }
-  }
-
-  /**
-   * Send billing email with location
-   */
   async sendBillingEmail(
     user: IUser | any,
     billing: any,
@@ -2193,9 +2482,40 @@ class EmailService {
       const userLocation = location || (await getLocationFromEntity(user));
       const collectionEmail = getCollectionEmailByLocation(userLocation);
 
-      const subject = `🧾 Invoice #${billing.invoiceNumber || billing._id} - Mister Fyber`;
+      // Get building info
+      let buildingName = "";
+      let buildingInstallationFee = 0;
+      if (billing.applicationId) {
+        try {
+          const application = await Application.findOne({
+            applicationId: billing.applicationId,
+          });
+          if (application) {
+            buildingName = application.buildingName || "";
+            if (application.buildingId) {
+              const building = await Building.findById(application.buildingId);
+              if (building) {
+                buildingInstallationFee = building.installationFee || 0;
+                if (!buildingName) buildingName = building.buildingName;
+              }
+            }
+          }
+        } catch (error) {
+          console.error(
+            "Error getting building info for billing email:",
+            error,
+          );
+        }
+      }
 
-      const html = this.generateInvoiceHTML(user, billing, userLocation);
+      const subject = `🧾 Invoice #${billing.invoiceNumber || billing._id} - Mister Fyber`;
+      const html = this.generateInvoiceHTML(
+        user,
+        billing,
+        userLocation,
+        buildingName,
+        buildingInstallationFee,
+      );
 
       return await this.sendEmail(
         user.email,
@@ -2217,349 +2537,6 @@ class EmailService {
     }
   }
 
-  /**
-   * Send invoice with PDF attachment
-   */
-  async sendInvoiceWithPDF(
-    invoiceData: any,
-    pdfBuffer: Buffer,
-    pdfFileName: string,
-    location?: string,
-    useAdminSender?: boolean,
-  ): Promise<boolean> {
-    try {
-      const customerEmailsEnabled = await this.areCustomerEmailsEnabled();
-      if (!customerEmailsEnabled) {
-        console.log(
-          `📧 CUSTOMER EMAILS ARE DISABLED. Force sending invoice to ${invoiceData.customerEmail}`,
-        );
-      }
-
-      if (!this.isConfigured()) {
-        console.log(
-          `⚠️ Email service not initialized - skipping invoice to ${invoiceData.customerEmail}`,
-        );
-        if (process.env.NODE_ENV === "development") {
-          console.log(
-            `📧 [DEV MODE] Would send invoice to: ${invoiceData.customerEmail}`,
-          );
-          console.log(`   Invoice: ${invoiceData.invoiceNumber}`);
-          return true;
-        }
-        return false;
-      }
-
-      const userLocation = location || invoiceData.location || "";
-      const collectionEmail = getCollectionEmailByLocation(userLocation);
-
-      let senderName = "Mister Fyber";
-      let senderEmailAddress = "admin@misterfyber.com";
-
-      if (useAdminSender) {
-        senderEmailAddress = "admin@misterfyber.com";
-        senderName = "Mister Fyber Admin";
-        console.log(`📧 Using admin email as sender: ${senderEmailAddress}`);
-      } else if (userLocation) {
-        const collectionEmailForLocation =
-          getCollectionEmailByLocation(userLocation);
-        if (
-          collectionEmailForLocation &&
-          collectionEmailForLocation !== DEFAULT_COLLECTION_EMAIL
-        ) {
-          senderEmailAddress = collectionEmailForLocation;
-          if (collectionEmailForLocation.includes("breeze")) {
-            senderName = "Mister Fyber Breeze Collection";
-          } else if (
-            collectionEmailForLocation.includes("sil") ||
-            collectionEmailForLocation.includes("silk")
-          ) {
-            senderName = "Mister Fyber SIL Collection";
-          } else {
-            senderName = "Mister Fyber Collection";
-          }
-          console.log(
-            `📧 Using collection email as sender: ${senderEmailAddress} (${senderName})`,
-          );
-        }
-      }
-
-      // Convert PDF to base64
-      const pdfBase64 = pdfBuffer.toString("base64");
-      const cleanBase64 = pdfBase64.replace(/\s/g, "");
-
-      const dueDate = invoiceData.dueDate
-        ? new Date(invoiceData.dueDate).toLocaleDateString()
-        : "N/A";
-      const amount = invoiceData.total || 0;
-      const frontendUrl =
-        process.env.FRONTEND_URL || "https://www.misterfyber.com";
-
-      let itemsHtml = "";
-      if (invoiceData.items && invoiceData.items.length > 0) {
-        itemsHtml = `<table style="width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 13px;">
-          <thead>
-            <tr style="background-color: #1a237e; color: white;">
-              <th style="padding: 10px; text-align: left; border: 1px solid #ddd;">Description</th>
-              <th style="padding: 10px; text-align: center; border: 1px solid #ddd;">Qty</th>
-              <th style="padding: 10px; text-align: right; border: 1px solid #ddd;">Rate</th>
-              <th style="padding: 10px; text-align: right; border: 1px solid #ddd;">Amount</th>
-            </tr>
-          </thead>
-          <tbody>`;
-
-        for (const item of invoiceData.items) {
-          itemsHtml += `<tr>
-            <td style="padding: 8px; border: 1px solid #ddd;">${item.description}</td>
-            <td style="padding: 8px; text-align: center; border: 1px solid #ddd;">${item.quantity || 1}</td>
-            <td style="padding: 8px; text-align: right; border: 1px solid #ddd;">₱${safeToFixed(item.rate)}</td>
-            <td style="padding: 8px; text-align: right; border: 1px solid #ddd;">₱${safeToFixed(item.amount)}</td>
-          </tr>`;
-        }
-
-        itemsHtml += `<tr style="font-weight: bold; background-color: #f8f9fa;">
-          <td colspan="3" style="padding: 10px; text-align: right; border: 1px solid #ddd;">Subtotal:</td>
-          <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">₱${safeToFixed(invoiceData.subtotal)}</td>
-        </tr>`;
-
-        if (invoiceData.discountAmount > 0) {
-          itemsHtml += `<tr style="background-color: #f8f9fa;">
-            <td colspan="3" style="padding: 10px; text-align: right; border: 1px solid #ddd;">Discount:</td>
-            <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">-₱${safeToFixed(invoiceData.discountAmount)}</td>
-          </tr>`;
-        }
-
-        if (invoiceData.taxAmount > 0) {
-          itemsHtml += `<tr style="background-color: #f8f9fa;">
-            <td colspan="3" style="padding: 10px; text-align: right; border: 1px solid #ddd;">Tax (${invoiceData.taxRate}%):</td>
-            <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">₱${safeToFixed(invoiceData.taxAmount)}</td>
-          </tr>`;
-        }
-
-        itemsHtml += `<tr style="font-weight: bold; background-color: #1a237e; color: white;">
-          <td colspan="3" style="padding: 12px; text-align: right; border: 1px solid #1a237e;">TOTAL:</td>
-          <td style="padding: 12px; text-align: right; border: 1px solid #1a237e;">₱${safeToFixed(amount)}</td>
-        </tr>`;
-
-        itemsHtml += `</tbody></table>`;
-      }
-
-      const locationBadge = userLocation
-        ? `
-        <div style="display: inline-block; background: ${userLocation.toLowerCase() === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin-top: 10px;">
-          📍 ${userLocation.toUpperCase()}
-        </div>
-      `
-        : "";
-
-      const senderBadge = useAdminSender
-        ? `
-        <div style="background: #e7f3ff; padding: 10px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
-          <strong>📧 Sent from:</strong> Admin (admin@misterfyber.com)
-        </div>
-      `
-        : `
-        <div style="background: #e7f3ff; padding: 10px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
-          <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
-        </div>
-      `;
-
-      const collectionBCCNote = `
-        <div style="background: #e7f3ff; padding: 10px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db;">
-          <strong>📧 Collection Email (BCC):</strong> ${collectionEmail}
-        </div>
-      `;
-
-      let paymentInstructions = "";
-      if (
-        invoiceData.bankName &&
-        invoiceData.accountName &&
-        invoiceData.accountNumber
-      ) {
-        paymentInstructions = `
-          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-            <h4 style="margin-top: 0; color: #1a237e;">Payment Method (Bank Transfer):</h4>
-            <p><strong>Bank Name:</strong> ${invoiceData.bankName}</p>
-            <p><strong>Account Name:</strong> ${invoiceData.accountName}</p>
-            <p><strong>Account Number:</strong> ${invoiceData.accountNumber}</p>
-            <p style="font-size: 12px; color: #666; margin-top: 10px;">
-              Kindly send your proof of payment via Viber ${invoiceData.companyContact || "0969-341-4876"} or at ${collectionEmail} after completing the transaction.
-            </p>
-          </div>
-        `;
-      }
-
-      // COMPLETE HTML WITH PDF ATTACHMENT NOTE
-      const html = `
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="UTF-8">
-            <title>Your Mister Fyber Invoice</title>
-            <style>
-                body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-                .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
-                .header { text-align: center; border-bottom: 2px solid #1a237e; padding-bottom: 20px; }
-                .header h1 { color: #1a237e; margin: 0; font-size: 24px; }
-                .header p { color: #666; margin: 5px 0; }
-                .content { padding: 20px 0; }
-                .bill-details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
-                .button { display: inline-block; background-color: #1a237e; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; }
-                .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
-                .warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }
-                .company-info { text-align: center; font-size: 12px; color: #666; margin: 10px 0; }
-                .invoice-type { display: inline-block; background: #1a237e; color: white; padding: 3px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; }
-                .sender-info { background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center; }
-                .attachments-note { background: #e7f3ff; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #1a56db; }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="header">
-                    <h1>FYBERBLIZZ NETWORK CORPORATION</h1>
-                    <p>UNIT 6 BLDG 2 G/F EL PUEBLO CONDO, ANONAS ST., STA. MESA, MANILA</p>
-                    <p>VAT-REG.: 697-461-165-00000 | CONTACT NO.: 0969-341-4876</p>
-                    <h2 style="color: #1a237e; margin-top: 15px;">MISTER FYBER</h2>
-                    <h3 style="color: #1a237e; margin: 5px 0;">INVOICE</h3>
-                    <p><span class="invoice-type">${invoiceData.invoiceType || "Monthly"}</span></p>
-                    ${locationBadge}
-                    ${senderBadge}
-                </div>
-                <div class="content">
-                    <p><strong>Subscriber's Name:</strong> ${invoiceData.customerName}</p>
-                    <p><strong>Address:</strong> ${invoiceData.customerAddress}</p>
-                    
-                    ${invoiceData.planName ? `<p><strong>Plan Rate:</strong> ${invoiceData.planName}</p>` : ""}
-                    
-                    <div class="bill-details">
-                        <p><strong>Invoice Number:</strong> ${invoiceData.invoiceNumber}</p>
-                        <p><strong>Billing Period:</strong> ${this.formatDateForDisplay(invoiceData.billingPeriod?.start)} - ${this.formatDateForDisplay(invoiceData.billingPeriod?.end)}</p>
-                        <p><strong>Issue Date:</strong> ${this.formatDateForDisplay(invoiceData.issuedDate)}</p>
-                        <p><strong>Due Date:</strong> ${dueDate}</p>
-                        ${invoiceData.isProRated ? `<p><strong>Pro-rated Days:</strong> ${invoiceData.proRatedDays || 0} days</p>` : ""}
-                        ${invoiceData.isInstallationFee ? `<p><strong>Includes Installation Fee</strong></p>` : ""}
-                    </div>
-
-                    ${collectionBCCNote}
-                    ${itemsHtml}
-                    ${paymentInstructions}
-
-                    <!-- CRITICAL: PDF ATTACHMENT NOTE -->
-                    <div class="attachments-note">
-                        <p style="margin: 0; color: #1a56db;">
-                            <strong>📎 Invoice PDF Attached:</strong> A copy of your invoice (${invoiceData.invoiceNumber}) is attached to this email for your records.
-                        </p>
-                    </div>
-
-                    ${invoiceData.notes ? `<div style="background: #e7f3ff; padding: 15px; border-radius: 5px; margin: 20px 0;"><p><strong>Notes:</strong><br>${invoiceData.notes}</p></div>` : ""}
-                    
-                    <div class="warning">
-                        <strong>IMPORTANT NOTICE:</strong> Please be advised that failure to settle your account on or before the due date may result in temporary service interruption.
-                    </div>
-                    
-                    <div style="text-align: center; margin: 30px 0;">
-                        <a href="${frontendUrl}/invoices" class="button">📄 View All Invoices</a>
-                    </div>
-                    
-                    <p>Should you have any questions or need clarification, feel free to reach out.</p>
-                    <p><strong>Thank you for choosing our service!</strong></p>
-                    <p><strong>Best regards,</strong><br>Mister Fyber Admin</p>
-                </div>
-                <div class="footer">
-                    <p>Mister Fyber - Your trusted internet provider</p>
-                    <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
-                    <p><small>This is a computer-generated invoice. No signature required.</small></p>
-                    <p><small>Collection email: <a href="mailto:${collectionEmail}">${collectionEmail}</a></small></p>
-                    <p><small>Sent from: ${senderName} (${senderEmailAddress})</small></p>
-                </div>
-            </div>
-        </body>
-        </html>
-      `;
-
-      // Build the request with PDF attachment
-      const requestBody = {
-        sender: {
-          name: senderName,
-          email: senderEmailAddress,
-        },
-        to: [{ email: invoiceData.customerEmail.trim() }],
-        subject: `🧾 Invoice #${invoiceData.invoiceNumber} - Mister Fyber`,
-        htmlContent: html,
-        bcc: [
-          { email: collectionEmail.trim() },
-          { email: this.adminEmail.trim() },
-        ],
-        replyTo: { email: collectionEmail },
-        attachment: [
-          {
-            name: pdfFileName,
-            content: cleanBase64,
-          },
-        ],
-      };
-
-      console.log(`📧 Sending invoice with PDF via Brevo API...`);
-      console.log(`📧 To: ${invoiceData.customerEmail}`);
-      console.log(
-        `📧 Subject: 🧾 Invoice #${invoiceData.invoiceNumber} - Mister Fyber`,
-      );
-      console.log(`📧 Sender: ${senderName} <${senderEmailAddress}>`);
-      console.log(`📧 BCC: ${collectionEmail}, ${this.adminEmail}`);
-      console.log(
-        `📧 PDF Attachment: ${pdfFileName} (${pdfBuffer.length} bytes)`,
-      );
-
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000);
-
-      try {
-        const response = await fetch(this.brevoApiUrl, {
-          method: "POST",
-          headers: {
-            accept: "application/json",
-            "api-key": this.apiKey,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify(requestBody),
-          signal: controller.signal,
-        });
-
-        clearTimeout(timeoutId);
-
-        if (response.ok) {
-          const data: any = await response.json();
-          console.log(
-            `✅ Invoice sent with PDF to ${invoiceData.customerEmail}`,
-          );
-          console.log(`   Invoice: ${invoiceData.invoiceNumber}`);
-          console.log(`   Location: ${userLocation || "Not specified"}`);
-          console.log(`   Sender: ${senderName} <${senderEmailAddress}>`);
-          console.log(`   Collection Email (BCC): ${collectionEmail}`);
-          console.log(`   Message ID: ${data.messageId || "N/A"}`);
-          console.log(`   ✅ PDF Attachment: ${pdfFileName} sent`);
-          console.log(`   ✅ PDF Size: ${pdfBuffer.length} bytes`);
-          return true;
-        } else {
-          const errorText = await response.text();
-          console.error(
-            `❌ Failed to send invoice with PDF: ${response.status} - ${errorText}`,
-          );
-          return false;
-        }
-      } catch (fetchError: any) {
-        clearTimeout(timeoutId);
-        console.error(`❌ Error sending invoice with PDF:`, fetchError.message);
-        return false;
-      }
-    } catch (error) {
-      console.error(`❌ Error sending invoice with PDF:`, error);
-      return false;
-    }
-  }
-
-  /**
-   * Send invoice (customer)
-   */
   async sendInvoice(
     user: IUser | any,
     billing: any,
@@ -2576,9 +2553,6 @@ class EmailService {
     }
   }
 
-  /**
-   * Send payment reminder
-   */
   async sendPaymentReminder(
     user: IUser | any,
     billing: any,
@@ -2588,6 +2562,32 @@ class EmailService {
     try {
       const userLocation = location || (await getLocationFromEntity(user));
       const collectionEmail = getCollectionEmailByLocation(userLocation);
+
+      // Get building info
+      let buildingName = "";
+      let buildingInstallationFee = 0;
+      if (billing.applicationId) {
+        try {
+          const application = await Application.findOne({
+            applicationId: billing.applicationId,
+          });
+          if (application) {
+            buildingName = application.buildingName || "";
+            if (application.buildingId) {
+              const building = await Building.findById(application.buildingId);
+              if (building) {
+                buildingInstallationFee = building.installationFee || 0;
+                if (!buildingName) buildingName = building.buildingName;
+              }
+            }
+          }
+        } catch (error) {
+          console.error(
+            "Error getting building info for payment reminder:",
+            error,
+          );
+        }
+      }
 
       const dueDate = billing.dueDate
         ? new Date(billing.dueDate).toLocaleDateString()
@@ -2603,6 +2603,8 @@ class EmailService {
         collectionEmail,
         billing.isInstallationBill || false,
         billing.isProRated || false,
+        buildingName,
+        buildingInstallationFee,
       );
 
       await this.sendEmail(
@@ -2622,9 +2624,6 @@ class EmailService {
     }
   }
 
-  /**
-   * Send due date reminder
-   */
   async sendDueDateReminder(
     user: IUser | any,
     billing: any,
@@ -2634,6 +2633,32 @@ class EmailService {
     try {
       const userLocation = location || (await getLocationFromEntity(user));
       const collectionEmail = getCollectionEmailByLocation(userLocation);
+
+      // Get building info
+      let buildingName = "";
+      let buildingInstallationFee = 0;
+      if (billing.applicationId) {
+        try {
+          const application = await Application.findOne({
+            applicationId: billing.applicationId,
+          });
+          if (application) {
+            buildingName = application.buildingName || "";
+            if (application.buildingId) {
+              const building = await Building.findById(application.buildingId);
+              if (building) {
+                buildingInstallationFee = building.installationFee || 0;
+                if (!buildingName) buildingName = building.buildingName;
+              }
+            }
+          }
+        } catch (error) {
+          console.error(
+            "Error getting building info for due date reminder:",
+            error,
+          );
+        }
+      }
 
       const dueDate = billing.dueDate
         ? new Date(billing.dueDate).toLocaleDateString()
@@ -2649,6 +2674,8 @@ class EmailService {
         collectionEmail,
         billing.isInstallationBill || false,
         billing.isProRated || false,
+        buildingName,
+        buildingInstallationFee,
       );
 
       await this.sendEmail(
@@ -2668,9 +2695,6 @@ class EmailService {
     }
   }
 
-  /**
-   * Send bill without account
-   */
   async sendBillWithoutAccount(
     application: any,
     bill: any,
@@ -2682,6 +2706,24 @@ class EmailService {
       const userLocation =
         location || (await getLocationFromEntity(application));
       const collectionEmail = getCollectionEmailByLocation(userLocation);
+
+      // Get building info
+      let buildingName = application.buildingName || "";
+      let buildingInstallationFee = 0;
+      if (application.buildingId) {
+        try {
+          const building = await Building.findById(application.buildingId);
+          if (building) {
+            buildingInstallationFee = building.installationFee || 0;
+            if (!buildingName) buildingName = building.buildingName;
+          }
+        } catch (error) {
+          console.error(
+            "Error getting building info for bill without account:",
+            error,
+          );
+        }
+      }
 
       const dueDate = bill.dueDate
         ? new Date(bill.dueDate).toLocaleDateString()
@@ -2696,6 +2738,8 @@ class EmailService {
         dueDate,
         userLocation,
         collectionEmail,
+        buildingName,
+        buildingInstallationFee,
       );
 
       await this.sendEmail(
@@ -2715,9 +2759,6 @@ class EmailService {
     }
   }
 
-  /**
-   * Send billing reminder (customer)
-   */
   async sendBillingReminder(
     user: IUser | any,
     billing: any,
@@ -2727,6 +2768,32 @@ class EmailService {
     try {
       const userLocation = location || (await getLocationFromEntity(user));
       const collectionEmail = getCollectionEmailByLocation(userLocation);
+
+      // Get building info
+      let buildingName = "";
+      let buildingInstallationFee = 0;
+      if (billing.applicationId) {
+        try {
+          const application = await Application.findOne({
+            applicationId: billing.applicationId,
+          });
+          if (application) {
+            buildingName = application.buildingName || "";
+            if (application.buildingId) {
+              const building = await Building.findById(application.buildingId);
+              if (building) {
+                buildingInstallationFee = building.installationFee || 0;
+                if (!buildingName) buildingName = building.buildingName;
+              }
+            }
+          }
+        } catch (error) {
+          console.error(
+            "Error getting building info for billing reminder:",
+            error,
+          );
+        }
+      }
 
       const dueDate = billing.dueDate
         ? new Date(billing.dueDate).toLocaleDateString()
@@ -2743,6 +2810,25 @@ class EmailService {
       `
         : "";
 
+      const buildingInfo = buildingName
+        ? `
+        <div style="display: inline-block; background: #e8f5e9; color: #2e7d32; padding: 4px 12px; border-radius: 12px; font-size: 11px; margin-bottom: 10px;">
+          🏢 ${buildingName}
+        </div>
+      `
+        : "";
+
+      const installationFeeInfo =
+        billing.isInstallationBill && buildingInstallationFee
+          ? `
+        <div style="margin-top: 10px; padding: 8px; background-color: #fff3e0; border-radius: 5px; border-left: 4px solid #ff9800;">
+          <p style="margin: 0; font-size: 12px; color: #e65100;">
+            <strong>🔧 Installation Fee:</strong> ₱${buildingInstallationFee.toLocaleString()} (One-time charge)
+          </p>
+        </div>
+        `
+          : "";
+
       const html = `
         <!DOCTYPE html>
         <html>
@@ -2756,10 +2842,13 @@ class EmailService {
                 <p>Hello ${user.firstName || user.email},</p>
                 <p>Your Mister Fyber bill is due on ${dueDate}.</p>
                 ${locationBadge}
+                ${buildingInfo}
                 <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
                     <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
                     <p><strong>Due Date:</strong> ${dueDate}</p>
+                    ${installationFeeInfo}
                     ${userLocation ? `<p><strong>Location:</strong> ${userLocation.toUpperCase()}</p>` : ""}
+                    ${buildingName ? `<p><strong>Building:</strong> ${buildingName}</p>` : ""}
                 </div>
                 <div style="text-align: center; margin: 30px 0;">
                     <a href="${frontendUrl}/billing" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">View Bill</a>
@@ -2791,9 +2880,6 @@ class EmailService {
 
   // ==================== OTHER EMAIL METHODS ====================
 
-  /**
-   * Send welcome email
-   */
   async sendWelcomeEmail(user: IUser): Promise<void> {
     const html = this.generateWelcomeHTML(user);
     await this.sendEmail(
@@ -2821,17 +2907,11 @@ class EmailService {
     await this.sendToAdmin(`New User Registration: ${user.email}`, adminHtml);
   }
 
-  /**
-   * Send password reset
-   */
   async sendPasswordReset(user: IUser, resetToken: string): Promise<void> {
     const html = this.generatePasswordResetHTML(user, resetToken);
     await this.sendEmail(user.email, "Password Reset Request", html, true);
   }
 
-  /**
-   * Send account credentials
-   */
   async sendAccountCredentials(
     user: IUser,
     username: string,
@@ -2852,9 +2932,6 @@ class EmailService {
     );
   }
 
-  /**
-   * Send application received
-   */
   async sendApplicationReceived(application: any, plan: any): Promise<void> {
     const html = this.generateApplicationReceivedHTML(application, plan);
     await this.sendEmail(
@@ -2881,9 +2958,6 @@ class EmailService {
     );
   }
 
-  /**
-   * Send application approved
-   */
   async sendApplicationApproved(application: any, plan: any): Promise<void> {
     const html = this.generateApplicationApprovedHTML(application, plan);
     await this.sendEmail(
@@ -2909,9 +2983,6 @@ class EmailService {
     );
   }
 
-  /**
-   * Send application rejected
-   */
   async sendApplicationRejected(
     application: any,
     reason: string,
@@ -2939,9 +3010,6 @@ class EmailService {
     );
   }
 
-  /**
-   * Send new application notification
-   */
   async sendNewApplicationNotification(
     application: any,
     plan: any,
@@ -2953,9 +3021,6 @@ class EmailService {
     );
   }
 
-  /**
-   * Send password change notification
-   */
   async sendPasswordChangeNotification(user: IUser): Promise<void> {
     const html = `
       <!DOCTYPE html>
@@ -2998,166 +3063,72 @@ class EmailService {
     );
   }
 
-  /**
-   * Send account deletion request
-   */
-  async sendAccountDeletionRequest(user: IUser, reason: string): Promise<void> {
-    const html = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-          <meta charset="UTF-8">
-          <title>Account Deletion Request</title>
-          <style>
-              body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-              .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
-              .header { text-align: center; border-bottom: 2px solid #dc3545; padding-bottom: 20px; }
-              .header h1 { color: #dc3545; margin: 0; }
-              .content { padding: 20px 0; }
-              .details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
-              .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
-          </style>
-      </head>
-      <body>
-          <div class="container">
-              <div class="header">
-                  <h1>🗑️ Account Deletion Request</h1>
-              </div>
-              <div class="content">
-                  <p>A user has requested account deletion.</p>
-                  <div class="details">
-                      <p><strong>Name:</strong> ${user.firstName || ""} ${user.lastName || ""}</p>
-                      <p><strong>Email:</strong> ${user.email}</p>
-                      <p><strong>Username:</strong> ${user.username}</p>
-                      <p><strong>Reason:</strong> ${reason || "Not provided"}</p>
-                      <p><strong>Requested At:</strong> ${new Date().toLocaleString()}</p>
-                  </div>
-              </div>
-              <div class="footer">
-                  <p>Mister Fyber - Admin Notification</p>
-              </div>
-          </div>
-      </body>
-      </html>
-    `;
-    await this.sendToAdmin("Account Deletion Request", html);
+  // ==================== SERVICE STATUS EMAIL ====================
+  async sendServiceStatusEmail(
+    user: any,
+    status: string,
+    message: string,
+    location?: string,
+  ): Promise<void> {
+    const html = this.generateServiceStatusHTML(
+      user.firstName || "",
+      user.lastName || "",
+      status,
+      message,
+    );
+    await this.sendEmail(
+      user.email,
+      `Service ${status.charAt(0).toUpperCase() + status.slice(1)} - Mister Fyber`,
+      html,
+      true,
+      location,
+    );
   }
 
-  /**
-   * Send support ticket notification
-   */
-  async sendSupportTicketNotification(
-    userEmail: string,
-    subject: string,
-    category: string,
-    message: string,
-    priority: string,
+  // ==================== SERVICE INTERRUPTION ====================
+  async sendServiceInterruption(
+    user: any,
+    reason: string,
+    estimatedDuration?: Date,
+    location?: string,
   ): Promise<void> {
+    const duration = estimatedDuration
+      ? new Date(estimatedDuration).toLocaleString()
+      : "Unknown";
     const html = `
       <!DOCTYPE html>
       <html>
       <head>
           <meta charset="UTF-8">
-          <title>New Support Ticket</title>
-          <style>
-              body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-              .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
-              .header { text-align: center; border-bottom: 2px solid #007bff; padding-bottom: 20px; }
-              .header h1 { color: #007bff; margin: 0; }
-              .content { padding: 20px 0; }
-              .details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
-              .message-box { background: white; padding: 10px; border-radius: 5px; border-left: 3px solid #007bff; }
-              .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
-          </style>
+          <title>Service Interruption</title>
       </head>
-      <body>
-          <div class="container">
-              <div class="header">
-                  <h1>🎫 New Support Ticket</h1>
+      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+          <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+              <h2 style="color: #dc3545;">⚠️ Service Interruption</h2>
+              <p>Dear ${user.firstName || user.email},</p>
+              <p>We want to inform you about a service interruption with Mister Fyber.</p>
+              <div style="margin-top: 20px; padding: 15px; background-color: #f8f9fa; border-left: 4px solid #dc3545;">
+                  <p><strong>Reason:</strong> ${reason}</p>
+                  <p><strong>Estimated Duration:</strong> ${duration}</p>
               </div>
-              <div class="content">
-                  <div class="details">
-                      <p><strong>User:</strong> ${userEmail}</p>
-                      <p><strong>Subject:</strong> ${subject}</p>
-                      <p><strong>Category:</strong> ${category}</p>
-                      <p><strong>Priority:</strong> ${priority}</p>
-                      <p><strong>Message:</strong></p>
-                      <div class="message-box">${message}</div>
-                      <p><strong>Submitted At:</strong> ${new Date().toLocaleString()}</p>
-                  </div>
-              </div>
-              <div class="footer">
-                  <p>Mister Fyber - Support Ticket</p>
-              </div>
+              <p>We apologize for any inconvenience. Our team is working to restore service as soon as possible.</p>
+              <hr>
+              <p style="color: #666; font-size: 12px;">This is an automated notification from Mister Fyber.</p>
           </div>
       </body>
       </html>
     `;
     await this.sendEmail(
-      this.supportEmail,
-      `New Support Ticket: ${subject}`,
+      user.email,
+      "Service Interruption Notice",
       html,
-      false,
+      true,
+      location,
     );
   }
 
-  /**
-   * Send plan change request notification
-   */
-  async sendPlanChangeRequestNotification(
-    user: IUser,
-    newPlan: any,
-    currentRate: number,
-    effectiveDate: string,
-  ): Promise<void> {
-    const html = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-          <meta charset="UTF-8">
-          <title>Plan Change Request</title>
-          <style>
-              body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-              .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
-              .header { text-align: center; border-bottom: 2px solid #f39c12; padding-bottom: 20px; }
-              .header h1 { color: #f39c12; margin: 0; }
-              .content { padding: 20px 0; }
-              .details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
-              .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
-          </style>
-      </head>
-      <body>
-          <div class="container">
-              <div class="header">
-                  <h1>📡 Plan Change Request</h1>
-              </div>
-              <div class="content">
-                  <p>A user has requested a plan change.</p>
-                  <div class="details">
-                      <p><strong>User:</strong> ${user.firstName || ""} ${user.lastName || ""} (${user.email})</p>
-                      <p><strong>Username:</strong> ${user.username}</p>
-                      <p><strong>Current Monthly Rate:</strong> ₱${safeToFixed(currentRate)}</p>
-                      <p><strong>Requested Plan:</strong> ${newPlan.name}</p>
-                      <p><strong>New Plan Price:</strong> ₱${safeToFixed(newPlan.price)}</p>
-                      <p><strong>Requested Effective Date:</strong> ${effectiveDate || "Immediate"}</p>
-                      <p><strong>Requested At:</strong> ${new Date().toLocaleString()}</p>
-                  </div>
-                  <p>Please review and approve/reject this request in the admin panel.</p>
-              </div>
-              <div class="footer">
-                  <p>Mister Fyber - Admin Notification</p>
-              </div>
-          </div>
-      </body>
-      </html>
-    `;
-    await this.sendToAdmin(`Plan Change Request - ${user.username}`, html);
-  }
-
-  /**
-   * Send account status update
-   */
-  async sendAccountStatusUpdate(user: IUser): Promise<void> {
+  // ==================== ACCOUNT STATUS UPDATE ====================
+  async sendAccountStatusUpdate(user: any, location?: string): Promise<void> {
     const statusMessages: Record<string, string> = {
       active:
         "Your Mister Fyber account has been activated! You can now log in and enjoy our services.",
@@ -3198,28 +3169,16 @@ class EmailService {
       `🔄 Account Status Update: ${user.status || "pending"}`,
       html,
       true,
-    );
-
-    const adminHtml = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-          <h2 style="color: #333;">🔄 Account Status Changed</h2>
-          <p>Mister Fyber user ${user.firstName || ""} ${user.lastName || ""} (${user.email}) status changed to: <strong>${user.status || "pending"}</strong></p>
-          <p>Date: ${new Date().toLocaleString()}</p>
-      </div>
-    `;
-    await this.sendToAdmin(
-      `Account Status Changed: ${user.email} → ${user.status || "pending"}`,
-      adminHtml,
+      location,
     );
   }
 
-  /**
-   * Send plan change notification
-   */
+  // ==================== PLAN CHANGE NOTIFICATION ====================
   async sendPlanChangeNotification(
-    user: IUser,
+    user: any,
     oldPlan: any,
     newPlan: any,
+    location?: string,
   ): Promise<void> {
     const html = this.generatePlanChangeNotificationHTML(
       user,
@@ -3231,13 +3190,12 @@ class EmailService {
       `📡 Plan Changed to ${newPlan?.name || "N/A"}`,
       html,
       true,
+      location,
     );
   }
 
-  /**
-   * Send service reminder
-   */
-  async sendServiceReminder(user: IUser): Promise<void> {
+  // ==================== SERVICE REMINDER ====================
+  async sendServiceReminder(user: any, location?: string): Promise<void> {
     const frontendUrl =
       process.env.FRONTEND_URL || "https://www.misterfyber.com";
     const html = `
@@ -3261,173 +3219,369 @@ class EmailService {
       </body>
       </html>
     `;
-    await this.sendEmail(user.email, "Weekly Service Update", html, true);
+    await this.sendEmail(
+      user.email,
+      "Weekly Service Update",
+      html,
+      true,
+      location,
+    );
   }
 
-  /**
-   * Send service interruption
-   */
-  async sendServiceInterruption(
-    user: IUser,
-    reason: string,
-    estimatedDuration?: Date,
-  ): Promise<void> {
-    const duration = estimatedDuration
-      ? new Date(estimatedDuration).toLocaleString()
-      : "Unknown";
-    const html = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-          <meta charset="UTF-8">
-          <title>Service Interruption</title>
-      </head>
-      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-          <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-              <h2 style="color: #dc3545;">⚠️ Service Interruption</h2>
-              <p>Hello ${user.firstName || user.email},</p>
-              <p>We want to inform you about a service interruption with Mister Fyber.</p>
-              <div style="margin-top: 20px; padding: 15px; background-color: #f8f9fa; border-left: 4px solid #dc3545;">
-                  <p><strong>Reason:</strong> ${reason}</p>
-                  <p><strong>Estimated Duration:</strong> ${duration}</p>
-              </div>
-              <p>We apologize for any inconvenience. Our team is working to restore service as soon as possible.</p>
-              <hr>
-              <p style="color: #666; font-size: 12px;">This is an automated notification from Mister Fyber.</p>
-          </div>
-      </body>
-      </html>
-    `;
-    await this.sendEmail(user.email, "Service Interruption Notice", html, true);
-
-    const adminHtml = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-          <h2 style="color: #dc3545;">⚠️ Service Interruption Reported</h2>
-          <p><strong>User:</strong> ${user.firstName || ""} ${user.lastName || ""} (${user.email})</p>
-          <p><strong>Reason:</strong> ${reason}</p>
-          <p><strong>Estimated Duration:</strong> ${duration}</p>
-          <p><strong>Reported:</strong> ${new Date().toLocaleString()}</p>
-      </div>
-    `;
-    await this.sendToAdmin(`Service Interruption: ${user.email}`, adminHtml);
-  }
-
-  // ==================== GENERATE INVOICE HTML ====================
-  private generateInvoiceHTML(
-    user: any,
-    billing: any,
-    location: string,
-  ): string {
-    const dueDate = billing.dueDate
-      ? new Date(billing.dueDate).toLocaleDateString()
-      : "N/A";
-    const amount = billing.total || billing.amount || 0;
-    const frontendUrl =
-      process.env.FRONTEND_URL || "https://www.misterfyber.com";
-
-    const collectionEmail = getCollectionEmailByLocation(location);
-
-    const locationBadge = location
-      ? `
-      <div style="display: inline-block; background: ${location.toLowerCase() === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin-top: 10px;">
-        📍 ${location.toUpperCase()}
-      </div>
-    `
-      : "";
-
-    let additionalInfo = "";
-    if (billing.isProRated && billing.items && billing.items[0]) {
-      const item = billing.items[0];
-      const monthlyRateFromItem = item.rate * 30;
-      const annualRate = monthlyRateFromItem * 12;
-      const dailyRate = annualRate / 365;
-      additionalInfo = `
-        <div style="margin-top: 15px; padding: 10px; background-color: #e8f4f8; border-radius: 5px;">
-          <p style="margin: 0; font-size: 12px; color: #0056b3;">
-            <strong>📌 Pro-rated Calculation:</strong> Daily rate = (₱${safeToFixed(monthlyRateFromItem)} × 12) ÷ 365 = ₱${safeToFixed(dailyRate, 4)}/day<br>
-            Billable days: ${item.quantity} days × ₱${safeToFixed(dailyRate, 4)} = ₱${safeToFixed(amount)}
-          </p>
-        </div>
-      `;
-    }
-
-    let installationFeeInfo = "";
-    if (billing.installationFee && billing.installationFee > 0) {
-      installationFeeInfo = `
-        <div style="margin-top: 15px; padding: 10px; background-color: #fff3cd; border-radius: 5px;">
-          <p style="margin: 0; font-size: 12px; color: #856404;">
-            <strong>🔧 Installation Fee:</strong> ₱${billing.installationFee.toLocaleString()} (One-time charge)
-            ${billing.installationFeePaid ? '✅ <span style="color: #28a745;">(Paid)</span>' : '⚠️ <span style="color: #dc3545;">(Pending)</span>'}
-          </p>
-        </div>
-      `;
-    }
-
-    let senderName = "Mister Fyber";
-    let senderEmailAddress = "admin@misterfyber.com";
-    if (location) {
-      const collectionEmailForLocation = getCollectionEmailByLocation(location);
-      if (
-        collectionEmailForLocation &&
-        collectionEmailForLocation !== DEFAULT_COLLECTION_EMAIL
-      ) {
-        senderEmailAddress = collectionEmailForLocation;
-        if (collectionEmailForLocation.includes("breeze")) {
-          senderName = "Mister Fyber Breeze Collection";
-        } else if (
-          collectionEmailForLocation.includes("sil") ||
-          collectionEmailForLocation.includes("silk")
-        ) {
-          senderName = "Mister Fyber SIL Collection";
-        } else {
-          senderName = "Mister Fyber Collection";
-        }
-      }
-    }
+  // ==================== HELPER GENERATORS ====================
+  private generateWelcomeHTML(user: IUser): string {
+    const loginUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/login`;
+    const dashboardUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/dashboard`;
 
     return `
-      <!DOCTYPE html>
-      <html>
-      <head>
-          <meta charset="UTF-8">
-          <title>Invoice Ready</title>
-      </head>
-      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-          <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-              <h2 style="color: #333;">🧾 Invoice Ready</h2>
-              <p>Hello ${user.firstName || user.email},</p>
-              <p>Your Mister Fyber invoice is now ready for payment.</p>
-              ${locationBadge}
-              <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
-                <strong>📧 Sent from:</strong> ${senderName} (${senderEmailAddress})
-              </div>
-              <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                  <h3 style="margin-top: 0;">Invoice Details</h3>
-                  <p><strong>Invoice Number:</strong> ${billing.invoiceNumber || billing._id}</p>
-                  <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
-                  <p><strong>Due Date:</strong> ${dueDate}</p>
-                  ${billing.isProRated ? `<p><strong>Bill Type:</strong> Pro-rated (First Bill)</p>` : `<p><strong>Bill Type:</strong> Monthly Subscription</p>`}
-                  ${billing.installationFee && billing.installationFee > 0 ? `<p><strong>Installation Fee:</strong> ₱${billing.installationFee.toLocaleString()}</p>` : ""}
-                  ${location ? `<p><strong>Location:</strong> ${location.toUpperCase()}</p>` : ""}
-                  <p><strong>Collection Email:</strong> ${collectionEmail}</p>
-              </div>
-              ${installationFeeInfo}
-              ${additionalInfo}
-              <div style="text-align: center; margin: 30px 0;">
-                  <a href="${frontendUrl}/billing" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">View & Pay Invoice</a>
-              </div>
-              <hr>
-              <p style="color: #666; font-size: 12px;">Mister Fyber</p>
-              <p style="color: #666; font-size: 12px;">Sent from: ${senderName} (${senderEmailAddress})</p>
-          </div>
-      </body>
-      </html>
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Welcome to Mister Fyber</title>
+        <style>
+            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f4f4f4; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; background-color: #ffffff; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            .header { text-align: center; padding: 20px 0; border-bottom: 3px solid #28a745; background-color: #f8f9fa; border-radius: 10px 10px 0 0; }
+            .header h1 { color: #28a745; margin: 0; font-size: 28px; }
+            .content { padding: 30px 20px; }
+            .details-box { background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #28a745; }
+            .button-container { text-align: center; margin: 30px 0; }
+            .btn { display: inline-block; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; margin: 0 10px; }
+            .btn-primary { background-color: #007bff; color: white; }
+            .btn-success { background-color: #28a745; color: white; }
+            .footer { text-align: center; padding: 20px; border-top: 1px solid #e0e0e0; font-size: 12px; color: #666; background-color: #f8f9fa; border-radius: 0 0 10px 10px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>🎉 Welcome Aboard!</h1>
+                <p>Mister Fyber</p>
+            </div>
+            <div class="content">
+                <p>Hello <strong>${user.firstName || user.email}</strong>!</p>
+                <p>Thank you for choosing <strong>Mister Fyber</strong>. We're excited to have you on board!</p>
+                <p>Your account has been successfully created and is now ready to use.</p>
+                <div class="details-box">
+                    <h3 style="margin-top: 0;">📋 Account Details</h3>
+                    <p><strong>Username:</strong> ${user.username || user.email}</p>
+                    <p><strong>Email:</strong> ${user.email}</p>
+                    <p><strong>Full Name:</strong> ${user.firstName || ""} ${user.lastName || ""}</p>
+                    <p><strong>Phone:</strong> ${user.phoneNumber || "Not provided"}</p>
+                    <p><strong>Status:</strong> ${(user.status || "pending").toUpperCase()}</p>
+                </div>
+                <div class="button-container">
+                    <a href="${loginUrl}" class="btn btn-primary">🔐 Login to Account</a>
+                    <a href="${dashboardUrl}" class="btn btn-success">📊 Go to Dashboard</a>
+                </div>
+                <p><strong>Note:</strong> Your billing will be started by our admin team. You will receive another email with your first invoice.</p>
+            </div>
+            <div class="footer">
+                <p>This is an automated message from Mister Fyber.</p>
+                <p>© ${new Date().getFullYear()} Mister Fyber. All rights reserved.</p>
+                <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
+            </div>
+        </div>
+    </body>
+    </html>
     `;
   }
 
-  /**
-   * Test email configuration
-   */
+  private generatePasswordResetHTML(user: IUser, resetToken: string): string {
+    const frontendUrl =
+      process.env.FRONTEND_URL || "https://www.misterfyber.com";
+    const resetUrl = `${frontendUrl}/reset-password/${resetToken}`;
+
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Password Reset Request</title>
+    </head>
+    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+        <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+            <h2 style="color: #333;">Password Reset Request</h2>
+            <p>Hello ${user.firstName || user.email},</p>
+            <p>You requested a password reset for your Mister Fyber account. Click the button below to reset your password:</p>
+            <div style="text-align: center; margin: 30px 0;">
+                <a href="${resetUrl}" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">Reset Password</a>
+            </div>
+            <p>Or copy and paste this link: ${resetUrl}</p>
+            <p>This link will expire in <strong>10 minutes</strong>.</p>
+            <p>If you didn't request this, please ignore this email.</p>
+            <hr>
+            <p style="color: #666; font-size: 12px;">Mister Fyber</p>
+        </div>
+    </body>
+    </html>
+    `;
+  }
+
+  private generateAccountCredentialsHTML(
+    user: IUser,
+    username: string,
+    password: string,
+    applicationId: string,
+  ): string {
+    const loginUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/login`;
+
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Your Mister Fyber Account Credentials</title>
+        <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
+            .header { text-align: center; border-bottom: 2px solid #007bff; padding-bottom: 20px; }
+            .header h1 { color: #007bff; margin: 0; }
+            .content { padding: 20px 0; }
+            .credentials { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
+            .button { display: inline-block; background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; }
+            .warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }
+            .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>🔐 Your Account Credentials</h1>
+            </div>
+            <div class="content">
+                <p>Hello ${user.firstName},</p>
+                <p>Your Mister Fyber account has been set up by our admin team. Here are your login credentials:</p>
+                <div class="credentials">
+                    <h3 style="margin-top: 0;">📋 Login Information</h3>
+                    <p><strong>Username:</strong> ${username}</p>
+                    <p><strong>Password:</strong> ${password}</p>
+                    <p><strong>Application ID:</strong> ${applicationId}</p>
+                </div>
+                <div class="warning">
+                    <strong>⚠️ Important:</strong> Please change your password after your first login for security purposes.
+                </div>
+                <div style="text-align: center;">
+                    <a href="${loginUrl}" class="button">🔑 Login to Your Account</a>
+                </div>
+            </div>
+            <div class="footer">
+                <p>Mister Fyber - Your trusted internet provider</p>
+                <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
+            </div>
+        </div>
+    </body>
+    </html>
+    `;
+  }
+
+  private generateApplicationReceivedHTML(application: any, plan: any): string {
+    const planPrice = plan?.price ?? 0;
+
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Application Received</title>
+    </head>
+    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+        <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+            <h2 style="color: #28a745; text-align: center;">✅ Application Received!</h2>
+            <p>Hello ${application.firstName},</p>
+            <p>Thank you for applying for internet service with Mister Fyber. We have received your application and it is currently being reviewed.</p>
+            <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                <h3 style="margin-top: 0;">Application Details:</h3>
+                <p><strong>Application ID:</strong> ${application.applicationId}</p>
+                <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
+                <p><strong>Monthly Price:</strong> ₱${safeToFixed(planPrice)}</p>
+                <p><strong>Status:</strong> <span style="color: #f39c12;">Pending Review</span></p>
+            </div>
+            <p>You will receive another email once your application has been reviewed.</p>
+            <p>Please keep your Application ID for future reference.</p>
+            <hr>
+            <p style="color: #666; font-size: 12px;">Mister Fyber</p>
+        </div>
+    </body>
+    </html>
+    `;
+  }
+
+  private generateApplicationApprovedHTML(application: any, plan: any): string {
+    const registerUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/register`;
+    const planPrice = plan?.price ?? 0;
+
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Application Approved - Create Your Account</title>
+        <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
+            .header { text-align: center; border-bottom: 2px solid #28a745; padding-bottom: 20px; }
+            .header h1 { color: #28a745; margin: 0; }
+            .content { padding: 20px 0; }
+            .details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
+            .button { display: inline-block; background-color: #28a745; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; margin: 20px 0; }
+            .footer { font-size: 12px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>✅ Application Approved!</h1>
+            </div>
+            <div class="content">
+                <p>Hello ${application.firstName},</p>
+                <p>Great news! Your application to Mister Fyber has been approved.</p>
+                <div class="details">
+                    <h3 style="margin-top: 0;">📋 Application Details</h3>
+                    <p><strong>Application ID:</strong> ${application.applicationId}</p>
+                    <p><strong>Plan:</strong> ${plan?.name || "N/A"}</p>
+                    <p><strong>Monthly Price:</strong> ₱${safeToFixed(planPrice)}</p>
+                </div>
+                <div style="text-align: center;">
+                    <a href="${registerUrl}" class="button">🎯 Create Your Account Now</a>
+                </div>
+                <p><strong>What's next?</strong></p>
+                <ol>
+                    <li>Click the button above to create your account</li>
+                    <li>Use your email address and create a password</li>
+                    <li>Once registered, the admin will start your billing</li>
+                    <li>You'll receive an invoice via email</li>
+                </ol>
+                ${application.adminNotes ? `<div style="margin-top: 20px; padding: 15px; background-color: #e7f3ff; border-left: 4px solid #007bff;"><p><strong>📝 Admin Notes:</strong><br>${application.adminNotes}</p></div>` : ""}
+            </div>
+            <div class="footer">
+                <p>Mister Fyber - Your trusted internet provider</p>
+                <p><small>Need help? Contact us at <a href="mailto:${this.supportEmail}">${this.supportEmail}</a></small></p>
+            </div>
+        </div>
+    </body>
+    </html>
+    `;
+  }
+
+  private generateApplicationRejectedHTML(
+    application: any,
+    reason: string,
+  ): string {
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Application Update</title>
+    </head>
+    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+        <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+            <h2 style="color: #dc3545;">Application Update</h2>
+            <p>Hello ${application.firstName},</p>
+            <p>Thank you for your interest in Mister Fyber. Unfortunately, your application has not been approved at this time.</p>
+            <div style="margin-top: 20px; padding: 15px; background-color: #fff3f3; border-left: 4px solid #dc3545;">
+                <p><strong>Reason:</strong></p>
+                <p>${reason || "No specific reason provided"}</p>
+            </div>
+            <p>If you have any questions, please contact our support team.</p>
+            <hr>
+            <p style="color: #666; font-size: 12px;">Mister Fyber</p>
+        </div>
+    </body>
+    </html>
+    `;
+  }
+
+  private generateNewApplicationNotificationHTML(
+    application: any,
+    plan: any,
+  ): string {
+    const frontendUrl =
+      process.env.FRONTEND_URL || "https://www.misterfyber.com";
+    const planPrice = plan?.price ?? 0;
+
+    return `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+        <h2 style="color: #333;">🆕 NEW APPLICATION ALERT!</h2>
+        <p>A new application has been submitted to Mister Fyber and requires your review.</p>
+        <div style="margin-top: 20px; padding: 15px; background-color: #f8f9fa; border-radius: 5px;">
+            <h3>Application Details:</h3>
+            <p><strong>Application ID:</strong> ${application.applicationId}</p>
+            <p><strong>Name:</strong> ${application.firstName} ${application.lastName}</p>
+            <p><strong>Email:</strong> ${application.email}</p>
+            <p><strong>Phone:</strong> ${application.phoneNumber}</p>
+            <p><strong>Plan:</strong> ${plan?.name || "N/A"} (₱${safeToFixed(planPrice)})</p>
+            <p><strong>ID Type:</strong> ${application.idType}</p>
+            <p><strong>Submitted:</strong> ${new Date().toLocaleString()}</p>
+        </div>
+        <div style="margin-top: 20px; padding: 15px; background-color: #e7f3ff; border-radius: 5px;">
+            <h3>Address:</h3>
+            <p>${application.buildingName || "N/A"}<br>
+            ${application.floor ? `Floor: ${application.floor}` : ""} ${application.unitNumber ? `Unit: ${application.unitNumber}` : ""}<br>
+            ${application.buildingId?.streetAddress || "N/A"}</p>
+        </div>
+        <div style="text-align: center; margin-top: 30px;">
+            <a href="${frontendUrl}/admin/applications" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">Review Application Now</a>
+        </div>
+    </div>
+    `;
+  }
+
+  private generatePlanChangeNotificationHTML(
+    user: any,
+    oldPlan: any,
+    newPlan: any,
+  ): string {
+    const newPlanPrice = newPlan?.price ?? 0;
+
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Plan Updated</title>
+    </head>
+    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+        <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+            <h2 style="color: #333;">📡 Plan Updated</h2>
+            <p>Hello ${user.firstName || user.email},</p>
+            <p>Your Mister Fyber plan has been changed successfully.</p>
+            <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                <p><strong>Old Plan:</strong> ${oldPlan?.name || "N/A"}</p>
+                <p><strong>New Plan:</strong> ${newPlan?.name || "N/A"}</p>
+                <p><strong>New Price:</strong> ₱${safeToFixed(newPlanPrice)}</p>
+                <p><strong>New Speed:</strong> ${newPlan?.speed?.download || "N/A"} Mbps / ${newPlan?.speed?.upload || "N/A"} Mbps</p>
+            </div>
+            <p>The changes will take effect immediately.</p>
+            <hr>
+            <p style="color: #666; font-size: 12px;">Mister Fyber</p>
+        </div>
+    </body>
+    </html>
+    `;
+  }
+
+  private async sendToAdmin(
+    subject: string,
+    html: string,
+    location?: string,
+  ): Promise<boolean> {
+    if (!this.adminEmail) {
+      console.error("❌ Admin email not configured");
+      return false;
+    }
+    return await this.sendEmail(
+      this.adminEmail,
+      `[ADMIN] ${subject}`,
+      html,
+      false,
+      location,
+    );
+  }
+
   async testEmailConfiguration(
     testEmail?: string,
   ): Promise<{ success: boolean; message: string; details?: any }> {
@@ -3497,7 +3651,6 @@ class EmailService {
         testHtml,
         false,
       );
-
       return {
         success: result,
         message: result

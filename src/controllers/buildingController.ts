@@ -1,12 +1,37 @@
+// backend/src/controllers/buildingController.ts - COMPLETE WITH INSTALLATION FEE
+
 import { Request, Response, NextFunction } from "express";
 import Building from "../models/Building";
 import { validationResult } from "express-validator";
 
+type AuthRequest = Request & { user?: any };
+
+function checkAdmin(req: AuthRequest, res: Response): boolean {
+  if (!req.user || !req.user.role) {
+    res.status(401).json({
+      success: false,
+      message: "You must be logged in as admin to perform this action",
+    });
+    return false;
+  }
+  const role = req.user.role;
+  if (role !== "super_admin" && role !== "admin" && role !== "staff") {
+    res.status(403).json({
+      success: false,
+      message: "Admin access required for this action",
+    });
+    return false;
+  }
+  return true;
+}
+
 export const createBuilding = async (
-  req: Request,
+  req: AuthRequest,
   res: Response,
   next: NextFunction,
 ) => {
+  if (!checkAdmin(req, res)) return;
+
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -21,6 +46,8 @@ export const createBuilding = async (
       barangay,
       streetAddress,
       zipCode,
+      location,
+      installationFee,
     } = req.body;
 
     const existingBuilding = await Building.findOne({ buildingName });
@@ -39,6 +66,9 @@ export const createBuilding = async (
       barangay,
       streetAddress,
       zipCode: zipCode || "",
+      location: location || "",
+      installationFee: installationFee || 1500,
+      isActive: true,
     });
 
     res.status(201).json({
@@ -51,10 +81,12 @@ export const createBuilding = async (
 };
 
 export const getAllBuildings = async (
-  req: Request,
+  req: AuthRequest,
   res: Response,
   next: NextFunction,
 ) => {
+  if (!checkAdmin(req, res)) return;
+
   try {
     const { page = 1, limit = 10, isActive } = req.query;
 
@@ -90,7 +122,7 @@ export const getActiveBuildings = async (
   try {
     const buildings = await Building.find({ isActive: true })
       .select(
-        "buildingName region province city barangay streetAddress zipCode",
+        "buildingName region province city barangay streetAddress zipCode location installationFee",
       )
       .sort({ buildingName: 1 });
 
@@ -104,10 +136,12 @@ export const getActiveBuildings = async (
 };
 
 export const getBuilding = async (
-  req: Request,
+  req: AuthRequest,
   res: Response,
   next: NextFunction,
 ) => {
+  if (!checkAdmin(req, res)) return;
+
   try {
     const building = await Building.findById(req.params.id);
 
@@ -128,10 +162,12 @@ export const getBuilding = async (
 };
 
 export const updateBuilding = async (
-  req: Request,
+  req: AuthRequest,
   res: Response,
   next: NextFunction,
 ) => {
+  if (!checkAdmin(req, res)) return;
+
   try {
     const building = await Building.findById(req.params.id);
 
@@ -150,6 +186,8 @@ export const updateBuilding = async (
       barangay,
       streetAddress,
       zipCode,
+      location,
+      installationFee,
       isActive,
     } = req.body;
 
@@ -164,12 +202,16 @@ export const updateBuilding = async (
       building.buildingName = buildingName;
     }
 
-    if (region) building.region = region;
-    if (province) building.province = province;
-    if (city) building.city = city;
-    if (barangay) building.barangay = barangay;
-    if (streetAddress) building.streetAddress = streetAddress;
+    if (region !== undefined) building.region = region;
+    if (province !== undefined) building.province = province;
+    if (city !== undefined) building.city = city;
+    if (barangay !== undefined) building.barangay = barangay;
+    if (streetAddress !== undefined) building.streetAddress = streetAddress;
     if (zipCode !== undefined) building.zipCode = zipCode;
+    if (location !== undefined) building.location = location;
+    if (installationFee !== undefined && installationFee >= 0) {
+      building.installationFee = installationFee;
+    }
     if (isActive !== undefined) building.isActive = isActive;
 
     await building.save();
@@ -184,10 +226,12 @@ export const updateBuilding = async (
 };
 
 export const deleteBuilding = async (
-  req: Request,
+  req: AuthRequest,
   res: Response,
   next: NextFunction,
 ) => {
+  if (!checkAdmin(req, res)) return;
+
   try {
     const building = await Building.findById(req.params.id);
 
@@ -207,4 +251,88 @@ export const deleteBuilding = async (
   } catch (error) {
     next(error);
   }
+};
+
+export const getBuildingInstallationFee = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const { buildingId } = req.params;
+
+    const building = await Building.findById(buildingId);
+    if (!building) {
+      return res.status(404).json({
+        success: false,
+        message: "Building not found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        buildingId: building._id,
+        buildingName: building.buildingName,
+        installationFee: building.installationFee,
+        location: building.location,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateBuildingInstallationFee = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  try {
+    const { buildingId } = req.params;
+    const { installationFee } = req.body;
+
+    if (installationFee === undefined || installationFee < 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Valid installation fee is required (must be >= 0)",
+      });
+    }
+
+    const building = await Building.findById(buildingId);
+    if (!building) {
+      return res.status(404).json({
+        success: false,
+        message: "Building not found",
+      });
+    }
+
+    building.installationFee = installationFee;
+    await building.save();
+
+    res.status(200).json({
+      success: true,
+      message: `Installation fee for ${building.buildingName} updated to ₱${installationFee}`,
+      data: {
+        buildingId: building._id,
+        buildingName: building.buildingName,
+        installationFee: building.installationFee,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export default {
+  createBuilding,
+  getAllBuildings,
+  getActiveBuildings,
+  getBuilding,
+  updateBuilding,
+  deleteBuilding,
+  getBuildingInstallationFee,
+  updateBuildingInstallationFee,
 };
