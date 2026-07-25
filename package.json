@@ -4,12 +4,13 @@
   "description": "Misterfyber",
   "main": "dist/app.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && echo '✅ Build complete!' && ls -la dist/",
     "start": "node dist/app.js",
     "dev": "nodemon src/app.ts",
     "prod": "npm run build && npm start",
     "clean": "rm -rf dist",
-    "rebuild": "npm run clean && npm run build"
+    "rebuild": "npm run clean && npm run build",
+    "postinstall": "npm run build"
   },
   "dependencies": {
     "@getbrevo/brevo": "^5.0.4",
