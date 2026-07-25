@@ -203,7 +203,7 @@ export const getFileUrl = (filePath: string, req?: Request): string => {
 
   // Local storage
   const baseUrl =
-    process.env.BASE_URL || "https://misterfyberbackend.onrender.com";
+    process.env.BASE_URL || "https://misterfyberbackend-lvjd.onrender.com";
   let cleanPath = filePath.replace(/\\/g, "/");
   if (!cleanPath.startsWith("uploads/")) {
     cleanPath = `uploads/${cleanPath}`;
