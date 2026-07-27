@@ -1,3 +1,4 @@
+// backend/src/models/User.ts
 import mongoose, { Schema, Document } from "mongoose";
 import bcrypt from "bcryptjs";
 
@@ -150,12 +151,14 @@ const UserSchema: Schema = new Schema(
   },
 );
 
+// INDEXES - Add these for performance
 UserSchema.index({ email: 1 }, { unique: true });
 UserSchema.index({ username: 1 }, { unique: true });
 UserSchema.index({ status: 1 });
 UserSchema.index({ applicationId: 1 });
 UserSchema.index({ "mikrotik.username": 1 });
 UserSchema.index({ "billingInfo.billingCycleId": 1 });
+UserSchema.index({ createdAt: -1 });
 
 UserSchema.pre<IUser>("save", async function (next) {
   if (!this.isModified("password")) return next();

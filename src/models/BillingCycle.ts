@@ -1,3 +1,4 @@
+// backend/src/models/BillingCycle.ts
 import mongoose, { Document, Schema } from "mongoose";
 
 export interface IBillingCycle extends Document {
@@ -35,7 +36,6 @@ export interface IBillingCycle extends Document {
     effectiveDate: Date;
     status: "pending" | "approved" | "rejected";
   };
-  // SEPARATE INSTALLATION FEE TRACKING
   installationFee: number;
   installationFeePaid: boolean;
   installationFeeBillId?: mongoose.Types.ObjectId;
@@ -89,7 +89,6 @@ const BillingCycleSchema = new Schema<IBillingCycle>(
         default: "pending",
       },
     },
-    // SEPARATE INSTALLATION FEE TRACKING
     installationFee: { type: Number, default: 0 },
     installationFeePaid: { type: Boolean, default: false },
     installationFeeBillId: { type: Schema.Types.ObjectId, ref: "Billing" },
@@ -97,10 +96,13 @@ const BillingCycleSchema = new Schema<IBillingCycle>(
   { timestamps: true },
 );
 
+// INDEXES - Add these for performance
 BillingCycleSchema.index({ userId: 1 });
 BillingCycleSchema.index({ status: 1 });
 BillingCycleSchema.index({ applicationId: 1 });
 BillingCycleSchema.index({ installationFeePaid: 1 });
+BillingCycleSchema.index({ "pendingPlanChange.status": 1 });
+BillingCycleSchema.index({ createdAt: -1 });
 
 export default mongoose.model<IBillingCycle>(
   "BillingCycle",

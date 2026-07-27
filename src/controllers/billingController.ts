@@ -1,4 +1,4 @@
-// backend/src/controllers/billingController.ts - COMPLETE FIXED VERSION (NO DUPLICATES)
+// backend/src/controllers/billingController.ts - COMPLETE FIXED VERSION
 
 import { Request, Response, NextFunction } from "express";
 import Billing from "../models/Billing";
@@ -33,6 +33,11 @@ let summaryCache: { data: any; timestamp: number } | null = null;
 const SUMMARY_CACHE_TTL = 2 * 60 * 1000;
 const LIST_CACHE_TTL = 30 * 1000;
 
+// ==================== DASHBOARD DATA CACHE ====================
+let dashboardDataCache: any = null;
+let dashboardDataCacheTime = 0;
+const DASHBOARD_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
 function generateInvoiceNumber(): string {
   const date = new Date();
   const year = date.getFullYear();
@@ -64,6 +69,8 @@ function clearAllCache(): void {
   billingCyclesCache.clear();
   billsCache.clear();
   summaryCache = null;
+  dashboardDataCache = null;
+  dashboardDataCacheTime = 0;
   console.log("🗑️ Billing cache cleared");
 }
 
@@ -95,7 +102,6 @@ async function getOrCreateSettings(): Promise<any> {
   return settings;
 }
 
-// Helper function to get building installation fee (internal use only)
 async function getBuildingInstallationFeeHelper(
   buildingId: string,
 ): Promise<number> {
@@ -880,7 +886,6 @@ export const startBilling = async (
     const monthlyRate = plan.price;
     const dailyRate = (monthlyRate * 12) / 365;
 
-    // Get building-specific installation fee
     let installationFee = 0;
     if (includeInstallationFee !== false) {
       const building = await getBuildingForApplication(application);
@@ -1272,7 +1277,6 @@ export const initializeBackdatedBilling = async (
     const actualMonthlyRate = plan ? plan.price : monthlyRate;
     const settings = await getOrCreateSettings();
 
-    // Get building-specific installation fee
     let installationFee = 0;
     if (includeInstallationFee !== false) {
       const building = await getBuildingForApplication(application);
@@ -2092,7 +2096,7 @@ export const markInstallationBillAsPaid = async (
           new Date().toLocaleString(),
           location,
           collectionEmail,
-          true, // isInstallation
+          true,
         );
 
         await emailService.sendEmail(
@@ -2261,7 +2265,7 @@ export const markBillAsPaid = async (
           new Date().toLocaleString(),
           location,
           collectionEmail,
-          false, // isInstallation
+          false,
         );
 
         await emailService.sendEmail(
@@ -2544,7 +2548,7 @@ export const confirmProRatedPayment = async (
           new Date().toLocaleString(),
           location,
           collectionEmail,
-          false, // isInstallation
+          false,
         );
 
         await emailService.sendEmail(
@@ -4018,6 +4022,459 @@ export const manuallyGenerateBillsForMonth = async (
   }
 };
 
+// ==================== GET DASHBOARD DATA (AGGREGATED) ====================
+export const getDashboardData = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const now = Date.now();
+    if (
+      dashboardDataCache &&
+      now - dashboardDataCacheTime < DASHBOARD_CACHE_TTL
+    ) {
+      console.log("📦 Returning cached dashboard data");
+      return res.status(200).json({
+        success: true,
+        data: dashboardDataCache,
+      });
+    }
+
+    console.log("🔄 Fetching fresh dashboard data...");
+
+    const buildings = await Building.find({}).lean();
+
+    const [
+      billingCycles,
+      bills,
+      users,
+      applications,
+      pendingPayments,
+      customersWithoutAccounts,
+      pendingInstallationBills,
+      pendingProRated,
+      pendingActivations,
+    ] = await Promise.all([
+      BillingCycle.find({})
+        .populate("planId", "name price")
+        .sort({ createdAt: -1 })
+        .limit(1000)
+        .lean(),
+
+      Billing.find({
+        status: { $in: ["sent", "overdue", "pending_confirmation"] },
+      })
+        .sort({ dueDate: 1 })
+        .limit(1000)
+        .lean(),
+
+      User.find({})
+        .select(
+          "firstName lastName email username phoneNumber status planId building unitNumber floor",
+        )
+        .populate("planId", "name price")
+        .limit(1000)
+        .lean(),
+
+      Application.find({ status: { $in: ["approved", "pending"] } })
+        .select(
+          "firstName lastName email phoneNumber status applicationId planId buildingId buildingName unitNumber floor installationFee installationFeePaid billingStarted",
+        )
+        .populate("planId", "name price")
+        .populate("buildingId", "buildingName streetAddress city")
+        .limit(1000)
+        .lean(),
+
+      Payment.find({ status: "pending" })
+        .sort({ createdAt: -1 })
+        .limit(100)
+        .lean(),
+
+      Application.find({
+        status: "approved",
+        $or: [
+          { registeredUserId: { $exists: false } },
+          { registeredUserId: null },
+        ],
+        billingStarted: { $ne: true },
+      })
+        .select("firstName lastName email applicationId planId buildingName")
+        .populate("planId", "name price")
+        .limit(100)
+        .lean(),
+
+      Billing.find({
+        isInstallationBill: true,
+        installationFeePaid: false,
+        status: { $in: ["sent", "overdue"] },
+      })
+        .sort({ dueDate: 1 })
+        .limit(100)
+        .lean(),
+
+      Billing.find({
+        isProRated: true,
+        status: "pending_confirmation",
+        isInstallationBill: false,
+      })
+        .sort({ createdAt: -1 })
+        .limit(100)
+        .lean(),
+
+      BillingCycle.find({
+        status: "pending_activation",
+        proRatedPaid: true,
+        manualBillStart: false,
+      })
+        .populate("planId", "name price")
+        .sort({ proRatedPaidAt: -1 })
+        .limit(100)
+        .lean(),
+    ]);
+
+    const enrichedCycles = await Promise.all(
+      billingCycles.map(async (cycle) => {
+        const c = { ...cycle };
+        if (c.applicationId) {
+          const application = await Application.findOne({
+            applicationId: c.applicationId,
+          })
+            .select(
+              "firstName lastName email applicationId phoneNumber buildingName",
+            )
+            .lean();
+          if (application) {
+            (c as any).applicationData = application;
+          }
+        }
+        return c;
+      }),
+    );
+
+    const enrichedBills = await Promise.all(
+      bills.map(async (bill) => {
+        const b = { ...bill };
+        if (b.applicationId) {
+          const application = await Application.findOne({
+            applicationId: b.applicationId,
+          })
+            .select(
+              "firstName lastName email applicationId phoneNumber buildingName",
+            )
+            .lean();
+          if (application) {
+            (b as any).applicationData = application;
+          }
+        }
+        return b;
+      }),
+    );
+
+    const enrichedPendingInstallation = await Promise.all(
+      pendingInstallationBills.map(async (bill) => {
+        const b = { ...bill };
+        if (b.applicationId) {
+          const application = await Application.findOne({
+            applicationId: b.applicationId,
+          })
+            .select(
+              "firstName lastName email applicationId phoneNumber buildingName",
+            )
+            .lean();
+          if (application) {
+            (b as any).applicationData = application;
+          }
+        }
+        return b;
+      }),
+    );
+
+    const enrichedPendingProRated = await Promise.all(
+      pendingProRated.map(async (bill) => {
+        const b = { ...bill };
+        if (b.applicationId) {
+          const application = await Application.findOne({
+            applicationId: b.applicationId,
+          })
+            .select(
+              "firstName lastName email applicationId phoneNumber buildingName",
+            )
+            .lean();
+          if (application) {
+            (b as any).applicationData = application;
+          }
+        }
+        return b;
+      }),
+    );
+
+    const enrichedPendingActivations = await Promise.all(
+      pendingActivations.map(async (cycle) => {
+        const c = { ...cycle };
+        if (c.applicationId) {
+          const application = await Application.findOne({
+            applicationId: c.applicationId,
+          })
+            .select(
+              "firstName lastName email applicationId phoneNumber buildingName",
+            )
+            .lean();
+          if (application) {
+            (c as any).applicationData = application;
+          }
+        }
+        return c;
+      }),
+    );
+
+    const userCustomers = users.map((user: any) => {
+      const userBills = enrichedBills.filter(
+        (bill) => bill.userId?._id === user._id || bill.userId === user._id,
+      );
+      const totalBalance = userBills.reduce(
+        (sum, bill) => sum + (bill.total || 0),
+        0,
+      );
+      const overdueBills = userBills.filter(
+        (bill) =>
+          bill.status === "overdue" || new Date(bill.dueDate) < new Date(),
+      );
+      const userCycle = enrichedCycles.find(
+        (cycle) => cycle.userId?._id === user._id || cycle.userId === user._id,
+      );
+
+      let buildingObj = user.building || null;
+      if (buildingObj && typeof buildingObj === "object" && !buildingObj._id) {
+        const foundBuilding = buildings.find(
+          (b) => b.buildingName === buildingObj.buildingName,
+        );
+        if (foundBuilding) {
+          buildingObj = foundBuilding;
+        }
+      }
+
+      return {
+        _id: user._id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        username: user.username,
+        phoneNumber: user.phoneNumber,
+        status: user.status,
+        type: "user" as const,
+        planName: user.planId?.name || "No Plan",
+        planPrice: user.planId?.price || 0,
+        currentBalance: totalBalance,
+        unpaidBills: userBills,
+        overdueBills: overdueBills,
+        billingCycle: userCycle || null,
+        installationFee: 0,
+        installationFeePaid: true,
+        building: buildingObj,
+        unitNumber: user.unitNumber,
+        floor: user.floor,
+      };
+    });
+
+    const applicationCustomers = applications
+      .filter(
+        (app: any) => app.status === "approved" || app.billingStarted === true,
+      )
+      .map((app: any) => {
+        const appBills = enrichedBills.filter(
+          (bill) => bill.applicationId === app.applicationId,
+        );
+        const totalBalance = appBills.reduce(
+          (sum, bill) => sum + (bill.total || 0),
+          0,
+        );
+        const overdueBills = appBills.filter(
+          (bill) =>
+            bill.status === "overdue" || new Date(bill.dueDate) < new Date(),
+        );
+        const appCycle = enrichedCycles.find(
+          (cycle) => cycle.applicationId === app.applicationId,
+        );
+
+        let buildingObj = null;
+        if (app.buildingId) {
+          if (typeof app.buildingId === "object" && app.buildingId._id) {
+            buildingObj = app.buildingId;
+          } else if (typeof app.buildingId === "string") {
+            const foundBuilding = buildings.find(
+              (b) =>
+                b._id === app.buildingId || b.buildingName === app.buildingId,
+            );
+            if (foundBuilding) {
+              buildingObj = foundBuilding;
+            }
+          }
+        }
+        if (!buildingObj && app.buildingName) {
+          const foundBuilding = buildings.find(
+            (b) => b.buildingName === app.buildingName,
+          );
+          if (foundBuilding) {
+            buildingObj = foundBuilding;
+          } else {
+            buildingObj = { buildingName: app.buildingName };
+          }
+        }
+
+        return {
+          _id: app._id,
+          firstName: app.firstName,
+          lastName: app.lastName,
+          email: app.email,
+          phoneNumber: app.phoneNumber,
+          status: app.billingStarted ? "billing_started" : "approved",
+          type: "application" as const,
+          planName: app.planId?.name || "No Plan",
+          planPrice: app.planId?.price || 0,
+          currentBalance: totalBalance,
+          unpaidBills: appBills,
+          overdueBills: overdueBills,
+          billingCycle: appCycle || null,
+          applicationId: app.applicationId,
+          installationFee: app.installationFee || 0,
+          installationFeePaid: app.installationFeePaid || false,
+          building: buildingObj,
+          unitNumber: app.unitNumber,
+          floor: app.floor,
+        };
+      });
+
+    const allCustomers = [...userCustomers, ...applicationCustomers];
+    allCustomers.sort((a, b) => b.currentBalance - a.currentBalance);
+
+    const totalBalance = allCustomers.reduce(
+      (sum, c) => sum + c.currentBalance,
+      0,
+    );
+    const customersWithBalance = allCustomers.filter(
+      (c) => c.currentBalance > 0,
+    ).length;
+    const overdueCustomers = allCustomers.filter(
+      (c) => c.overdueBills.length > 0,
+    ).length;
+    const activeCycles = enrichedCycles.filter(
+      (c) => c.status === "active",
+    ).length;
+    const pausedCycles = enrichedCycles.filter(
+      (c) => c.status === "paused",
+    ).length;
+    const applicationsWithoutBilling = applications.filter(
+      (app: any) => app.status === "approved" && !app.billingStarted,
+    ).length;
+
+    const totalInstallationFeesDue = allCustomers
+      .filter(
+        (c) =>
+          c.type === "application" &&
+          !c.installationFeePaid &&
+          (c.installationFee || 0) > 0,
+      )
+      .reduce((sum, c) => sum + (c.installationFee || 0), 0);
+    const installationFeesPaidCount = allCustomers.filter(
+      (c) => c.type === "application" && c.installationFeePaid,
+    ).length;
+
+    const stats = {
+      totalCustomers: allCustomers.length,
+      totalBalance: totalBalance,
+      customersWithBalanceCount: customersWithBalance,
+      overdueCustomersCount: overdueCustomers,
+      activeCyclesCount: activeCycles,
+      pausedCyclesCount: pausedCycles,
+      pendingProRatedCount: pendingProRated.length,
+      pendingActivationsCount: pendingActivations.length,
+      pendingPaymentsCount: pendingPayments.length,
+      pendingInstallationBillsCount: pendingInstallationBills.length,
+      applicationsWithoutBilling: applicationsWithoutBilling,
+      totalInstallationFeesDue: totalInstallationFeesDue,
+      installationFeesPaidCount: installationFeesPaidCount,
+    };
+
+    const dashboardData = {
+      customers: allCustomers,
+      billingCycles: enrichedCycles,
+      bills: enrichedBills,
+      pendingPayments: pendingPayments,
+      customersWithoutAccounts: customersWithoutAccounts,
+      pendingInstallationBills: enrichedPendingInstallation,
+      pendingProRated: enrichedPendingProRated,
+      pendingActivations: enrichedPendingActivations,
+      stats: stats,
+    };
+
+    dashboardDataCache = dashboardData;
+    dashboardDataCacheTime = now;
+
+    console.log(`✅ Dashboard data cached: ${allCustomers.length} customers`);
+
+    res.status(200).json({
+      success: true,
+      data: dashboardData,
+    });
+  } catch (error) {
+    console.error("Error in getDashboardData:", error);
+    next(error);
+  }
+};
+
+// ==================== CHECK FOR UPDATES ====================
+export const checkForUpdates = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const { lastUpdated } = req.query;
+
+    if (!lastUpdated) {
+      return res.status(200).json({
+        success: true,
+        hasUpdates: true,
+      });
+    }
+
+    const lastCheck = new Date(lastUpdated as string);
+
+    const [recentBill, recentCycle, recentPayment, recentApplication] =
+      await Promise.all([
+        Billing.findOne({ updatedAt: { $gt: lastCheck } })
+          .sort({ updatedAt: -1 })
+          .lean(),
+        BillingCycle.findOne({ updatedAt: { $gt: lastCheck } })
+          .sort({ updatedAt: -1 })
+          .lean(),
+        Payment.findOne({ updatedAt: { $gt: lastCheck } })
+          .sort({ updatedAt: -1 })
+          .lean(),
+        Application.findOne({ updatedAt: { $gt: lastCheck } })
+          .sort({ updatedAt: -1 })
+          .lean(),
+      ]);
+
+    const hasUpdates = !!(
+      recentBill ||
+      recentCycle ||
+      recentPayment ||
+      recentApplication
+    );
+
+    res.status(200).json({
+      success: true,
+      hasUpdates,
+      lastChecked: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error("Error in checkForUpdates:", error);
+    next(error);
+  }
+};
+
 // ==================== EXPORT DEFAULT ====================
 export default {
   startBilling,
@@ -4056,4 +4513,6 @@ export default {
   getLocationEmails,
   testLocationEmail,
   getBuildingInstallationFee,
+  getDashboardData,
+  checkForUpdates,
 };

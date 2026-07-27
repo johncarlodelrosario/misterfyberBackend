@@ -1,5 +1,4 @@
-// backend/src/models/Application.ts - COMPLETE WITH ALL FIELDS
-
+// backend/src/models/Application.ts
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IApplication extends Document {
@@ -168,11 +167,13 @@ const ApplicationSchema: Schema = new Schema(
   },
 );
 
+// INDEXES - Add these for performance
 ApplicationSchema.index({ applicationId: 1 });
 ApplicationSchema.index({ email: 1 });
 ApplicationSchema.index({ buildingId: 1 });
 ApplicationSchema.index({ status: 1 });
 ApplicationSchema.index({ billingStarted: 1 });
 ApplicationSchema.index({ registeredUserId: 1 });
+ApplicationSchema.index({ createdAt: -1 });
 
 export default mongoose.model<IApplication>("Application", ApplicationSchema);

@@ -1,5 +1,4 @@
 // backend/src/models/Payment.ts
-
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IPayment extends Document {
@@ -19,9 +18,9 @@ export interface IPayment extends Document {
   status: "pending" | "processing" | "completed" | "failed" | "refunded";
   transactionId: string;
   referenceNumber: string;
-  customerName: string; // NEW: Direct customer name storage
-  customerEmail: string; // NEW: Direct customer email storage
-  customerPhone: string; // NEW: Direct customer phone storage
+  customerName: string;
+  customerEmail: string;
+  customerPhone: string;
   paymentDetails: {
     gateway: string;
     gatewayResponse: any;
@@ -102,7 +101,6 @@ const PaymentSchema: Schema = new Schema(
   },
 );
 
-// Generate reference number before saving
 PaymentSchema.pre("save", function (next) {
   if (!this.referenceNumber) {
     const timestamp = Date.now().toString(36).toUpperCase();
@@ -112,7 +110,6 @@ PaymentSchema.pre("save", function (next) {
   next();
 });
 
-// Validate that either userId or applicationId is provided
 PaymentSchema.pre("validate", function (next) {
   if (!this.userId && !this.applicationId) {
     next(new Error("Either userId or applicationId must be provided"));
@@ -120,7 +117,7 @@ PaymentSchema.pre("validate", function (next) {
   next();
 });
 
-// Add indexes for better query performance
+// INDEXES - Add these for performance
 PaymentSchema.index({ applicationId: 1 });
 PaymentSchema.index({ status: 1 });
 PaymentSchema.index({ createdAt: -1 });

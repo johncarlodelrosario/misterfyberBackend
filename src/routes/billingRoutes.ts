@@ -1,3 +1,4 @@
+// backend/src/routes/billingRoutes.ts
 import express from "express";
 import { optionalAuth, adminMiddleware } from "../middleware/auth";
 import {
@@ -36,14 +37,23 @@ import {
   manuallyGenerateBillsForMonth,
   getLocationEmails,
   testLocationEmail,
+  getDashboardData,
+  checkForUpdates,
 } from "../controllers/billingController";
 
 const router = express.Router();
 
-// ==================== USE OPTIONAL AUTH PARA WALANG "NOT AUTHORIZED" ERROR ====================
+console.log("🔄 Registering billing routes...");
+
+// ==================== USE OPTIONAL AUTH ====================
 router.use(optionalAuth);
 
-// ==================== ADMIN ROUTES (VIEW ONLY - PUBLIC, NO LOGIN NEEDED) ====================
+// ==================== DASHBOARD DATA ENDPOINTS ====================
+router.get("/dashboard-data", adminMiddleware, getDashboardData);
+router.get("/has-updates", adminMiddleware, checkForUpdates);
+console.log("✅ /dashboard-data route registered");
+
+// ==================== ADMIN ROUTES (VIEW ONLY) ====================
 router.get("/settings", getBillingSettings);
 router.get("/cycles", getAllBillingCycles);
 router.get("/all-bills", getAllBills);
@@ -57,7 +67,7 @@ router.get("/unpaid-bills-report", adminMiddleware, getUnpaidBillsReport);
 router.get("/location/emails", adminMiddleware, getLocationEmails);
 router.post("/location/test", adminMiddleware, testLocationEmail);
 
-// ==================== ADMIN ROUTES (NEED ADMIN ROLE FOR ACTIONS) ====================
+// ==================== ADMIN ROUTES (NEED ADMIN ROLE) ====================
 router.put("/settings", adminMiddleware, updateBillingSettings);
 router.get("/settings/admin", adminMiddleware, getBillingSettingsAdmin);
 router.put("/settings/admin", adminMiddleware, updateBillingSettingsAdmin);
@@ -97,5 +107,7 @@ router.get("/application/:applicationId/status", getApplicationBillingStatus);
 router.post("/application/submit-pro-rated", submitProRatedPayment);
 router.post("/application/submit-installation", submitInstallationPayment);
 router.post("/application/submit-monthly", submitMonthlyPayment);
+
+console.log("✅ All billing routes registered");
 
 export default router;
