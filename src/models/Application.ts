@@ -1,4 +1,3 @@
-// backend/src/models/Application.ts
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IApplication extends Document {
@@ -167,21 +166,50 @@ const ApplicationSchema: Schema = new Schema(
   },
 );
 
-// Pre-save middleware to generate applicationId
+// ================================================
+// FIXED: Pre-save middleware to generate applicationId
+// This will run BEFORE any application is saved
+// ================================================
 ApplicationSchema.pre("save", async function (next) {
+  // Only generate if applicationId is not already set
   if (!this.applicationId) {
-    const year = new Date().getFullYear().toString().slice(-2);
-    const month = (new Date().getMonth() + 1).toString().padStart(2, "0");
-    const random = Math.floor(Math.random() * 10000)
-      .toString()
-      .padStart(4, "0");
-    this.applicationId = `APP-${year}${month}-${random}`;
+    try {
+      // Count existing applications to get sequential number
+      const Application = mongoose.model("Application");
+      const count = await Application.countDocuments();
+
+      // Format: APP-2024-0001
+      const year = new Date().getFullYear();
+      const month = String(new Date().getMonth() + 1).padStart(2, "0");
+      const sequentialNumber = String(count + 1).padStart(4, "0");
+
+      this.applicationId = `APP-${year}${month}-${sequentialNumber}`;
+
+      console.log(`✅ Auto-generated applicationId: ${this.applicationId}`);
+    } catch (error) {
+      console.error("❌ Error generating applicationId:", error);
+      // Fallback: use timestamp if count fails
+      const timestamp = Date.now().toString().slice(-6);
+      this.applicationId = `APP-${timestamp}`;
+    }
   }
   next();
 });
 
-// INDEXES - Add these for performance
-ApplicationSchema.index({ applicationId: 1 });
+// ================================================
+// FIXED: Pre-validate hook to ensure applicationId exists
+// ================================================
+ApplicationSchema.pre("validate", function (next) {
+  if (!this.applicationId) {
+    // Generate a temporary ID if validation runs before save
+    const timestamp = Date.now().toString().slice(-6);
+    this.applicationId = `APP-TEMP-${timestamp}`;
+  }
+  next();
+});
+
+// INDEXES for performance
+ApplicationSchema.index({ applicationId: 1 }, { unique: true });
 ApplicationSchema.index({ email: 1 });
 ApplicationSchema.index({ buildingId: 1 });
 ApplicationSchema.index({ status: 1 });
