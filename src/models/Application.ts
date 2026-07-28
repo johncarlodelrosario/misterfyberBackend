@@ -167,6 +167,19 @@ const ApplicationSchema: Schema = new Schema(
   },
 );
 
+// Pre-save middleware to generate applicationId
+ApplicationSchema.pre("save", async function (next) {
+  if (!this.applicationId) {
+    const year = new Date().getFullYear().toString().slice(-2);
+    const month = (new Date().getMonth() + 1).toString().padStart(2, "0");
+    const random = Math.floor(Math.random() * 10000)
+      .toString()
+      .padStart(4, "0");
+    this.applicationId = `APP-${year}${month}-${random}`;
+  }
+  next();
+});
+
 // INDEXES - Add these for performance
 ApplicationSchema.index({ applicationId: 1 });
 ApplicationSchema.index({ email: 1 });
