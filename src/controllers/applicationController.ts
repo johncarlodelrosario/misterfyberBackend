@@ -1,5 +1,3 @@
-// backend/src/controllers/applicationController.ts - COMPLETE FIXED VERSION
-
 import { Request, Response, NextFunction } from "express";
 import Application from "../models/Application";
 import Plan from "../models/Plan";
@@ -155,6 +153,8 @@ const getImageUrl = (imagePath?: string): string => {
 
 // ================================================
 // FIXED: SUBMIT APPLICATION WITH AUTO-GENERATED applicationId
+// Format: BUILDINGCODE + YEAR(2 digits) + MONTH(2 digits) + 7 RANDOM NUMBERS
+// Example: SIL26079235111 (SIL + 26 + 07 + 9235111)
 // ================================================
 export const submitApplication = async (
   req: AuthRequest,
@@ -440,7 +440,7 @@ export const submitApplication = async (
     }
 
     // Build application data WITHOUT applicationId
-    // The pre-save hook will auto-generate it
+    // The pre-save hook will auto-generate it with format: BUILDINGCODE + YEAR + MONTH + 7RANDOM
     const applicationData = {
       firstName: firstName?.trim(),
       lastName: lastName?.trim(),
@@ -465,6 +465,8 @@ export const submitApplication = async (
     const application = new Application(applicationData);
 
     // The pre-save hook will run here and generate applicationId
+    // Format: BUILDINGCODE + YEAR(2 digits) + MONTH(2 digits) + 7 RANDOM NUMBERS
+    // Example: SIL26079235111 (SIL + 26 + 07 + 9235111)
     await application.save({ session });
 
     console.log(`✅ Application created with ID: ${application.applicationId}`);

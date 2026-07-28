@@ -36,6 +36,112 @@ export interface IApplication extends Document {
   updatedAt: Date;
 }
 
+// ================================================
+// Helper function to generate building code
+// ================================================
+const getBuildingCode = (buildingName: string): string => {
+  if (!buildingName) return "UNK";
+
+  // Convert to uppercase and remove extra spaces
+  const name = buildingName.toUpperCase().trim();
+
+  // Handle specific building names
+  if (name.includes("SILK") || name.includes("SILK RESIDENCE")) {
+    return "SIL";
+  }
+  if (name.includes("VITALEZ") || name.includes("VITALEZ RESIDENCE")) {
+    return "VIT";
+  }
+  if (name.includes("NEWPORT") || name.includes("NEWPORT RESIDENCE")) {
+    return "NEW";
+  }
+  if (name.includes("METRO") || name.includes("METRO RESIDENCE")) {
+    return "MET";
+  }
+  if (name.includes("EAST") || name.includes("EAST RESIDENCE")) {
+    return "EST";
+  }
+  if (name.includes("WEST") || name.includes("WEST RESIDENCE")) {
+    return "WST";
+  }
+  if (name.includes("NORTH") || name.includes("NORTH RESIDENCE")) {
+    return "NTH";
+  }
+  if (name.includes("SOUTH") || name.includes("SOUTH RESIDENCE")) {
+    return "STH";
+  }
+  if (name.includes("CENTRAL") || name.includes("CENTRAL RESIDENCE")) {
+    return "CTR";
+  }
+  if (name.includes("GARDEN") || name.includes("GARDEN RESIDENCE")) {
+    return "GRD";
+  }
+  if (name.includes("PARK") || name.includes("PARK RESIDENCE")) {
+    return "PRK";
+  }
+  if (name.includes("LAKE") || name.includes("LAKE RESIDENCE")) {
+    return "LAK";
+  }
+  if (name.includes("MOUNTAIN") || name.includes("MOUNTAIN RESIDENCE")) {
+    return "MTN";
+  }
+  if (name.includes("OCEAN") || name.includes("OCEAN RESIDENCE")) {
+    return "OCN";
+  }
+  if (name.includes("SUN") || name.includes("SUN RESIDENCE")) {
+    return "SUN";
+  }
+  if (name.includes("MOON") || name.includes("MOON RESIDENCE")) {
+    return "MON";
+  }
+  if (name.includes("STAR") || name.includes("STAR RESIDENCE")) {
+    return "STR";
+  }
+  if (name.includes("ROYAL") || name.includes("ROYAL RESIDENCE")) {
+    return "ROY";
+  }
+  if (name.includes("GRAND") || name.includes("GRAND RESIDENCE")) {
+    return "GRN";
+  }
+  if (name.includes("TOWER") || name.includes("TOWER RESIDENCE")) {
+    return "TWR";
+  }
+  if (name.includes("PLAZA") || name.includes("PLAZA RESIDENCE")) {
+    return "PLZ";
+  }
+  if (name.includes("VILLA") || name.includes("VILLA RESIDENCE")) {
+    return "VIL";
+  }
+  if (name.includes("TERRACE") || name.includes("TERRACE RESIDENCE")) {
+    return "TER";
+  }
+  if (name.includes("HEIGHTS") || name.includes("HEIGHTS RESIDENCE")) {
+    return "HGT";
+  }
+  if (name.includes("VIEW") || name.includes("VIEW RESIDENCE")) {
+    return "VIW";
+  }
+  if (name.includes("HILL") || name.includes("HILL RESIDENCE")) {
+    return "HIL";
+  }
+  if (name.includes("VALLEY") || name.includes("VALLEY RESIDENCE")) {
+    return "VAL";
+  }
+  if (name.includes("RIDGE") || name.includes("RIDGE RESIDENCE")) {
+    return "RID";
+  }
+
+  // If no match, use first 3 letters of the building name
+  const words = name.split(" ");
+  if (words.length >= 2) {
+    // Take first letter of first word and first two of second word
+    return (words[0][0] + words[1].substring(0, 2)).toUpperCase();
+  }
+
+  // Take first 3 characters
+  return name.substring(0, 3);
+};
+
 const ApplicationSchema: Schema = new Schema(
   {
     applicationId: {
@@ -168,42 +274,71 @@ const ApplicationSchema: Schema = new Schema(
 
 // ================================================
 // FIXED: Pre-save middleware to generate applicationId
-// This will run BEFORE any application is saved
+// Format: BUILDINGCODE + YEAR(2 digits) + MONTH(2 digits) + 7 RANDOM NUMBERS
+// Example: SIL26079235111 (SIL + 26 + 07 + 9235111)
 // ================================================
 ApplicationSchema.pre("save", async function (next) {
   // Only generate if applicationId is not already set
   if (!this.applicationId) {
     try {
-      // Count existing applications to get sequential number
-      const Application = mongoose.model("Application");
-      const count = await Application.countDocuments();
+      // Get building code from building name
+      const buildingCode = getBuildingCode(this.buildingName || "");
 
-      // Format: APP-2024-0001
-      const year = new Date().getFullYear();
+      // Get current year (last 2 digits) and month (2 digits)
+      const year = new Date().getFullYear().toString().slice(-2);
       const month = String(new Date().getMonth() + 1).padStart(2, "0");
-      const sequentialNumber = String(count + 1).padStart(4, "0");
 
-      this.applicationId = `APP-${year}${month}-${sequentialNumber}`;
+      // Generate 7 random numbers
+      const randomNumbers = Math.floor(
+        Math.random() * 9000000 + 1000000,
+      ).toString();
 
-      console.log(`✅ Auto-generated applicationId: ${this.applicationId}`);
+      // Combine: BUILDINGCODE + YEAR + MONTH + 7RANDOM
+      this.applicationId = `${buildingCode}${year}${month}${randomNumbers}`;
+
+      console.log(
+        `✅ Auto-generated applicationId: ${this.applicationId} for building: ${this.buildingName}`,
+      );
+
+      // Check if this applicationId already exists (very unlikely with random numbers, but just in case)
+      const Application = mongoose.model("Application");
+      const existing = await Application.findOne({
+        applicationId: this.applicationId,
+      });
+      if (existing) {
+        // If duplicate, regenerate the random numbers
+        const newRandom = Math.floor(
+          Math.random() * 9000000 + 1000000,
+        ).toString();
+        this.applicationId = `${buildingCode}${year}${month}${newRandom}`;
+        console.log(
+          `🔄 Regenerated applicationId (duplicate): ${this.applicationId}`,
+        );
+      }
     } catch (error) {
       console.error("❌ Error generating applicationId:", error);
-      // Fallback: use timestamp if count fails
-      const timestamp = Date.now().toString().slice(-6);
-      this.applicationId = `APP-${timestamp}`;
+      // Fallback: use timestamp
+      const timestamp = Date.now().toString().slice(-7);
+      const buildingCode = getBuildingCode(this.buildingName || "");
+      const year = new Date().getFullYear().toString().slice(-2);
+      const month = String(new Date().getMonth() + 1).padStart(2, "0");
+      this.applicationId = `${buildingCode}${year}${month}${timestamp}`;
     }
   }
   next();
 });
 
 // ================================================
-// FIXED: Pre-validate hook to ensure applicationId exists
+// Pre-validate hook to ensure applicationId exists
 // ================================================
 ApplicationSchema.pre("validate", function (next) {
   if (!this.applicationId) {
     // Generate a temporary ID if validation runs before save
-    const timestamp = Date.now().toString().slice(-6);
-    this.applicationId = `APP-TEMP-${timestamp}`;
+    const buildingCode = getBuildingCode(this.buildingName || "");
+    const year = new Date().getFullYear().toString().slice(-2);
+    const month = String(new Date().getMonth() + 1).padStart(2, "0");
+    const random = Math.floor(Math.random() * 9000000 + 1000000).toString();
+    this.applicationId = `${buildingCode}${year}${month}${random}`;
   }
   next();
 });
