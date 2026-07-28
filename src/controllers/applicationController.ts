@@ -154,7 +154,7 @@ const getImageUrl = (imagePath?: string): string => {
 // ================================================
 // FIXED: SUBMIT APPLICATION WITH AUTO-GENERATED applicationId
 // Format: BUILDINGCODE + YEAR(2 digits) + MONTH(2 digits) + 7 RANDOM NUMBERS
-// Example: SIL26079235111 (SIL + 26 + 07 + 9235111)
+// Example: EPM26079235111 (EPM + 26 + 07 + 9235111)
 // ================================================
 export const submitApplication = async (
   req: AuthRequest,
@@ -466,7 +466,7 @@ export const submitApplication = async (
 
     // The pre-save hook will run here and generate applicationId
     // Format: BUILDINGCODE + YEAR(2 digits) + MONTH(2 digits) + 7 RANDOM NUMBERS
-    // Example: SIL26079235111 (SIL + 26 + 07 + 9235111)
+    // Example: EPM26079235111 (EPM + 26 + 07 + 9235111)
     await application.save({ session });
 
     console.log(`✅ Application created with ID: ${application.applicationId}`);

@@ -45,6 +45,17 @@ const getBuildingCode = (buildingName: string): string => {
   // Convert to uppercase and remove extra spaces
   const name = buildingName.toUpperCase().trim();
 
+  // ================================================
+  // ADDED: El Pueblo Manila Condominium
+  // ================================================
+  if (
+    name.includes("EL PUEBLO") ||
+    name.includes("EL PUEBLO MANILA") ||
+    name.includes("EL PUEBLO MANILA CONDOMINIUM")
+  ) {
+    return "EPM"; // El Pueblo Manila
+  }
+
   // Handle specific building names
   if (name.includes("SILK") || name.includes("SILK RESIDENCE")) {
     return "SIL";
@@ -275,7 +286,7 @@ const ApplicationSchema: Schema = new Schema(
 // ================================================
 // FIXED: Pre-save middleware to generate applicationId
 // Format: BUILDINGCODE + YEAR(2 digits) + MONTH(2 digits) + 7 RANDOM NUMBERS
-// Example: SIL26079235111 (SIL + 26 + 07 + 9235111)
+// Example: EPM26079235111 (EPM + 26 + 07 + 9235111)
 // ================================================
 ApplicationSchema.pre("save", async function (next) {
   // Only generate if applicationId is not already set
