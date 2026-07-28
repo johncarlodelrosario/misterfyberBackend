@@ -673,9 +673,7 @@ class EmailService {
                 ${collectionEmail ? `<p><strong>Collection Email:</strong> ${collectionEmail}</p>` : ""}
                 ${buildingName ? `<p><strong>Building:</strong> ${buildingName}</p>` : ""}
             </div>
-            <div style="text-align: center; margin: 30px 0;">
-                <a href="${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/billing" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">Pay Now</a>
-            </div>
+     
             <p>Please pay before the due date to avoid service interruption.</p>
             <hr>
             <p style="color: #666; font-size: 12px;">This is an automated reminder from Mister Fyber.</p>
@@ -781,9 +779,7 @@ class EmailService {
                 <div class="warning">
                     <strong>📌 After Today:</strong> If payment is not received, your account will enter a grace period. After the grace period, your service will be suspended.
                 </div>
-                <div style="text-align: center; margin: 30px 0;">
-                    <a href="${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/billing" class="button">💰 PAY NOW</a>
-                </div>
+              
                 <p><strong>Payment Methods Accepted:</strong> GCash, Maya, Bank Transfer, Over-the-Counter</p>
                 <p>If you have already made the payment, please disregard this notice.</p>
             </div>
