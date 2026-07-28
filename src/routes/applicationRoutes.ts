@@ -1,4 +1,4 @@
-// routes/applicationRoutes.ts - Fixed tower validation to be optional
+// routes/applicationRoutes.ts
 import express from "express";
 import { body } from "express-validator";
 import {
@@ -36,7 +36,6 @@ router.post(
     body("email").isEmail().withMessage("Please provide a valid email"),
     body("phoneNumber").notEmpty().withMessage("Phone number is required"),
     body("buildingId").notEmpty().withMessage("Please select a building"),
-    // FIX: Tower is optional - can be empty string
     body("tower")
       .optional({ nullable: true, checkFalsy: true })
       .isString()
