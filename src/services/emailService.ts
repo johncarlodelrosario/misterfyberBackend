@@ -1,4 +1,4 @@
-// backend/src/services/emailService.ts - COMPLETE FIXED VERSION WITH NO DUPLICATES
+// backend/src/services/emailService.ts - COMPLETE FIXED VERSION WITH NO FORCE ENABLING
 
 import { IUser } from "../models/User";
 import Admin from "../models/Admin";
@@ -966,32 +966,35 @@ class EmailService {
     return configured;
   }
 
+  // ==================== FIXED: CUSTOMER EMAIL ENABLED CHECK ====================
+  /**
+   * FIXED: Check if customer emails are enabled
+   * Returns TRUE if enabled, FALSE if disabled (OFF)
+   * NO FORCE ENABLING - respects the database value
+   */
   private async areCustomerEmailsEnabled(): Promise<boolean> {
     try {
+      // Find the admin (super_admin has highest priority)
       const admin = await Admin.findOne({
         role: { $in: ["super_admin", "admin"] },
         status: "active",
       }).sort({ role: 1 });
 
-      const enabled = admin ? admin.customerEmailAlertsEnabled !== false : true;
-      console.log(`📧 Customer emails enabled: ${enabled}`);
-      console.log(`   Admin found: ${!!admin}`);
-      console.log(
-        `   customerEmailAlertsEnabled: ${admin?.customerEmailAlertsEnabled}`,
-      );
-
-      if (!enabled) {
+      // CRITICAL FIX: If admin found, use their EXACT value
+      // If customerEmailAlertsEnabled is undefined, default to true (enabled)
+      // If it's false, respect it as DISABLED
+      if (admin) {
+        const enabled = admin.customerEmailAlertsEnabled !== false;
+        console.log(`📧 Customer emails enabled: ${enabled}`);
         console.log(
-          "⚠️ Customer emails are DISABLED in database. FORCE ENABLING for this request.",
+          `   customerEmailAlertsEnabled value: ${admin.customerEmailAlertsEnabled}`,
         );
-        if (admin) {
-          await Admin.updateOne({ _id: admin._id });
-          console.log("✅ Updated admin setting to ENABLED");
-        }
-        return true;
+        return enabled;
       }
 
-      return enabled;
+      // If no admin found, default to true
+      console.log("📧 No admin found, defaulting to enabled");
+      return true;
     } catch (error) {
       console.warn(
         "⚠️ Could not check customer email setting, defaulting to true:",
@@ -1048,6 +1051,10 @@ class EmailService {
   }
 
   // ==================== CORE EMAIL SENDING ====================
+  /**
+   * FIXED: sendEmail now properly checks customer email toggle
+   * and respects the OFF setting
+   */
   async sendEmail(
     to: string | string[],
     subject: string,
@@ -1071,13 +1078,22 @@ class EmailService {
         `   useAdminSender: ${options?.useAdminSender ? "YES" : "NO"}`,
       );
 
+      // ============================================================
+      // FIXED: Check if customer emails are enabled
+      // If this is a customer email and emails are disabled, SKIP sending
+      // ============================================================
       if (isCustomerEmail) {
         const customerEmailsEnabled = await this.areCustomerEmailsEnabled();
         if (!customerEmailsEnabled) {
           console.log(
-            `⚠️ CUSTOMER EMAILS ARE DISABLED. But we will FORCE SEND anyway.`,
+            `⚠️ CUSTOMER EMAILS ARE DISABLED (OFF). Skipping email to: ${to}`,
           );
+          console.log(`   Subject: ${subject}`);
+          console.log(`   This email was NOT sent because the toggle is OFF.`);
+          // Return true to indicate "success" so the caller doesn't retry
+          return true;
         }
+        console.log(`✅ Customer emails are ENABLED. Sending email to: ${to}`);
       }
 
       if (process.env.NODE_ENV === "development" && !this.apiKey) {
@@ -1377,6 +1393,7 @@ class EmailService {
 
   /**
    * Send invoice with PDF attachment - INCLUDES BUILDING INSTALLATION FEE
+   * FIXED: Respects customer email toggle
    */
   async sendInvoiceWithPDF(
     invoiceData: any,
@@ -1386,12 +1403,22 @@ class EmailService {
     useAdminSender?: boolean,
   ): Promise<boolean> {
     try {
+      // ============================================================
+      // FIXED: Check if customer emails are enabled
+      // If emails are disabled, SKIP sending
+      // ============================================================
       const customerEmailsEnabled = await this.areCustomerEmailsEnabled();
       if (!customerEmailsEnabled) {
         console.log(
-          `📧 CUSTOMER EMAILS ARE DISABLED. Force sending invoice to ${invoiceData.customerEmail}`,
+          `⚠️ CUSTOMER EMAILS ARE DISABLED (OFF). Skipping invoice email to: ${invoiceData.customerEmail}`,
         );
+        console.log(`   Invoice: ${invoiceData.invoiceNumber}`);
+        console.log(`   This email was NOT sent because the toggle is OFF.`);
+        return true;
       }
+      console.log(
+        `✅ Customer emails are ENABLED. Sending invoice to: ${invoiceData.customerEmail}`,
+      );
 
       if (!this.isConfigured()) {
         console.log(
@@ -1777,6 +1804,7 @@ class EmailService {
 
   /**
    * Send payment confirmation email with paid invoice attachment
+   * FIXED: Respects customer email toggle
    */
   async sendPaymentConfirmationEmail(
     invoice: any,
@@ -1791,6 +1819,23 @@ class EmailService {
     console.log(`📧 sendPaymentConfirmationEmail called`);
 
     try {
+      // ============================================================
+      // FIXED: Check if customer emails are enabled
+      // If emails are disabled, SKIP sending
+      // ============================================================
+      const customerEmailsEnabled = await this.areCustomerEmailsEnabled();
+      if (!customerEmailsEnabled) {
+        console.log(
+          `⚠️ CUSTOMER EMAILS ARE DISABLED (OFF). Skipping payment confirmation email to: ${invoice.customerEmail}`,
+        );
+        console.log(`   Invoice: ${invoice.invoiceNumber}`);
+        console.log(`   This email was NOT sent because the toggle is OFF.`);
+        return true;
+      }
+      console.log(
+        `✅ Customer emails are ENABLED. Sending payment confirmation to: ${invoice.customerEmail}`,
+      );
+
       let finalPdfBuffer = pdfBuffer;
       let finalPdfFileName = pdfFileName;
 
@@ -1948,6 +1993,7 @@ class EmailService {
 
   /**
    * Send paid invoice email with PDF attachment
+   * FIXED: Respects customer email toggle
    */
   async sendPaidInvoiceEmail(
     invoiceData: any,
@@ -1967,6 +2013,23 @@ class EmailService {
         `📧 Installation Fee: ${invoiceData.buildingInstallationFee || 0}`,
       );
       console.log(`📧 PDF size: ${pdfBuffer ? pdfBuffer.length : 0} bytes`);
+
+      // ============================================================
+      // FIXED: Check if customer emails are enabled
+      // If emails are disabled, SKIP sending
+      // ============================================================
+      const customerEmailsEnabled = await this.areCustomerEmailsEnabled();
+      if (!customerEmailsEnabled) {
+        console.log(
+          `⚠️ CUSTOMER EMAILS ARE DISABLED (OFF). Skipping paid invoice email to: ${invoiceData.customerEmail}`,
+        );
+        console.log(`   Invoice: ${invoiceData.invoiceNumber}`);
+        console.log(`   This email was NOT sent because the toggle is OFF.`);
+        return true;
+      }
+      console.log(
+        `✅ Customer emails are ENABLED. Sending paid invoice to: ${invoiceData.customerEmail}`,
+      );
 
       let finalPdfBuffer = pdfBuffer;
       let finalPdfFileName = pdfFileName;
@@ -2073,13 +2136,6 @@ class EmailService {
       const cleanBase64 = pdfBase64.replace(/\s/g, "");
       if (cleanBase64.length !== pdfBase64.length) {
         console.log(`📧 Removed spaces from base64 string`);
-      }
-
-      const customerEmailsEnabled = await this.areCustomerEmailsEnabled();
-      if (!customerEmailsEnabled) {
-        console.log(
-          `📧 CUSTOMER EMAILS ARE DISABLED. Force sending paid invoice to ${invoiceData.customerEmail}`,
-        );
       }
 
       if (!this.isConfigured()) {
