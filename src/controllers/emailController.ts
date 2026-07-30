@@ -81,7 +81,6 @@ function generateEmailPreview(
         ${billingData.isProRated ? `<tr><td style="padding: 8px 0;"><strong>Bill Type:</strong></td><td>Pro-rated First Bill</td></tr>` : billingData.isInstallationBill ? "" : `<tr><td style="padding: 8px 0;"><strong>Bill Type:</strong></td><td>Monthly Subscription</td></tr>`}
         <tr><td style="padding: 8px 0;"><strong>Status:</strong></td><td><span style="padding: 3px 10px; border-radius: 20px; font-size: 12px; ${billingData.status === "paid" ? "background-color: #d4edda; color: #155724;" : billingData.status === "overdue" ? "background-color: #f8d7da; color: #721c24;" : "background-color: #fff3cd; color: #856404;"}">${billingData.status?.toUpperCase() || "UNKNOWN"}</span></td></tr>
       </table>
-      ${billingData.paymentLink ? `<div style="text-align: center; margin-top: 20px;"><a href="${billingData.paymentLink}" style="display: inline-block; background-color: #28a745; color: white; padding: 10px 25px; text-decoration: none; border-radius: 5px; font-weight: bold;"> Pay Now</a></div>` : ""}
     </div>
   `
       : "";
