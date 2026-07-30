@@ -1,4 +1,5 @@
-// backend/src/routes/billingRoutes.ts
+// backend/src/routes/billingRoutes.ts - UPDATED WITH EARLY BILL ROUTES
+
 import express from "express";
 import { optionalAuth, adminMiddleware } from "../middleware/auth";
 import {
@@ -39,6 +40,7 @@ import {
   testLocationEmail,
   getDashboardData,
   checkForUpdates,
+  manuallyGenerateEarlyBill, // NEW
 } from "../controllers/billingController";
 
 const router = express.Router();
@@ -98,6 +100,11 @@ router.post(
   "/manually-generate-month",
   adminMiddleware,
   manuallyGenerateBillsForMonth,
+);
+router.post(
+  "/manually-generate-early-bill", // NEW: Route for manually generating early bill
+  adminMiddleware,
+  manuallyGenerateEarlyBill,
 );
 
 // ==================== APPLICATION ROUTES ====================

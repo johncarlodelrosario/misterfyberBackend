@@ -18,6 +18,7 @@ export interface IBillingSettings extends Document {
   requireAdminActivation: boolean;
   installationFee: number;
   installationFeeDueDays: number;
+  earlyBillGenerationDays: number; // NEW: Generate bill X days before next month
   createdAt: Date;
   updatedAt: Date;
 }
@@ -39,6 +40,7 @@ const BillingSettingsSchema: Schema = new Schema(
     requireAdminActivation: { type: Boolean, default: false },
     installationFee: { type: Number, default: 1500, min: 0 },
     installationFeeDueDays: { type: Number, default: 7, min: 1, max: 30 },
+    earlyBillGenerationDays: { type: Number, default: 15, min: 1, max: 30 }, // NEW
   },
   { timestamps: true },
 );
@@ -62,6 +64,7 @@ BillingSettingsSchema.statics.getDefaultSettings = async function () {
       requireAdminActivation: false,
       installationFee: 1500,
       installationFeeDueDays: 7,
+      earlyBillGenerationDays: 15, // NEW
     });
   }
   return settings;
