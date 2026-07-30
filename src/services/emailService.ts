@@ -476,7 +476,7 @@ class EmailService {
       <div style="margin-top: 15px; padding: 10px; background-color: #fff3e0; border-radius: 5px; border-left: 4px solid #ff9800;">
         <p style="margin: 0; font-size: 12px; color: #e65100;">
           <strong>🔧 Installation Fee:</strong> ₱${buildingInstallationFee.toLocaleString()} (One-time charge for ${buildingName || "your building"})
-          ${billing.installationFeePaid ? '✅ <span style="color: #28a745;">(Paid)</span>' : '⚠️ <span style="color: #dc3545;">(Pending)</span>'}
+          ${billing.installationFeePaid ? '✅ <span style="color: #28a745;">(Paid)</span>' : '⚠️ <span style="">(Pending)</span>'}
         </p>
       </div>
       `
@@ -546,7 +546,7 @@ class EmailService {
               .join("")}
             <tr style="font-weight: bold; background: #f8f9fa;">
               <td colspan="2" style="padding: 10px; text-align: right; border: 1px solid #ddd;">Total:</td>
-              <td style="padding: 10px; text-align: right; border: 1px solid #ddd; color: #dc3545;">₱${amount.toFixed(2)}</td>
+              <td style="padding: 10px; text-align: right; border: 1px solid #ddd; ">₱${amount.toFixed(2)}</td>
             </tr>
           </tbody>
         </table>
@@ -744,8 +744,8 @@ class EmailService {
         <style>
             body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
             .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
-            .header { text-align: center; border-bottom: 2px solid #dc3545; padding-bottom: 20px; }
-            .header h1 { color: #dc3545; margin: 0; }
+            .header { text-align: center; border-bottom: 2px solid padding-bottom: 20px; }
+            .header h1 {  margin: 0; }
             .content { padding: 20px 0; }
             .bill-details { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
             .button { display: inline-block; background-color: #dc3545; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; }

@@ -1,4 +1,4 @@
-// backend/src/controllers/billingController.ts - COMPLETE FIXED VERSION
+// backend/src/controllers/billingController.ts - COMPLETE FIXED VERSION WITH 15-DAY BEFORE DUE DATE GENERATION
 
 import { Request, Response, NextFunction } from "express";
 import Billing from "../models/Billing";
@@ -3144,7 +3144,7 @@ export const deleteBillingCycle = async (
   }
 };
 
-// ==================== AUTO-GENERATE MONTHLY BILLS ====================
+// ==================== AUTO-GENERATE MONTHLY BILLS (UPDATED - 15 DAYS BEFORE DUE DATE) ====================
 export const autoGenerateMonthlyBills = async (
   req?: AuthRequest,
   res?: Response,
@@ -3163,33 +3163,77 @@ export const autoGenerateMonthlyBills = async (
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
 
-    if (today.getUTCDate() !== 1) {
+    // Get the monthly due day from settings
+    const monthlyDueDay = settings.monthlyDueDay || 5;
+
+    // Calculate the date when bills should be generated (15 days before due date)
+    // If due date is 5th, generate on 20th of previous month
+    // If due date is 25th, generate on 10th of current month
+    const dueDate = new Date(today);
+    dueDate.setUTCDate(monthlyDueDay);
+
+    // If today's date is past the due date, the due date is in the next month
+    if (today.getUTCDate() > monthlyDueDay) {
+      dueDate.setUTCMonth(dueDate.getUTCMonth() + 1);
+    }
+
+    // Calculate the generation date (15 days before due date)
+    const generationDate = new Date(dueDate);
+    generationDate.setUTCDate(generationDate.getUTCDate() - 15);
+
+    // Check if today is the generation date
+    const isGenerationDay =
+      today.getUTCFullYear() === generationDate.getUTCFullYear() &&
+      today.getUTCMonth() === generationDate.getUTCMonth() &&
+      today.getUTCDate() === generationDate.getUTCDate();
+
+    // Also allow running on 1st of month as a fallback (if the 15-day rule doesn't trigger)
+    const isFirstDay = today.getUTCDate() === 1;
+
+    // If it's not the generation day and not the 1st, skip
+    if (!isGenerationDay && !isFirstDay) {
       if (res) {
         return res.status(200).json({
           success: true,
-          message: "Bill generation only runs on the 1st day of each month",
+          message: `Bill generation only runs on ${generationDate.getUTCDate()}th of the month (15 days before due date on ${monthlyDueDay}th) or on 1st as fallback`,
           data: {
             generated: 0,
             skipped: 0,
-            reason: "Not the 1st day of month",
+            reason: "Not the scheduled generation day",
+            nextGenerationDate: formatDateForDisplay(generationDate),
           },
         });
       }
       return;
     }
 
-    console.log(
-      `📅 Running monthly bill generation for ${formatDateForDisplay(today)} (1st day of month)`,
-    );
+    // Determine which month's bills to generate
+    let billingMonthStart: Date;
+    let billingMonthEnd: Date;
+    let billingDueDate: Date;
 
-    const targetMonthStart = getFirstDayOfMonth(today);
-    const targetMonthEnd = getEndOfMonth(targetMonthStart);
-    const dueDate = getDueDateForMonthly(targetMonthStart, settings);
+    if (isFirstDay) {
+      // If running on 1st, generate bills for the current month
+      billingMonthStart = getFirstDayOfMonth(today);
+      billingMonthEnd = getEndOfMonth(billingMonthStart);
+      billingDueDate = getDueDateForMonthly(billingMonthStart, settings);
+    } else {
+      // If running on generation day (15 days before due date)
+      // Generate bills for the month where due date is in the future
+      const dueDateMonth = new Date(dueDate);
+      // The billing period is the month containing the due date
+      billingMonthStart = getFirstDayOfMonth(dueDateMonth);
+      billingMonthEnd = getEndOfMonth(billingMonthStart);
+      billingDueDate = getDueDateForMonthly(billingMonthStart, settings);
+    }
 
     console.log(
-      `🎯 Generating bills for: ${formatDateForDisplay(targetMonthStart)} to ${formatDateForDisplay(targetMonthEnd)}`,
+      `📅 Running monthly bill generation on ${formatDateForDisplay(today)}`,
     );
-    console.log(`💰 Due date: ${formatDateForDisplay(dueDate)}`);
+    console.log(
+      `🎯 Generating bills for: ${formatDateForDisplay(billingMonthStart)} to ${formatDateForDisplay(billingMonthEnd)}`,
+    );
+    console.log(`💰 Due date: ${formatDateForDisplay(billingDueDate)}`);
 
     const billingCycles = await BillingCycle.find({
       status: "active",
@@ -3228,15 +3272,15 @@ export const autoGenerateMonthlyBills = async (
         billingCycleId: cycle._id,
         isProRated: false,
         isInstallationBill: false,
-        "billingPeriod.start": targetMonthStart,
+        "billingPeriod.start": billingMonthStart,
       }).lean();
 
       if (!existingBill) {
         await createMonthlyBill(
           application,
           cycle._id,
-          targetMonthStart,
-          targetMonthEnd,
+          billingMonthStart,
+          billingMonthEnd,
           plan.price,
           settings,
         );
@@ -3260,13 +3304,15 @@ export const autoGenerateMonthlyBills = async (
     if (res) {
       res.status(200).json({
         success: true,
-        message: `Generated ${generatedCount} monthly bills for ${formatDateForDisplay(targetMonthStart)} (Due on ${formatDateForDisplay(dueDate)})`,
+        message: `Generated ${generatedCount} monthly bills for ${formatDateForDisplay(billingMonthStart)} (Due on ${formatDateForDisplay(billingDueDate)})`,
         data: {
           generated: generatedCount,
           skipped: skippedCount,
-          billingMonth: formatDateForDisplay(targetMonthStart),
-          dueDate: formatDateForDisplay(dueDate),
+          billingMonth: formatDateForDisplay(billingMonthStart),
+          dueDate: formatDateForDisplay(billingDueDate),
           generationDate: formatDateForDisplay(today),
+          generationDay: 15,
+          daysBeforeDueDate: 15,
         },
       });
     }
