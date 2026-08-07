@@ -1,4 +1,5 @@
 // models/EmailSentRecord.ts
+
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IEmailSentRecord extends Document {
@@ -13,7 +14,9 @@ export interface IEmailSentRecord extends Document {
   recipientCount?: number;
   includeBilling: boolean;
   billType?: string;
-  billId?: string;
+  // CHANGED: support multiple bill IDs
+  billIds?: string[];
+  billCount?: number;
   error?: string;
   sentBy: string;
   sentByEmail: string;
@@ -73,8 +76,14 @@ const EmailSentRecordSchema = new Schema<IEmailSentRecord>(
       type: String,
       enum: ["unpaid", "latest", "installation"],
     },
-    billId: {
-      type: String,
+    // CHANGED: support multiple bill IDs
+    billIds: {
+      type: [String],
+      default: [],
+    },
+    billCount: {
+      type: Number,
+      default: 0,
     },
     error: {
       type: String,
@@ -109,7 +118,6 @@ const EmailSentRecordSchema = new Schema<IEmailSentRecord>(
   },
 );
 
-// Indexes for faster queries
 EmailSentRecordSchema.index({ applicationId: 1, sentAt: -1 });
 EmailSentRecordSchema.index({ status: 1 });
 EmailSentRecordSchema.index({ isBulk: 1 });

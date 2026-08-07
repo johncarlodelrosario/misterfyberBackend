@@ -1,3 +1,5 @@
+// backend/src/controllers/manualEmailController.ts
+
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import Application from "../models/Application";
@@ -32,12 +34,12 @@ function checkAdmin(req: AuthRequest, res: Response): boolean {
   return true;
 }
 
-// Generate email preview HTML
+// Generate email preview HTML with support for multiple bills
 function generateEmailPreview(
   subject: string,
   message: string,
   includeBilling: boolean,
-  billingData?: any,
+  billingDataArray: any[] = [],
   customerData?: any,
   senderInfo?: string,
 ): string {
@@ -49,7 +51,6 @@ function generateEmailPreview(
   `
     : "";
 
-  // Location badge for preview
   let locationBadge = "";
   if (customerData && customerData.buildingName) {
     const buildingName = customerData.buildingName.toLowerCase().trim();
@@ -67,22 +68,43 @@ function generateEmailPreview(
     }
   }
 
-  const billingSection =
-    includeBilling && billingData
-      ? `
-    <div style="margin-top: 30px; padding: 20px; background-color: #f8f9fa; border-radius: 10px; border-left: 4px solid #007bff;">
-      <h3 style="margin-top: 0; color: #007bff;">📋 Billing Information</h3>
-      <table style="width: 100%; border-collapse: collapse;">
-        <tr><td style="padding: 8px 0;"><strong>Invoice Number:</strong></td><td>${billingData.invoiceNumber || "N/A"}</td></tr>
-        <tr><td style="padding: 8px 0;"><strong>Amount Due:</strong></td><td style="color: #dc3545; font-size: 18px;">₱${(billingData.total || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td></tr>
-        <tr><td style="padding: 8px 0;"><strong>Due Date:</strong></td><td>${billingData.dueDate ? new Date(billingData.dueDate).toLocaleDateString() : "N/A"}</td></tr>
-        ${billingData.isInstallationBill ? `<tr><td style="padding: 8px 0;"><strong>Bill Type:</strong></td><td>Installation Fee</td></tr>` : ""}
-        ${billingData.isProRated ? `<tr><td style="padding: 8px 0;"><strong>Bill Type:</strong></td><td>Pro-rated First Bill</td></tr>` : billingData.isInstallationBill ? "" : `<tr><td style="padding: 8px 0;"><strong>Bill Type:</strong></td><td>Monthly Subscription</td></tr>`}
-        <tr><td style="padding: 8px 0;"><strong>Status:</strong></td><td><span style="padding: 3px 10px; border-radius: 20px; font-size: 12px; ${billingData.status === "paid" ? "background-color: #d4edda; color: #155724;" : billingData.status === "overdue" ? "background-color: #f8d7da; color: #721c24;" : "background-color: #fff3cd; color: #856404;"}">${billingData.status?.toUpperCase() || "UNKNOWN"}</span></td></tr>
-      </table>
-    </div>
-  `
-      : "";
+  // CHANGED: Build billing section for multiple bills
+  let billingSection = "";
+  if (includeBilling && billingDataArray && billingDataArray.length > 0) {
+    const totalAmount = billingDataArray.reduce(
+      (sum, bill) => sum + (bill.total || 0),
+      0,
+    );
+
+    let billsHtml = "";
+    billingDataArray.forEach((bill, index) => {
+      billsHtml += `
+        <div style="border-bottom: 1px solid #e0e0e0; padding-bottom: 12px; margin-bottom: 12px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <strong>${bill.invoiceNumber || "N/A"}</strong>
+            <span style="color: #dc3545; font-size: 16px; font-weight: bold;">₱${(bill.total || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+          </div>
+          <div style="font-size: 13px; color: #555;">
+            <span>Due: ${bill.dueDate ? new Date(bill.dueDate).toLocaleDateString() : "N/A"}</span>
+            <span style="margin-left: 15px;">Status: ${bill.status?.toUpperCase() || "UNKNOWN"}</span>
+            ${bill.isInstallationBill ? `<span style="margin-left: 15px; background: #e8f0fe; padding: 2px 8px; border-radius: 4px;">Installation</span>` : ""}
+            ${bill.isProRated ? `<span style="margin-left: 15px; background: #f0f0e8; padding: 2px 8px; border-radius: 4px;">Pro-rated</span>` : ""}
+          </div>
+        </div>
+      `;
+    });
+
+    billingSection = `
+      <div style="margin-top: 30px; padding: 20px; background-color: #f8f9fa; border-radius: 10px; border-left: 4px solid #007bff;">
+        <h3 style="margin-top: 0; color: #007bff;">📋 Billing Information (${billingDataArray.length} Bill${billingDataArray.length > 1 ? "s" : ""})</h3>
+        ${billsHtml}
+        <div style="margin-top: 15px; padding-top: 15px; border-top: 2px solid #007bff; display: flex; justify-content: space-between; align-items: center;">
+          <strong style="font-size: 16px;">Total Amount Due:</strong>
+          <span style="color: #dc3545; font-size: 20px; font-weight: bold;">₱${totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+        </div>
+      </div>
+    `;
+  }
 
   const customerSection = customerData
     ? `
@@ -163,7 +185,6 @@ export const getCustomersForEmail = async (
       query.status = status;
     }
 
-    // Make sure we get all applications with buildingName
     const applications = await Application.find(query)
       .select(
         "firstName lastName email phoneNumber applicationId status buildingName buildingId",
@@ -171,7 +192,6 @@ export const getCustomersForEmail = async (
       .limit(100)
       .lean();
 
-    // Enhance with billing info
     const enhancedCustomers = await Promise.all(
       applications.map(async (app) => {
         const billingCycle = await BillingCycle.findOne({
@@ -189,7 +209,6 @@ export const getCustomersForEmail = async (
           .sort({ createdAt: -1 })
           .lean();
 
-        // Detect location from building name
         let location = "other";
         if (app.buildingName) {
           const buildingName = app.buildingName.toLowerCase().trim();
@@ -212,7 +231,6 @@ export const getCustomersForEmail = async (
       }),
     );
 
-    // Filter by hasBilling if requested
     const filteredCustomers =
       hasBilling === "true"
         ? enhancedCustomers.filter((c) => c.hasBilling)
@@ -220,7 +238,6 @@ export const getCustomersForEmail = async (
           ? enhancedCustomers.filter((c) => !c.hasBilling)
           : enhancedCustomers;
 
-    // Always return fresh data - no cache on backend
     res.status(200).json({
       success: true,
       data: filteredCustomers,
@@ -272,7 +289,7 @@ export const getCustomerBills = async (
   }
 };
 
-// ==================== SEND MANUAL EMAIL ====================
+// ==================== SEND MANUAL EMAIL (SUPPORTS MULTIPLE BILLS) ====================
 export const sendManualEmail = async (
   req: AuthRequest,
   res: Response,
@@ -289,14 +306,14 @@ export const sendManualEmail = async (
       subject,
       message,
       includeBilling,
-      billId,
+      // CHANGED: support multiple bill IDs
+      billIds,
       sendCopyToAdmin,
       attachments,
       priority,
       useAdminSender,
     } = req.body;
 
-    // Validate required fields
     if (!applicationId) {
       await session.abortTransaction();
       return res.status(400).json({
@@ -313,7 +330,6 @@ export const sendManualEmail = async (
       });
     }
 
-    // Get customer data
     const application = await Application.findOne({ applicationId }).lean();
     if (!application) {
       await session.abortTransaction();
@@ -331,7 +347,7 @@ export const sendManualEmail = async (
       });
     }
 
-    // Get location from application - FIXED: Check buildingName directly
+    // Get location from application
     let location = "";
     console.log(`🔍 Getting location for application: ${applicationId}`);
     console.log(`🏢 Building name: ${application.buildingName}`);
@@ -356,7 +372,6 @@ export const sendManualEmail = async (
       }
     }
 
-    // If no location from buildingName, try buildingId
     if (!location && application.buildingId) {
       console.log(`🔍 Looking up building by ID: ${application.buildingId}`);
       const Building = require("../models/Building").default;
@@ -391,22 +406,33 @@ export const sendManualEmail = async (
       `📍 Final location for ${applicationId}: ${location || "NOT FOUND"}`,
     );
 
-    let billingData = null;
-    let selectedBillId = null;
-    if (includeBilling && billId) {
-      billingData = await Billing.findById(billId).lean();
-      selectedBillId = billId;
-      if (!billingData) {
+    // CHANGED: Fetch multiple bills
+    let billingDataArray: any[] = [];
+    let selectedBillIds: string[] = [];
+    if (
+      includeBilling &&
+      billIds &&
+      Array.isArray(billIds) &&
+      billIds.length > 0
+    ) {
+      const bills = await Billing.find({ _id: { $in: billIds } }).lean();
+      billingDataArray = bills;
+      selectedBillIds = billIds;
+
+      if (bills.length === 0) {
         await session.abortTransaction();
         return res.status(404).json({
           success: false,
-          message: "Bill not found",
+          message: "No bills found for the selected IDs",
         });
       }
 
       const frontendUrl =
         process.env.FRONTEND_URL || "https://www.misterfyber.com";
-      billingData.paymentLink = `${frontendUrl}/billing/${billingData._id}`;
+      billingDataArray = billingDataArray.map((bill) => ({
+        ...bill,
+        paymentLink: `${frontendUrl}/billing/${bill._id}`,
+      }));
     }
 
     // Determine sender info for preview
@@ -420,12 +446,12 @@ export const sendManualEmail = async (
       senderInfo = "Sent from: Admin (admin@misterfyber.com)";
     }
 
-    // Generate email HTML
+    // Generate email HTML with multiple bills
     const emailHtml = generateEmailPreview(
       subject,
       message,
-      includeBilling,
-      billingData,
+      includeBilling && billingDataArray.length > 0,
+      billingDataArray,
       application,
       senderInfo,
     );
@@ -439,7 +465,6 @@ export const sendManualEmail = async (
       `📧 Collection email: ${location ? getCollectionEmailByLocation(location) : "NONE"}`,
     );
 
-    // Send to customer with improved error handling
     let emailSent = false;
     let emailError = null;
 
@@ -464,6 +489,7 @@ export const sendManualEmail = async (
           console.log(
             `   Would send from: ${useAdminSender ? "admin@misterfyber.com" : location ? getCollectionEmailByLocation(location) : "admin@misterfyber.com"}`,
           );
+          console.log(`   Bills: ${billingDataArray.length} bill(s)`);
           emailSent = true;
         } else {
           throw new Error(
@@ -472,12 +498,13 @@ export const sendManualEmail = async (
         }
       } else {
         console.log(`📧 Attempting to send email to: ${application.email}`);
+        console.log(`📧 Bills included: ${billingDataArray.length}`);
         emailSent = await emailService.sendEmail(
           application.email,
           subject,
           emailHtml,
-          true, // isCustomerEmail
-          location, // location for collection email
+          true,
+          location,
           {
             useAdminSender: useAdminSender === true,
           },
@@ -494,6 +521,7 @@ export const sendManualEmail = async (
             `   Sender: ${useAdminSender ? "admin@misterfyber.com" : location ? getCollectionEmailByLocation(location) : "admin@misterfyber.com"}`,
           );
           console.log(`   Location: ${location || "NONE"}`);
+          console.log(`   Bills: ${billingDataArray.length}`);
         }
       }
     } catch (error: any) {
@@ -506,6 +534,18 @@ export const sendManualEmail = async (
       const adminEmail = process.env.ADMIN_EMAIL || process.env.EMAIL_FROM;
       if (adminEmail) {
         try {
+          const totalAmount = billingDataArray.reduce(
+            (sum, bill) => sum + (bill.total || 0),
+            0,
+          );
+
+          let billsSummary = "";
+          billingDataArray.forEach((bill) => {
+            billsSummary += `
+              <li>${bill.invoiceNumber || "N/A"} - ₱${(bill.total || 0).toLocaleString()} (${bill.status || "N/A"})</li>
+            `;
+          });
+
           const adminHtml = `
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
               <h2 style="color: #007bff;">📧 Admin Copy - Manual Email Sent</h2>
@@ -516,29 +556,30 @@ export const sendManualEmail = async (
               <p><strong>Sender Type:</strong> ${useAdminSender ? "Admin" : "Collection"}</p>
               <p><strong>Location:</strong> ${location || "NONE"}</p>
               <p><strong>Collection Email:</strong> ${location ? getCollectionEmailByLocation(location) : "NONE"}</p>
+              <p><strong>Bills Included:</strong> ${billingDataArray.length}</p>
+              ${
+                billingDataArray.length > 0
+                  ? `
+                <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 10px 0;">
+                  <h4>Bills:</h4>
+                  <ul>${billsSummary}</ul>
+                  <p><strong>Total Amount:</strong> ₱${totalAmount.toLocaleString()}</p>
+                </div>
+              `
+                  : ""
+              }
               <hr>
               <div style="background: #f8f9fa; padding: 15px; border-radius: 5px;">
                 <h3>Message Content:</h3>
                 <div>${message.replace(/\n/g, "<br>")}</div>
               </div>
-              ${
-                includeBilling && billingData
-                  ? `
-                <div style="margin-top: 20px; padding: 15px; background: #e7f3ff; border-radius: 5px;">
-                  <h3>Billing Information Included:</h3>
-                  <p><strong>Invoice:</strong> ${billingData.invoiceNumber}</p>
-                  <p><strong>Amount:</strong> ₱${(billingData.total || 0).toLocaleString()}</p>
-                </div>
-              `
-                  : ""
-              }
             </div>
           `;
           adminCopySent = await emailService.sendEmail(
             adminEmail,
             `[ADMIN COPY] ${subject}`,
             adminHtml,
-            false, // isCustomerEmail
+            false,
           );
         } catch (adminError) {
           console.error("Failed to send admin copy:", adminError);
@@ -546,7 +587,7 @@ export const sendManualEmail = async (
       }
     }
 
-    // Save sent record
+    // Save sent record with bill IDs
     const sentRecord = new EmailSentRecord({
       applicationId: application.applicationId,
       customerName: `${application.firstName} ${application.lastName}`,
@@ -558,7 +599,9 @@ export const sendManualEmail = async (
       isBulk: false,
       recipientCount: 1,
       includeBilling: includeBilling || false,
-      billId: selectedBillId,
+      // CHANGED: store bill IDs as array
+      billIds: selectedBillIds,
+      billCount: billingDataArray.length,
       error: emailError || (emailSent ? undefined : "Failed to send email"),
       sentBy: req.user?.username || req.user?.email || "Admin",
       sentByEmail: req.user?.email || "admin@misterfyber.com",
@@ -572,7 +615,6 @@ export const sendManualEmail = async (
 
     await session.commitTransaction();
 
-    // Return appropriate response
     if (!emailSent) {
       const errorMessage =
         emailError ||
@@ -591,6 +633,7 @@ export const sendManualEmail = async (
           collectionEmail: location
             ? getCollectionEmailByLocation(location)
             : null,
+          billsIncluded: billingDataArray.length,
         },
       });
     }
@@ -610,6 +653,11 @@ export const sendManualEmail = async (
         collectionEmail: location
           ? getCollectionEmailByLocation(location)
           : null,
+        billsIncluded: billingDataArray.length,
+        totalAmount: billingDataArray.reduce(
+          (sum, bill) => sum + (bill.total || 0),
+          0,
+        ),
       },
     });
   } catch (error) {
@@ -657,7 +705,6 @@ export const sendBulkEmails = async (
       });
     }
 
-    // Check if email service is configured
     const isConfigured = emailService.isConfigured();
     if (!isConfigured && process.env.NODE_ENV !== "development") {
       return res.status(500).json({
@@ -695,7 +742,6 @@ export const sendBulkEmails = async (
           continue;
         }
 
-        // Get location from application - FIXED: Check buildingName directly
         let location = "";
         console.log(`🔍 Getting location for application: ${applicationId}`);
         console.log(`🏢 Building name: ${application.buildingName}`);
@@ -718,7 +764,6 @@ export const sendBulkEmails = async (
           }
         }
 
-        // If no location from buildingName, try buildingId
         if (!location && application.buildingId) {
           console.log(
             `🔍 Looking up building by ID: ${application.buildingId}`,
@@ -730,14 +775,12 @@ export const sendBulkEmails = async (
           if (building) {
             if (building.name) {
               const buildingName = building.name.toLowerCase().trim();
-              if (buildingName.includes("breeze")) {
-                location = "breeze";
-              } else if (
+              if (buildingName.includes("breeze")) location = "breeze";
+              else if (
                 buildingName.includes("sil") ||
                 buildingName.includes("silk")
-              ) {
+              )
                 location = "sil";
-              }
             }
             if (building.location) {
               location = building.location;
@@ -749,8 +792,8 @@ export const sendBulkEmails = async (
           `📍 Final location for ${applicationId}: ${location || "NOT FOUND"}`,
         );
 
-        let billingData = null;
-        let selectedBillId = null;
+        let billingDataArray: any[] = [];
+        let selectedBillIds: string[] = [];
         let selectedBillType = billType;
 
         if (includeBilling) {
@@ -758,29 +801,36 @@ export const sendBulkEmails = async (
           if (billType === "unpaid") {
             billQuery.status = { $in: ["sent", "overdue"] };
           } else if (billType === "latest") {
-            billingData = await Billing.findOne({
+            const latestBill = await Billing.findOne({
               applicationId: application.applicationId,
             })
               .sort({ createdAt: -1 })
               .lean();
+            if (latestBill) {
+              billingDataArray = [latestBill];
+              selectedBillIds = [latestBill._id];
+            }
           } else if (billType === "installation") {
             billQuery.isInstallationBill = true;
             billQuery.installationFeePaid = false;
           }
 
-          if (!billingData && billType !== "latest") {
-            billingData = await Billing.findOne(billQuery).lean();
+          if (billingDataArray.length === 0 && billType !== "latest") {
+            const bills = await Billing.find(billQuery).lean();
+            billingDataArray = bills;
+            selectedBillIds = bills.map((b) => b._id);
           }
 
-          if (billingData) {
-            selectedBillId = billingData._id;
+          if (billingDataArray.length > 0) {
             const frontendUrl =
               process.env.FRONTEND_URL || "https://www.misterfyber.com";
-            billingData.paymentLink = `${frontendUrl}/billing/${billingData._id}`;
+            billingDataArray = billingDataArray.map((bill) => ({
+              ...bill,
+              paymentLink: `${frontendUrl}/billing/${bill._id}`,
+            }));
           }
         }
 
-        // Determine sender info for preview
         let senderInfo = "";
         if (useAdminSender) {
           senderInfo = "Sent from: Admin (admin@misterfyber.com)";
@@ -794,8 +844,8 @@ export const sendBulkEmails = async (
         const emailHtml = generateEmailPreview(
           subject,
           message,
-          includeBilling && !!billingData,
-          billingData,
+          includeBilling && billingDataArray.length > 0,
+          billingDataArray,
           application,
           senderInfo,
         );
@@ -813,14 +863,15 @@ export const sendBulkEmails = async (
               console.log(
                 `   Sender: ${useAdminSender ? "admin@misterfyber.com" : location ? getCollectionEmailByLocation(location) : "admin@misterfyber.com"}`,
               );
+              console.log(`   Bills: ${billingDataArray.length}`);
               emailSent = true;
             } else {
               emailSent = await emailService.sendEmail(
                 application.email,
                 subject,
                 emailHtml,
-                true, // isCustomerEmail
-                location, // location
+                true,
+                location,
                 {
                   useAdminSender: useAdminSender === true,
                 },
@@ -846,7 +897,8 @@ export const sendBulkEmails = async (
           recipientCount: 1,
           includeBilling: includeBilling || false,
           billType: selectedBillType,
-          billId: selectedBillId,
+          billIds: selectedBillIds,
+          billCount: billingDataArray.length,
           error: emailError || (emailSent ? undefined : "Failed to send email"),
           sentBy: req.user?.username || req.user?.email || "Admin",
           sentByEmail: req.user?.email || "admin@misterfyber.com",
@@ -873,6 +925,7 @@ export const sendBulkEmails = async (
               : location
                 ? getCollectionEmailByLocation(location)
                 : "admin@misterfyber.com",
+            billsIncluded: billingDataArray.length,
           });
           sentRecords.push(record);
         } else {
@@ -891,7 +944,6 @@ export const sendBulkEmails = async (
           });
         }
 
-        // Small delay to avoid rate limiting
         await new Promise((resolve) => setTimeout(resolve, 500));
       } catch (error) {
         failCount++;
@@ -903,7 +955,6 @@ export const sendBulkEmails = async (
       }
     }
 
-    // Send admin summary if requested
     if (sendCopyToAdmin && successCount > 0) {
       const adminEmail = process.env.ADMIN_EMAIL || process.env.EMAIL_FROM;
       if (adminEmail) {
@@ -925,7 +976,7 @@ export const sendBulkEmails = async (
                   .filter((r) => r.success)
                   .map(
                     (r) =>
-                      `<li>${r.name} (${r.email}) - Location: ${r.location || "unknown"} - Sender: ${r.sender}</li>`,
+                      `<li>${r.name} (${r.email}) - Location: ${r.location || "unknown"} - Sender: ${r.sender} - Bills: ${r.billsIncluded || 0}</li>`,
                   )
                   .join("")}
               </ul>
@@ -947,7 +998,7 @@ export const sendBulkEmails = async (
             adminEmail,
             `[BULK EMAIL SUMMARY] ${subject}`,
             summaryHtml,
-            false, // isCustomerEmail
+            false,
           );
         } catch (adminError) {
           console.error("Failed to send admin summary:", adminError);
@@ -991,10 +1042,8 @@ export const saveEmailTemplate = async (
       });
     }
 
-    // Check if template with same name exists
     const existingTemplate = await EmailTemplate.findOne({ name });
     if (existingTemplate) {
-      // Update existing template
       existingTemplate.subject = subject;
       existingTemplate.message = message;
       existingTemplate.category = category || "general";
@@ -1012,7 +1061,6 @@ export const saveEmailTemplate = async (
       });
     }
 
-    // Create new template
     const newTemplate = new EmailTemplate({
       name,
       subject,
@@ -1066,7 +1114,6 @@ export const getEmailTemplates = async (
       .sort({ createdAt: -1 })
       .lean();
 
-    // Format to match frontend interface
     const formattedTemplates = templates.map((template) => ({
       id: template._id.toString(),
       name: template.name,
@@ -1117,7 +1164,6 @@ export const updateEmailTemplate = async (
       });
     }
 
-    // Check if new name conflicts with existing template (excluding current)
     if (name && name !== template.name) {
       const existingTemplate = await EmailTemplate.findOne({ name });
       if (existingTemplate && existingTemplate._id.toString() !== templateId) {
@@ -1186,7 +1232,7 @@ export const deleteEmailTemplate = async (
   }
 };
 
-// ==================== PREVIEW EMAIL ====================
+// ==================== PREVIEW EMAIL (SUPPORTS MULTIPLE BILLS) ====================
 export const previewEmail = async (
   req: AuthRequest,
   res: Response,
@@ -1200,18 +1246,18 @@ export const previewEmail = async (
       message,
       includeBilling,
       applicationId,
-      billId,
+      // CHANGED: support multiple bill IDs
+      billIds,
       useAdminSender,
     } = req.body;
 
     let customerData = null;
-    let billingData = null;
+    let billingDataArray: any[] = [];
     let location = "";
 
     if (applicationId) {
       customerData = await Application.findOne({ applicationId }).lean();
       if (customerData) {
-        // Get location from buildingName directly
         if (customerData.buildingName) {
           const buildingName = customerData.buildingName.toLowerCase().trim();
           if (buildingName.includes("breeze")) {
@@ -1223,7 +1269,6 @@ export const previewEmail = async (
             location = "sil";
           }
         }
-        // If no location, try buildingId
         if (!location && customerData.buildingId) {
           const Building = require("../models/Building").default;
           const building = await Building.findById(
@@ -1248,16 +1293,25 @@ export const previewEmail = async (
       }
     }
 
-    if (includeBilling && billId) {
-      billingData = await Billing.findById(billId).lean();
-      if (billingData) {
+    if (
+      includeBilling &&
+      billIds &&
+      Array.isArray(billIds) &&
+      billIds.length > 0
+    ) {
+      const bills = await Billing.find({ _id: { $in: billIds } }).lean();
+      billingDataArray = bills;
+
+      if (billingDataArray.length > 0) {
         const frontendUrl =
           process.env.FRONTEND_URL || "https://www.misterfyber.com";
-        billingData.paymentLink = `${frontendUrl}/billing/${billingData._id}`;
+        billingDataArray = billingDataArray.map((bill) => ({
+          ...bill,
+          paymentLink: `${frontendUrl}/billing/${bill._id}`,
+        }));
       }
     }
 
-    // Determine sender info for preview
     let senderInfo = "";
     if (useAdminSender) {
       senderInfo = "Sent from: Admin (admin@misterfyber.com)";
@@ -1271,8 +1325,8 @@ export const previewEmail = async (
     const previewHtml = generateEmailPreview(
       subject,
       message,
-      includeBilling,
-      billingData,
+      includeBilling && billingDataArray.length > 0,
+      billingDataArray,
       customerData,
       senderInfo,
     );
@@ -1285,6 +1339,11 @@ export const previewEmail = async (
         message,
         location: location || "unknown",
         senderInfo: senderInfo,
+        billsIncluded: billingDataArray.length,
+        totalAmount: billingDataArray.reduce(
+          (sum, bill) => sum + (bill.total || 0),
+          0,
+        ),
       },
     });
   } catch (error) {
@@ -1303,7 +1362,6 @@ export const sendReminderToUnpaid = async (
   try {
     const { customMessage, includeDueDateReminder, useAdminSender } = req.body;
 
-    // Check if email service is configured
     const isConfigured = emailService.isConfigured();
     if (!isConfigured && process.env.NODE_ENV !== "development") {
       return res.status(500).json({
@@ -1320,7 +1378,6 @@ export const sendReminderToUnpaid = async (
       `📧 Reminder to Unpaid - Using admin sender: ${useAdminSender ? "YES" : "NO"}`,
     );
 
-    // Find all applications with unpaid bills
     const unpaidBills = await Billing.find({
       status: { $in: ["sent", "overdue"] },
       isInstallationBill: false,
@@ -1344,7 +1401,6 @@ export const sendReminderToUnpaid = async (
       const application = await Application.findOne({ applicationId }).lean();
       if (!application || !application.email) continue;
 
-      // Get location from buildingName directly
       let location = "";
       if (application.buildingName) {
         const buildingName = application.buildingName.toLowerCase().trim();
@@ -1403,7 +1459,6 @@ export const sendReminderToUnpaid = async (
         reminderMessage += `\n\nYou have ${customerBills.length} unpaid bill(s) totaling ₱${totalAmount.toLocaleString()}.`;
       }
 
-      // Determine sender info
       let senderInfo = "";
       if (useAdminSender) {
         senderInfo = "Sent from: Admin (admin@misterfyber.com)";
@@ -1418,7 +1473,7 @@ export const sendReminderToUnpaid = async (
         "Payment Reminder - Unpaid Bill(s)",
         reminderMessage,
         true,
-        customerBills[0],
+        customerBills,
         application,
         senderInfo,
       );
@@ -1442,8 +1497,8 @@ export const sendReminderToUnpaid = async (
               application.email,
               `⚠️ Payment Reminder - ${customerBills.length} Unpaid Bill(s)`,
               emailHtml,
-              true, // isCustomerEmail
-              location, // location
+              true,
+              location,
               {
                 useAdminSender: useAdminSender === true,
               },
@@ -1472,7 +1527,8 @@ export const sendReminderToUnpaid = async (
         recipientCount: 1,
         includeBilling: true,
         billType: "unpaid",
-        billId: customerBills[0]?._id,
+        billIds: customerBills.map((b) => b._id),
+        billCount: customerBills.length,
         error:
           emailError || (emailSent ? undefined : "Failed to send reminder"),
         sentBy: req.user?.username || req.user?.email || "Admin",
@@ -1563,7 +1619,6 @@ export const getSentRecords = async (
       .limit(200)
       .lean();
 
-    // Transform to match frontend interface
     const formattedRecords = records.map((record) => ({
       id: record._id.toString(),
       applicationId: record.applicationId,
@@ -1577,6 +1632,7 @@ export const getSentRecords = async (
       recipientCount: record.recipientCount || 1,
       includeBilling: record.includeBilling,
       billType: record.billType,
+      billCount: (record as any).billCount || 0,
       error: record.error,
       senderType: (record as any).senderType || "collection",
       location: (record as any).location || "unknown",
