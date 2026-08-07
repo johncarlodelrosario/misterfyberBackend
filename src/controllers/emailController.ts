@@ -1,4 +1,3 @@
-// backend/src/controllers/emailController.ts
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import Application from "../models/Application";
@@ -164,6 +163,7 @@ export const getCustomersForEmail = async (
       query.status = status;
     }
 
+    // Make sure we get all applications with buildingName
     const applications = await Application.find(query)
       .select(
         "firstName lastName email phoneNumber applicationId status buildingName buildingId",
@@ -220,10 +220,12 @@ export const getCustomersForEmail = async (
           ? enhancedCustomers.filter((c) => !c.hasBilling)
           : enhancedCustomers;
 
+    // Always return fresh data - no cache on backend
     res.status(200).json({
       success: true,
       data: filteredCustomers,
       total: filteredCustomers.length,
+      timestamp: new Date().toISOString(),
     });
   } catch (error) {
     next(error);
