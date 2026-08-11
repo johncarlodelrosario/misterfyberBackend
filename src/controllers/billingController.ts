@@ -1973,7 +1973,7 @@ export const getAllBills = async (
   }
 };
 
-// ==================== MARK INSTALLATION BILL AS PAID ====================
+// ==================== MARK INSTALLATION BILL AS PAID - FIXED ====================
 export const markInstallationBillAsPaid = async (
   req: AuthRequest,
   res: Response,
@@ -1989,6 +1989,7 @@ export const markInstallationBillAsPaid = async (
     const { referenceNumber, notes } = req.body;
     const adminId = req.user?._id;
 
+    // 1. FIND the installation bill
     const installationBill = await Billing.findById(billId).session(session);
     if (!installationBill) {
       await session.abortTransaction();
@@ -2013,13 +2014,15 @@ export const markInstallationBillAsPaid = async (
       });
     }
 
+    // 2. GET the application
     let application = null;
     if (installationBill.applicationId) {
       application = await Application.findOne({
         applicationId: installationBill.applicationId,
-      }).lean();
+      }).session(session);
     }
 
+    // 3. CREATE payment record
     const paymentData: any = {
       amount: installationBill.total,
       paymentMethod: "manual",
@@ -2045,6 +2048,7 @@ export const markInstallationBillAsPaid = async (
 
     const payment = await Payment.create([paymentData], { session });
 
+    // 4. UPDATE the bill to paid
     await Billing.updateOne(
       { _id: installationBill._id },
       {
@@ -2058,6 +2062,7 @@ export const markInstallationBillAsPaid = async (
       { session },
     );
 
+    // 5. UPDATE the invoice if exists
     const invoice = await Invoice.findOne({
       billingId: installationBill._id,
     }).session(session);
@@ -2068,32 +2073,47 @@ export const markInstallationBillAsPaid = async (
       await invoice.save({ session });
     }
 
-    const billingCycle = await BillingCycle.findById(
-      installationBill.billingCycleId,
-    ).session(session);
-    if (billingCycle) {
-      billingCycle.installationFeePaid = true;
-      billingCycle.paymentHistory = billingCycle.paymentHistory || [];
-      billingCycle.paymentHistory.push({
-        billingId: installationBill._id,
-        amount: installationBill.total,
-        paidAt: new Date(),
-      });
-      await billingCycle.save({ session });
+    // 6. UPDATE the billing cycle - CRITICAL FIX!
+    if (installationBill.billingCycleId) {
+      await BillingCycle.updateOne(
+        { _id: installationBill.billingCycleId },
+        {
+          $set: {
+            installationFeePaid: true,
+          },
+          $push: {
+            paymentHistory: {
+              billingId: installationBill._id,
+              amount: installationBill.total,
+              paidAt: new Date(),
+            },
+          },
+        },
+        { session },
+      );
     }
 
+    // 7. UPDATE the application - CRITICAL FIX!
     if (application) {
       await Application.updateOne(
         { applicationId: application.applicationId },
-        { $set: { installationFeePaid: true } },
+        {
+          $set: {
+            installationFeePaid: true,
+            installationFeePaidAt: new Date(),
+          },
+        },
         { session },
       );
     }
 
     await session.commitTransaction();
 
-    const location = await getLocationFromEntity(application);
+    // 8. CLEAR ALL CACHES
+    clearAllCache();
 
+    // 9. SEND confirmation email
+    const location = await getLocationFromEntity(application);
     try {
       if (application && application.email) {
         const collectionEmail = getCollectionEmailByLocation(location);
@@ -2122,8 +2142,6 @@ export const markInstallationBillAsPaid = async (
       );
     }
 
-    clearAllCache();
-
     res.status(200).json({
       success: true,
       message: `Installation bill ${installationBill.invoiceNumber} marked as paid`,
@@ -2131,6 +2149,7 @@ export const markInstallationBillAsPaid = async (
         billId: installationBill._id,
         invoiceNumber: installationBill.invoiceNumber,
         paymentId: payment[0]._id,
+        installationFeePaid: true,
       },
     });
   } catch (error) {
@@ -3171,7 +3190,6 @@ export const autoGenerateMonthlyBills = async (
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // Get the next month - ALWAYS generate for the next month
     const nextMonth = getStartOfNextMonth(today);
     const nextMonthEnd = getEndOfMonth(nextMonth);
     const dueDate = getDueDateForMonthly(nextMonth, settings);
@@ -3181,7 +3199,6 @@ export const autoGenerateMonthlyBills = async (
     );
     console.log(`📅 Today is ${formatDateForDisplay(today)}`);
 
-    // Find all active billing cycles with pro-rated paid
     const billingCycles = await BillingCycle.find({
       status: "active",
       proRatedPaid: true,
@@ -3215,7 +3232,6 @@ export const autoGenerateMonthlyBills = async (
         continue;
       }
 
-      // Check if bill already exists for next month using year and month
       const nextMonthYear = nextMonth.getFullYear();
       const nextMonthMonth = nextMonth.getMonth();
 
@@ -3306,7 +3322,6 @@ export const manuallyGenerateEarlyBill = async (
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // Get next month's billing period
     const nextMonthStart = getStartOfNextMonth(today);
     const nextMonthEnd = getEndOfMonth(nextMonthStart);
     const dueDate = getDueDateForMonthly(nextMonthStart, settings);
@@ -3316,7 +3331,6 @@ export const manuallyGenerateEarlyBill = async (
     );
     console.log(`📅 Today is ${formatDateForDisplay(today)}`);
 
-    // Find the application
     const application = await Application.findOne({ applicationId })
       .populate("planId")
       .lean();
@@ -3328,7 +3342,6 @@ export const manuallyGenerateEarlyBill = async (
       });
     }
 
-    // Find the billing cycle
     const billingCycle = await BillingCycle.findOne({
       applicationId: application.applicationId,
       status: "active",
@@ -3352,7 +3365,6 @@ export const manuallyGenerateEarlyBill = async (
       });
     }
 
-    // Check if bill already exists for next month using year and month
     const nextMonthYear = nextMonthStart.getFullYear();
     const nextMonthMonth = nextMonthStart.getMonth();
 
@@ -3380,7 +3392,6 @@ export const manuallyGenerateEarlyBill = async (
       });
     }
 
-    // Generate the early bill
     const newBill = await createMonthlyBill(
       application,
       billingCycle._id,
@@ -3518,7 +3529,6 @@ export const getApplicationCurrentBilling = async (
 
     const needsFirstPayment = billingCycle.proRatedPaid === false;
 
-    // Check for early generated next month bill
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const nextMonthStart = getStartOfNextMonth(today);
