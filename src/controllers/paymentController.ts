@@ -1111,6 +1111,9 @@ export const getAllPaymentsAdmin = async (
     const status = req.query.status as string;
     const paymentType = req.query.paymentType as string;
     const search = req.query.search as string;
+    const buildingId = req.query.buildingId as string;
+    const startDate = req.query.startDate as string;
+    const endDate = req.query.endDate as string;
 
     let query: any = {};
     if (status && status !== "all" && status !== "") {
@@ -1118,6 +1121,23 @@ export const getAllPaymentsAdmin = async (
     }
     if (paymentType && paymentType !== "all" && paymentType !== "") {
       query.paymentType = paymentType;
+    }
+
+    // Date range filter
+    if (startDate && endDate) {
+      const start = new Date(startDate);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      query.createdAt = { $gte: start, $lte: end };
+    } else if (startDate) {
+      const start = new Date(startDate);
+      start.setHours(0, 0, 0, 0);
+      query.createdAt = { $gte: start };
+    } else if (endDate) {
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      query.createdAt = { $lte: end };
     }
 
     if (search) {
@@ -1133,7 +1153,7 @@ export const getAllPaymentsAdmin = async (
       Payment.find(query)
         .populate(
           "userId",
-          "firstName lastName email username phoneNumber status",
+          "firstName lastName email username phoneNumber status buildingId",
         )
         .populate(
           "billingId",
@@ -1145,6 +1165,60 @@ export const getAllPaymentsAdmin = async (
         .lean(),
       Payment.countDocuments(query),
     ]);
+
+    // Get all building IDs from payments and users
+    const buildingIds = new Set<string>();
+    for (const payment of payments) {
+      // Check userId.buildingId
+      if (payment.userId && typeof payment.userId === "object") {
+        const user = payment.userId as any;
+        if (user.buildingId) {
+          buildingIds.add(user.buildingId);
+        }
+      }
+      // Check billingId for building info
+      if (payment.billingId && typeof payment.billingId === "object") {
+        const billing = payment.billingId as any;
+        if (billing.buildingId) {
+          buildingIds.add(billing.buildingId);
+        }
+      }
+    }
+
+    // Fetch building details
+    let buildingMap = new Map();
+    if (buildingIds.size > 0) {
+      const buildings = await Application.aggregate([
+        { $match: { buildingId: { $in: Array.from(buildingIds) } } },
+        {
+          $group: {
+            _id: "$buildingId",
+            buildingName: { $first: "$buildingName" },
+          },
+        },
+      ]);
+      buildings.forEach((b: any) => {
+        buildingMap.set(b._id, b.buildingName || "Unknown Building");
+      });
+    }
+
+    // If building filter is applied, filter payments by building
+    let filteredPayments = payments;
+    if (buildingId && buildingId !== "all" && buildingId !== "") {
+      filteredPayments = payments.filter((payment) => {
+        // Check if user has buildingId
+        if (payment.userId && typeof payment.userId === "object") {
+          const user = payment.userId as any;
+          if (user.buildingId === buildingId) return true;
+        }
+        // Check if billing has buildingId
+        if (payment.billingId && typeof payment.billingId === "object") {
+          const billing = payment.billingId as any;
+          if (billing.buildingId === buildingId) return true;
+        }
+        return false;
+      });
+    }
 
     const [
       totalStats,
@@ -1210,7 +1284,7 @@ export const getAllPaymentsAdmin = async (
       ]),
     ]);
 
-    const applicationIds = payments
+    const applicationIds = filteredPayments
       .filter((p) => p.applicationId)
       .map((p) => p.applicationId)
       .filter((value, index, self) => self.indexOf(value) === index);
@@ -1229,6 +1303,14 @@ export const getAllPaymentsAdmin = async (
     const enrichPaymentWithAppData = (payment: any) => {
       const enriched: any = { ...payment };
 
+      // Add building name if available
+      if (payment.userId && typeof payment.userId === "object") {
+        const user = payment.userId as any;
+        if (user.buildingId && buildingMap.has(user.buildingId)) {
+          enriched.buildingName = buildingMap.get(user.buildingId);
+        }
+      }
+
       if (payment.applicationId && applicationMap.has(payment.applicationId)) {
         const app = applicationMap.get(payment.applicationId);
         enriched.application = {
@@ -1245,12 +1327,18 @@ export const getAllPaymentsAdmin = async (
           installationFeePaid: (app as any).installationFeePaid || false,
           applicantName: `${app.firstName || ""} ${app.lastName || ""}`.trim(),
           fullName: `${app.firstName || ""} ${app.lastName || ""}`.trim(),
+          buildingId: (app as any).buildingId,
+          buildingName: (app as any).buildingName || "",
         };
         if (!enriched.customerName || enriched.customerName === "") {
           enriched.customerName =
             `${app.firstName || ""} ${app.lastName || ""}`.trim();
           enriched.customerEmail = app.email || "";
           enriched.customerPhone = app.phoneNumber || "";
+        }
+        // Get building name from application
+        if ((app as any).buildingName) {
+          enriched.buildingName = (app as any).buildingName;
         }
       }
 
@@ -1268,12 +1356,17 @@ export const getAllPaymentsAdmin = async (
           phoneNumber: user.phoneNumber || "",
           username: user.username || "",
           status: user.status || "",
+          buildingId: user.buildingId || "",
         };
         if (!enriched.customerName || enriched.customerName === "") {
           enriched.customerName =
             `${user.firstName || ""} ${user.lastName || ""}`.trim();
           enriched.customerEmail = user.email || "";
           enriched.customerPhone = user.phoneNumber || "";
+        }
+        // Get building name from user's buildingId
+        if (user.buildingId && buildingMap.has(user.buildingId)) {
+          enriched.buildingName = buildingMap.get(user.buildingId);
         }
       }
 
@@ -1290,14 +1383,14 @@ export const getAllPaymentsAdmin = async (
       return enriched;
     };
 
-    const enrichedPayments = payments.map(enrichPaymentWithAppData);
+    const enrichedPayments = filteredPayments.map(enrichPaymentWithAppData);
 
     res.status(200).json({
       success: true,
       data: enrichedPayments,
-      total,
+      total: filteredPayments.length,
       page,
-      totalPages: Math.ceil(total / limit),
+      totalPages: Math.ceil(filteredPayments.length / limit),
       stats: {
         total: totalStats[0]?.total || 0,
         totalCount: totalStats[0]?.count || 0,
@@ -1534,6 +1627,7 @@ export const getInstallationPaymentSummary = async (
   }
 };
 
+// ==================== DELETE PAYMENT (ADMIN ONLY) ====================
 // @desc    Delete payment (Admin only)
 // @route   DELETE /api/payments/:id
 // @access  Private/Admin
@@ -1555,6 +1649,9 @@ export const deletePayment = async (
       return res.status(404).json({ message: "Payment not found" });
     }
 
+    // Check if payment is already completed - warn but allow deletion
+    const isCompleted = payment.status === "completed";
+
     const paymentData = {
       _id: payment._id,
       amount: payment.amount,
@@ -1566,6 +1663,24 @@ export const deletePayment = async (
       createdAt: payment.createdAt,
     };
 
+    // If payment is completed, also remove the payment reference from billing
+    if (isCompleted && payment.billingId) {
+      try {
+        const billing = await Billing.findById(payment.billingId);
+        if (billing) {
+          billing.paymentId = undefined;
+          billing.status = "pending_confirmation";
+          billing.paidAt = undefined;
+          if (billing.isInstallationBill || billing.installationFee > 0) {
+            billing.installationFeePaid = false;
+          }
+          await billing.save();
+        }
+      } catch (error) {
+        console.error("Error updating billing after payment deletion:", error);
+      }
+    }
+
     await Payment.findByIdAndDelete(id);
 
     res.status(200).json({
@@ -1575,6 +1690,88 @@ export const deletePayment = async (
     });
   } catch (error) {
     console.error("Error deleting payment:", error);
+    next(error);
+  }
+};
+
+// ==================== BULK DELETE PAYMENTS (ADMIN ONLY) ====================
+// @desc    Bulk delete payments by customer (Admin only)
+// @route   DELETE /api/payments/bulk/customer/:customerId
+// @access  Private/Admin
+export const bulkDeleteCustomerPayments = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const { customerId } = req.params;
+    const { deleteAll } = req.body;
+
+    if (!customerId) {
+      return res.status(400).json({ message: "Customer ID is required" });
+    }
+
+    // Build query to find all payments for this customer
+    const query: any = {
+      $or: [
+        { applicationId: customerId },
+        { customerEmail: customerId },
+        { "paymentDetails.gatewayResponse.applicationId": customerId },
+      ],
+    };
+
+    // If deleteAll is true, delete all payments regardless of status
+    // Otherwise, only delete pending payments
+    if (!deleteAll) {
+      query.status = "pending";
+    }
+
+    const payments = await Payment.find(query);
+
+    if (payments.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "No payments found for this customer",
+      });
+    }
+
+    const paymentIds = payments.map((p) => p._id);
+    const paymentRefs = payments.map((p) => p.referenceNumber);
+
+    // Delete all payments
+    const result = await Payment.deleteMany({ _id: { $in: paymentIds } });
+
+    // Also update any billing records that reference these payments
+    for (const payment of payments) {
+      if (payment.billingId) {
+        try {
+          const billing = await Billing.findById(payment.billingId);
+          if (billing) {
+            billing.paymentId = undefined;
+            billing.status = "pending_confirmation";
+            billing.paidAt = undefined;
+            if (billing.isInstallationBill || billing.installationFee > 0) {
+              billing.installationFeePaid = false;
+            }
+            await billing.save();
+          }
+        } catch (error) {
+          console.error("Error updating billing after bulk delete:", error);
+        }
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      message: `Deleted ${result.deletedCount} payments for customer ${customerId}`,
+      data: {
+        deletedCount: result.deletedCount,
+        paymentIds: paymentIds,
+        paymentRefs: paymentRefs,
+      },
+    });
+  } catch (error) {
+    console.error("Error bulk deleting customer payments:", error);
     next(error);
   }
 };
@@ -1594,4 +1791,5 @@ export default {
   getAllPaymentsAdmin,
   getInstallationPaymentSummary,
   deletePayment,
+  bulkDeleteCustomerPayments,
 };

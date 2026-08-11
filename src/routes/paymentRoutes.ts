@@ -1,4 +1,4 @@
-// backend/src/routes/paymentRoutes.ts
+// backend/src/routes/paymentRoutes.ts - COMPLETE WITH DELETE ROUTES
 
 import express from "express";
 import { body } from "express-validator";
@@ -17,6 +17,7 @@ import {
   getAllPaymentsAdmin,
   getInstallationPaymentSummary,
   deletePayment,
+  bulkDeleteCustomerPayments,
 } from "../controllers/paymentController";
 import { protect, authorize } from "../middleware/auth";
 
@@ -91,12 +92,20 @@ router.post(
   refundPayment,
 );
 
-// DELETE PAYMENT - Admin only
+// DELETE ROUTES
 router.delete(
   "/:id",
   protect,
   authorize("super_admin", "admin", "staff"),
   deletePayment,
+);
+
+// BULK DELETE - Delete all payments for a customer
+router.delete(
+  "/bulk/customer/:customerId",
+  protect,
+  authorize("super_admin", "admin", "staff"),
+  bulkDeleteCustomerPayments,
 );
 
 export default router;
