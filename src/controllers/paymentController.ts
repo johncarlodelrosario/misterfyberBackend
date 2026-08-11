@@ -1,4 +1,4 @@
-// backend/src/controllers/paymentController.ts - COMPLETE FIXED VERSION
+// backend/src/controllers/paymentController.ts - COMPLETE WITH BULK DELETE
 
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
@@ -1707,6 +1707,9 @@ export const bulkDeleteCustomerPayments = async (
     const { customerId } = req.params;
     const { deleteAll } = req.body;
 
+    console.log(`🗑️ Bulk delete payments for customer: ${customerId}`);
+    console.log(`   deleteAll: ${deleteAll}`);
+
     if (!customerId) {
       return res.status(400).json({ message: "Customer ID is required" });
     }
@@ -1726,20 +1729,26 @@ export const bulkDeleteCustomerPayments = async (
       query.status = "pending";
     }
 
+    console.log(`📋 Query:`, JSON.stringify(query, null, 2));
+
     const payments = await Payment.find(query);
 
     if (payments.length === 0) {
       return res.status(404).json({
         success: false,
-        message: "No payments found for this customer",
+        message: `No payments found for customer: ${customerId}`,
       });
     }
+
+    console.log(`📊 Found ${payments.length} payments to delete`);
 
     const paymentIds = payments.map((p) => p._id);
     const paymentRefs = payments.map((p) => p.referenceNumber);
 
     // Delete all payments
     const result = await Payment.deleteMany({ _id: { $in: paymentIds } });
+
+    console.log(`✅ Deleted ${result.deletedCount} payments`);
 
     // Also update any billing records that reference these payments
     for (const payment of payments) {
@@ -1754,6 +1763,7 @@ export const bulkDeleteCustomerPayments = async (
               billing.installationFeePaid = false;
             }
             await billing.save();
+            console.log(`🔄 Updated billing: ${billing._id}`);
           }
         } catch (error) {
           console.error("Error updating billing after bulk delete:", error);

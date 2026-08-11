@@ -1,4 +1,4 @@
-// backend/src/routes/paymentRoutes.ts - COMPLETE WITH DELETE ROUTES
+// backend/src/routes/paymentRoutes.ts - COMPLETE WITH BULK DELETE ROUTE
 
 import express from "express";
 import { body } from "express-validator";
@@ -92,7 +92,8 @@ router.post(
   refundPayment,
 );
 
-// DELETE ROUTES
+// ==================== DELETE ROUTES ====================
+// Delete single payment
 router.delete(
   "/:id",
   protect,
@@ -101,6 +102,7 @@ router.delete(
 );
 
 // BULK DELETE - Delete all payments for a customer
+// IMPORTANT: This route MUST be placed BEFORE /:id route to avoid conflict
 router.delete(
   "/bulk/customer/:customerId",
   protect,
