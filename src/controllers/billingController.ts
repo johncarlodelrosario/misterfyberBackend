@@ -1989,7 +1989,6 @@ export const markInstallationBillAsPaid = async (
     const { referenceNumber, notes } = req.body;
     const adminId = req.user?._id;
 
-    // 1. FIND the installation bill
     const installationBill = await Billing.findById(billId).session(session);
     if (!installationBill) {
       await session.abortTransaction();
@@ -2014,7 +2013,6 @@ export const markInstallationBillAsPaid = async (
       });
     }
 
-    // 2. GET the application
     let application = null;
     if (installationBill.applicationId) {
       application = await Application.findOne({
@@ -2022,7 +2020,6 @@ export const markInstallationBillAsPaid = async (
       }).session(session);
     }
 
-    // 3. CREATE payment record
     const paymentData: any = {
       amount: installationBill.total,
       paymentMethod: "manual",
@@ -2048,7 +2045,7 @@ export const markInstallationBillAsPaid = async (
 
     const payment = await Payment.create([paymentData], { session });
 
-    // 4. UPDATE the bill to paid
+    // CRITICAL FIX: Update bill status to "paid"
     await Billing.updateOne(
       { _id: installationBill._id },
       {
@@ -2062,7 +2059,6 @@ export const markInstallationBillAsPaid = async (
       { session },
     );
 
-    // 5. UPDATE the invoice if exists
     const invoice = await Invoice.findOne({
       billingId: installationBill._id,
     }).session(session);
@@ -2073,7 +2069,6 @@ export const markInstallationBillAsPaid = async (
       await invoice.save({ session });
     }
 
-    // 6. UPDATE the billing cycle - CRITICAL FIX!
     if (installationBill.billingCycleId) {
       await BillingCycle.updateOne(
         { _id: installationBill.billingCycleId },
@@ -2093,7 +2088,6 @@ export const markInstallationBillAsPaid = async (
       );
     }
 
-    // 7. UPDATE the application - CRITICAL FIX!
     if (application) {
       await Application.updateOne(
         { applicationId: application.applicationId },
@@ -2109,10 +2103,8 @@ export const markInstallationBillAsPaid = async (
 
     await session.commitTransaction();
 
-    // 8. CLEAR ALL CACHES
     clearAllCache();
 
-    // 9. SEND confirmation email
     const location = await getLocationFromEntity(application);
     try {
       if (application && application.email) {
@@ -3422,6 +3414,38 @@ export const manuallyGenerateEarlyBill = async (
   }
 };
 
+// ==================== CHECK FOR NEW CUSTOMERS ====================
+export const checkForNewCustomers = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    // Find applications that are approved but don't have billing started
+    const newCustomers = await Application.find({
+      status: "approved",
+      billingStarted: { $ne: true },
+    })
+      .select(
+        "firstName lastName email applicationId planId buildingName phoneNumber",
+      )
+      .populate("planId", "name price")
+      .lean();
+
+    res.status(200).json({
+      success: true,
+      data: newCustomers,
+      total: newCustomers.length,
+    });
+  } catch (error) {
+    console.error("Error checking for new customers:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to check for new customers",
+    });
+  }
+};
+
 // ==================== AUTO SUSPEND OVERDUE ====================
 export const autoSuspendOverdue = async (req?: AuthRequest, res?: Response) => {
   try {
@@ -4632,38 +4656,6 @@ export const checkForUpdates = async (
   } catch (error) {
     console.error("Error in checkForUpdates:", error);
     next(error);
-  }
-};
-
-// ==================== CHECK FOR NEW CUSTOMERS ====================
-export const checkForNewCustomers = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  try {
-    // Find applications that are approved but don't have billing started
-    const newCustomers = await Application.find({
-      status: "approved",
-      billingStarted: { $ne: true },
-    })
-      .select(
-        "firstName lastName email applicationId planId buildingName phoneNumber",
-      )
-      .populate("planId", "name price")
-      .lean();
-
-    res.status(200).json({
-      success: true,
-      data: newCustomers,
-      total: newCustomers.length,
-    });
-  } catch (error) {
-    console.error("Error checking for new customers:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to check for new customers",
-    });
   }
 };
 
