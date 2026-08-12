@@ -4635,6 +4635,38 @@ export const checkForUpdates = async (
   }
 };
 
+// ==================== CHECK FOR NEW CUSTOMERS ====================
+export const checkForNewCustomers = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    // Find applications that are approved but don't have billing started
+    const newCustomers = await Application.find({
+      status: "approved",
+      billingStarted: { $ne: true },
+    })
+      .select(
+        "firstName lastName email applicationId planId buildingName phoneNumber",
+      )
+      .populate("planId", "name price")
+      .lean();
+
+    res.status(200).json({
+      success: true,
+      data: newCustomers,
+      total: newCustomers.length,
+    });
+  } catch (error) {
+    console.error("Error checking for new customers:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to check for new customers",
+    });
+  }
+};
+
 // ==================== EXPORT DEFAULT ====================
 export default {
   startBilling,
@@ -4676,4 +4708,5 @@ export default {
   getDashboardData,
   checkForUpdates,
   manuallyGenerateEarlyBill,
+  checkForNewCustomers,
 };

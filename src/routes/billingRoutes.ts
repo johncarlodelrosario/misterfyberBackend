@@ -1,4 +1,4 @@
-// backend/src/routes/billingRoutes.ts - UPDATED WITH EARLY BILL ROUTES
+// backend/src/routes/billingRoutes.ts - COMPLETE FIXED VERSION
 
 import express from "express";
 import { optionalAuth, adminMiddleware } from "../middleware/auth";
@@ -40,7 +40,8 @@ import {
   testLocationEmail,
   getDashboardData,
   checkForUpdates,
-  manuallyGenerateEarlyBill, // NEW
+  manuallyGenerateEarlyBill,
+  checkForNewCustomers,
 } from "../controllers/billingController";
 
 const router = express.Router();
@@ -64,6 +65,7 @@ router.get("/pending-pro-rated", getPendingProRatedBills);
 router.get("/pending-installation", getPendingInstallationBills);
 router.get("/pending-activations", getPendingActivations);
 router.get("/unpaid-bills-report", adminMiddleware, getUnpaidBillsReport);
+router.get("/check-new-customers", adminMiddleware, checkForNewCustomers);
 
 // ==================== LOCATION EMAIL ROUTES ====================
 router.get("/location/emails", adminMiddleware, getLocationEmails);
@@ -102,7 +104,7 @@ router.post(
   manuallyGenerateBillsForMonth,
 );
 router.post(
-  "/manually-generate-early-bill", // NEW: Route for manually generating early bill
+  "/manually-generate-early-bill",
   adminMiddleware,
   manuallyGenerateEarlyBill,
 );
