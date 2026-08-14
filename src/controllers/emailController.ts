@@ -68,7 +68,7 @@ function generateEmailPreview(
     }
   }
 
-  // CHANGED: Build billing section for multiple bills
+  // Build billing section for multiple bills
   let billingSection = "";
   if (includeBilling && billingDataArray && billingDataArray.length > 0) {
     const totalAmount = billingDataArray.reduce(
@@ -160,6 +160,7 @@ function generateEmailPreview(
 }
 
 // ==================== GET CUSTOMERS FOR EMAIL SELECTION ====================
+// FIXED: Added forceRefresh parameter and no-cache headers
 export const getCustomersForEmail = async (
   req: AuthRequest,
   res: Response,
@@ -168,7 +169,14 @@ export const getCustomersForEmail = async (
   if (!checkAdmin(req, res)) return;
 
   try {
-    const { search, status, hasBilling } = req.query;
+    const { search, status, hasBilling, forceRefresh } = req.query;
+
+    // Set no-cache headers to prevent browser caching
+    res.set({
+      "Cache-Control": "no-store, no-cache, must-revalidate, private",
+      Pragma: "no-cache",
+      Expires: "0",
+    });
 
     let query: any = {};
 
@@ -185,12 +193,17 @@ export const getCustomersForEmail = async (
       query.status = status;
     }
 
+    // Always get all customers, no limit - ensure new customers appear
     const applications = await Application.find(query)
       .select(
         "firstName lastName email phoneNumber applicationId status buildingName buildingId",
       )
-      .limit(100)
-      .lean();
+      .lean()
+      .sort({ createdAt: -1 }); // Show newest first
+
+    console.log(
+      `📊 Found ${applications.length} applications for email selection`,
+    );
 
     const enhancedCustomers = await Promise.all(
       applications.map(async (app) => {
@@ -227,6 +240,8 @@ export const getCustomersForEmail = async (
           lastBillAmount: lastBill?.total || 0,
           lastBillStatus: lastBill?.status || null,
           location: location,
+          // Add timestamp to help with debugging
+          _fetchedAt: new Date().toISOString(),
         };
       }),
     );
@@ -238,11 +253,21 @@ export const getCustomersForEmail = async (
           ? enhancedCustomers.filter((c) => !c.hasBilling)
           : enhancedCustomers;
 
+    console.log(
+      `✅ Returning ${filteredCustomers.length} customers (fresh data)`,
+    );
+
     res.status(200).json({
       success: true,
       data: filteredCustomers,
       total: filteredCustomers.length,
       timestamp: new Date().toISOString(),
+      // Add metadata to help identify fresh data
+      _meta: {
+        fetchedAt: new Date().toISOString(),
+        totalApplications: applications.length,
+        forceRefresh: forceRefresh === "true",
+      },
     });
   } catch (error) {
     next(error);
@@ -267,6 +292,13 @@ export const getCustomerBills = async (
       });
     }
 
+    // Set no-cache headers
+    res.set({
+      "Cache-Control": "no-store, no-cache, must-revalidate, private",
+      Pragma: "no-cache",
+      Expires: "0",
+    });
+
     const bills = await Billing.find({
       applicationId: applicationId,
     })
@@ -282,6 +314,7 @@ export const getCustomerBills = async (
       data: {
         customer,
         bills,
+        timestamp: new Date().toISOString(),
       },
     });
   } catch (error) {
@@ -306,7 +339,6 @@ export const sendManualEmail = async (
       subject,
       message,
       includeBilling,
-      // CHANGED: support multiple bill IDs
       billIds,
       sendCopyToAdmin,
       attachments,
@@ -406,7 +438,7 @@ export const sendManualEmail = async (
       `📍 Final location for ${applicationId}: ${location || "NOT FOUND"}`,
     );
 
-    // CHANGED: Fetch multiple bills
+    // Fetch multiple bills
     let billingDataArray: any[] = [];
     let selectedBillIds: string[] = [];
     if (
@@ -599,7 +631,6 @@ export const sendManualEmail = async (
       isBulk: false,
       recipientCount: 1,
       includeBilling: includeBilling || false,
-      // CHANGED: store bill IDs as array
       billIds: selectedBillIds,
       billCount: billingDataArray.length,
       error: emailError || (emailSent ? undefined : "Failed to send email"),
@@ -1096,6 +1127,13 @@ export const getEmailTemplates = async (
   try {
     const { category, search } = req.query;
 
+    // Set no-cache headers
+    res.set({
+      "Cache-Control": "no-store, no-cache, must-revalidate, private",
+      Pragma: "no-cache",
+      Expires: "0",
+    });
+
     let query: any = {};
 
     if (category && category !== "all") {
@@ -1246,7 +1284,6 @@ export const previewEmail = async (
       message,
       includeBilling,
       applicationId,
-      // CHANGED: support multiple bill IDs
       billIds,
       useAdminSender,
     } = req.body;
@@ -1599,6 +1636,13 @@ export const getSentRecords = async (
 
   try {
     const { applicationId, status, isBulk } = req.query;
+
+    // Set no-cache headers
+    res.set({
+      "Cache-Control": "no-store, no-cache, must-revalidate, private",
+      Pragma: "no-cache",
+      Expires: "0",
+    });
 
     let query: any = {};
 
