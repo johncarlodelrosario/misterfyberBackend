@@ -1,4 +1,4 @@
-// backend/src/app.ts - COMPLETE FIXED VERSION
+// backend/src/app.ts - COMPLETE FIXED VERSION WITH WEBSOCKET
 import express, { Application, Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import cors from "cors";
@@ -66,6 +66,10 @@ const allowedOrigins = [
 
 const app: Application = express();
 const server = createServer(app);
+
+// ============================================================
+// FIX: WEBSOCKET WITH PROPER PATH
+// ============================================================
 const io = new Server(server, {
   cors: {
     origin: allowedOrigins,
@@ -73,6 +77,9 @@ const io = new Server(server, {
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allowedHeaders: ["Content-Type", "Authorization", "Cookie"],
   },
+  path: "/billing-events",
+  transports: ["websocket", "polling"],
+  allowEIO3: true,
 });
 
 // ==================== MIDDLEWARES ====================
@@ -85,33 +92,23 @@ app.use(
   }),
 );
 
-// Enhanced CORS configuration - FIXED
+// Enhanced CORS configuration
 app.use(
   cors({
     origin: function (origin, callback) {
-      // Allow requests with no origin (like mobile apps or curl requests)
       if (!origin) return callback(null, true);
-
-      // Check if origin is in allowed list
       if (allowedOrigins.indexOf(origin) !== -1) {
         return callback(null, true);
       }
-
-      // Allow localhost in any environment for testing
       if (origin.includes("localhost") || origin.includes("127.0.0.1")) {
         return callback(null, true);
       }
-
-      // Allow Render domain
       if (origin.includes("render.com")) {
         return callback(null, true);
       }
-
-      // Allow Vercel domains
       if (origin.includes("vercel.app")) {
         return callback(null, true);
       }
-
       console.log("🔴 CORS blocked origin:", origin);
       callback(new Error("Not allowed by CORS"));
     },
@@ -132,7 +129,6 @@ app.use(
   }),
 );
 
-// Handle preflight requests - FIXED
 app.options("*", (req, res) => {
   const origin = req.headers.origin;
   if (origin && allowedOrigins.includes(origin)) {
@@ -241,7 +237,6 @@ app.use("/api/manual-email", manualEmailRoutes);
 app.use("/api/invoices", invoiceRoutes);
 
 // ==================== ERROR HANDLING ====================
-// 404 handler
 app.use((req: Request, res: Response) => {
   res.status(404).json({
     success: false,
@@ -249,7 +244,6 @@ app.use((req: Request, res: Response) => {
   });
 });
 
-// Global error handler
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   console.error("❌ Error:", err.stack);
   const status = (err as any).status || 500;
@@ -264,6 +258,17 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
 // ==================== SOCKET.IO ====================
 io.on("connection", (socket) => {
   console.log("🔌 New client connected:", socket.id);
+
+  socket.on("subscribe", (event) => {
+    console.log(`📡 Client ${socket.id} subscribed to:`, event);
+    socket.join(event);
+  });
+
+  socket.on("unsubscribe", (event) => {
+    console.log(`📡 Client ${socket.id} unsubscribed from:`, event);
+    socket.leave(event);
+  });
+
   socket.on("disconnect", () => {
     console.log("🔌 Client disconnected:", socket.id);
   });
@@ -276,18 +281,43 @@ const initializeDatabase = async () => {
       throw new Error("MONGODB_URI is not defined in environment variables");
     }
 
+    console.log(`🔗 Connecting to MongoDB...`);
+    console.log(
+      `   URI: ${process.env.MONGODB_URI.replace(/\/\/([^:]+):([^@]+)@/, "//***:***@")}`,
+    );
+
     await mongoose.connect(process.env.MONGODB_URI, {
       maxPoolSize: 10,
       minPoolSize: 2,
-      socketTimeoutMS: 45000,
-      connectTimeoutMS: 10000,
-      serverSelectionTimeoutMS: 5000,
+      socketTimeoutMS: 30000,
+      connectTimeoutMS: 30000,
+      serverSelectionTimeoutMS: 30000,
+      heartbeatFrequencyMS: 10000,
+      retryWrites: true,
+      retryReads: true,
+      family: 4,
+      maxIdleTimeMS: 30000,
+      waitQueueTimeoutMS: 10000,
     });
 
     console.log("✅ MongoDB connected successfully");
-    await ensureIndexes();
 
-    // Initialize default billing settings if not exists
+    mongoose.connection.on("error", (err) => {
+      console.error("❌ MongoDB connection error:", err);
+    });
+
+    mongoose.connection.on("disconnected", () => {
+      console.warn("⚠️ MongoDB disconnected");
+    });
+
+    mongoose.connection.on("reconnected", () => {
+      console.log("✅ MongoDB reconnected");
+    });
+
+    console.log("🔍 Creating/Ensuring database indexes for performance...");
+    await ensureIndexes();
+    console.log("✅ Database indexes verified");
+
     const settings = await BillingSettings.findOne();
     if (!settings) {
       await BillingSettings.create({
@@ -312,7 +342,8 @@ const initializeDatabase = async () => {
     }
   } catch (error) {
     console.error("❌ MongoDB connection error:", error);
-    process.exit(1);
+    console.log("⚠️ Will retry connection in 10 seconds...");
+    setTimeout(initializeDatabase, 10000);
   }
 };
 
@@ -320,7 +351,6 @@ const initializeDatabase = async () => {
 const initializeScheduledJobs = () => {
   console.log("🔄 Initializing scheduled billing jobs...");
 
-  // Run at 1 AM daily - generate bills
   cron.schedule("0 1 * * *", async () => {
     try {
       console.log("🔄 Running auto-generate monthly bills job...");
@@ -331,7 +361,6 @@ const initializeScheduledJobs = () => {
     }
   });
 
-  // Run at 2 AM daily - suspend overdue
   cron.schedule("0 2 * * *", async () => {
     try {
       console.log("🔄 Running auto-suspend overdue job...");

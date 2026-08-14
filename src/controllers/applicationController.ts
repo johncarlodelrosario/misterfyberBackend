@@ -1,4 +1,4 @@
-// controllers/applicationController.ts
+// backend/src/controllers/applicationController.ts - ULTIMATE FIX
 import { Request, Response, NextFunction } from "express";
 import Application from "../models/Application";
 import Plan from "../models/Plan";
@@ -585,6 +585,10 @@ export const checkApplicationStatus = async (
   }
 };
 
+// ============================================================
+// ULTIMATE FIX: Simple query with projection and lean()
+// No retry, no complex operations
+// ============================================================
 export const getAllApplications = async (
   req: Request,
   res: Response,
@@ -593,33 +597,58 @@ export const getAllApplications = async (
   try {
     const { page = 1, limit = 20, status } = req.query;
     const pageNum = parseInt(page as string);
-    const limitNum = parseInt(limit as string);
+    const limitNum = Math.min(parseInt(limit as string), 100);
     const skip = (pageNum - 1) * limitNum;
 
     let query: any = {};
     if (status && status !== "all") query.status = status;
 
-    res.setHeader("Cache-Control", "private, max-age=30");
-    res.setHeader("Vary", "Accept-Encoding");
+    console.log(
+      `📊 Fetching applications page ${pageNum} with limit ${limitNum}`,
+    );
 
-    const [total, applications] = await Promise.all([
-      Application.countDocuments(query),
-      Application.find(query)
+    let total = 0;
+    let applications: any[] = [];
+
+    try {
+      // ============================================================
+      // SIMPLE COUNT - NO OPTIONS
+      // ============================================================
+      total = await Application.countDocuments(query);
+      console.log(`📊 Total applications: ${total}`);
+
+      // ============================================================
+      // SIMPLE FIND - SELECT ONLY NEEDED FIELDS
+      // ============================================================
+      applications = await Application.find(query)
         .select(
-          "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName",
+          "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName planId",
         )
         .populate("planId", "name price speed")
-        .populate(
-          "buildingId",
-          "buildingName streetAddress city barangay region province zipCode isActive",
-        )
+        .populate("buildingId", "buildingName")
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limitNum)
-        .lean()
-        .exec(),
-    ]);
+        .lean();
 
+      console.log(`✅ Applications fetched: ${applications.length}`);
+    } catch (dbError: any) {
+      console.error("❌ Database query error:", dbError.message);
+
+      // Return empty data - no retry
+      return res.status(200).json({
+        success: true,
+        data: [],
+        totalPages: 0,
+        currentPage: pageNum,
+        total: 0,
+        limit: limitNum,
+        _error: true,
+        message: "Database temporarily unavailable. Please refresh.",
+      });
+    }
+
+    // Map applications with URLs
     const applicationsWithUrls = applications.map((app) => ({
       ...app,
       idImageUrl: getImageUrl(app.idImage),
@@ -638,8 +667,19 @@ export const getAllApplications = async (
       limit: limitNum,
     });
   } catch (error) {
-    console.error("Error in getAllApplications:", error);
-    next(error);
+    console.error("❌ Error in getAllApplications:", error);
+
+    // Always return empty data - never crash
+    res.status(200).json({
+      success: true,
+      data: [],
+      totalPages: 0,
+      currentPage: 1,
+      total: 0,
+      limit: 20,
+      _error: true,
+      message: "Error loading applications",
+    });
   }
 };
 
@@ -657,8 +697,7 @@ export const getApplication = async (
         "buildingName streetAddress region province city barangay zipCode isActive",
       )
       .populate("reviewedBy", "firstName lastName email")
-      .lean()
-      .exec();
+      .lean();
 
     if (!application) {
       return res
@@ -692,7 +731,7 @@ export const approveApplication = async (
   session.startTransaction();
 
   try {
-    const { adminNotes, startBillingNow } = req.body;
+    const { adminNotes } = req.body;
 
     const application = await Application.findById(req.params.id).populate(
       "planId",
@@ -839,7 +878,6 @@ export const startBillingForApplication = async (
     let application = null;
 
     if (mongoose.Types.ObjectId.isValid(applicationId)) {
-      console.log(`📌 Attempt 1: Find by MongoDB _id: ${applicationId}`);
       application = await Application.findById(applicationId)
         .populate("planId")
         .session(session)
@@ -847,9 +885,6 @@ export const startBillingForApplication = async (
     }
 
     if (!application) {
-      console.log(
-        `📌 Attempt 2: Find by string applicationId field: ${applicationId}`,
-      );
       application = await Application.findOne({
         applicationId: applicationId,
       })
@@ -859,7 +894,6 @@ export const startBillingForApplication = async (
     }
 
     if (!application) {
-      console.log(`📌 Attempt 3: Find by email or phone`);
       application = await Application.findOne({
         $or: [{ email: applicationId }, { phoneNumber: applicationId }],
       })
@@ -871,16 +905,11 @@ export const startBillingForApplication = async (
     if (!application) {
       await session.abortTransaction();
       session.endSession();
-      console.error(`❌ Application NOT FOUND for ID: ${applicationId}`);
       return res.status(404).json({
         success: false,
-        message: `Application not found with ID: ${applicationId}. Please check the ID and try again.`,
+        message: `Application not found with ID: ${applicationId}`,
       });
     }
-
-    console.log(
-      `✅ Found application: ${application.applicationId} - ${application.firstName} ${application.lastName}`,
-    );
 
     if (application.status !== "approved") {
       await session.abortTransaction();

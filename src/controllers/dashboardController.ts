@@ -1,4 +1,4 @@
-// backend/src/controllers/dashboardController.ts
+// backend/src/controllers/dashboardController.ts - COMPLETE FIXED WITH RETRY LOGIC
 import { Request, Response, NextFunction } from "express";
 import Billing from "../models/Billing";
 import BillingCycle from "../models/BillingCycle";
@@ -27,113 +27,160 @@ export const getDashboardData = async (
       return res.status(200).json({
         success: true,
         data: dashboardCache,
+        cached: true,
       });
     }
 
     console.log("🔄 Fetching fresh dashboard data...");
 
-    // Get buildings for reference
-    const buildings = await Building.find({}).lean();
+    // ==================== RETRY LOGIC WITH TIMEOUT ====================
+    let retries = 3;
+    let lastError: any = null;
 
-    // Run all queries in parallel
-    const [
-      billingCycles,
-      bills,
-      users,
-      applications,
-      pendingPayments,
-      customersWithoutAccounts,
-      pendingInstallationBills,
-      pendingProRated,
-      pendingActivations,
-    ] = await Promise.all([
-      // 1. Get all billing cycles
-      BillingCycle.find({})
-        .populate("planId", "name price")
-        .sort({ createdAt: -1 })
-        .limit(1000)
-        .lean(),
+    let billingCycles: any[] = [];
+    let bills: any[] = [];
+    let users: any[] = [];
+    let applications: any[] = [];
+    let pendingPayments: any[] = [];
+    let customersWithoutAccounts: any[] = [];
+    let pendingInstallationBills: any[] = [];
+    let pendingProRated: any[] = [];
+    let pendingActivations: any[] = [];
+    let buildings: any[] = [];
 
-      // 2. Get all unpaid bills
-      Billing.find({
-        status: { $in: ["sent", "overdue", "pending_confirmation"] },
-      })
-        .sort({ dueDate: 1 })
-        .limit(1000)
-        .lean(),
+    while (retries > 0) {
+      try {
+        console.log(`📊 Fetching dashboard data (attempt ${4 - retries}/3)...`);
 
-      // 3. Get all users
-      User.find({})
-        .select(
-          "firstName lastName email username phoneNumber status planId building unitNumber floor",
-        )
-        .populate("planId", "name price")
-        .limit(1000)
-        .lean(),
+        // Get buildings for reference
+        buildings = await Building.find({}).maxTimeMS(30000).lean();
 
-      // 4. Get all applications
-      Application.find({ status: { $in: ["approved", "pending"] } })
-        .select(
-          "firstName lastName email phoneNumber status applicationId planId buildingId buildingName unitNumber floor installationFee installationFeePaid billingStarted",
-        )
-        .populate("planId", "name price")
-        .populate("buildingId", "buildingName streetAddress city")
-        .limit(1000)
-        .lean(),
+        // Run all queries in parallel with timeout
+        const results = await Promise.all([
+          // 1. Get all billing cycles
+          BillingCycle.find({})
+            .populate("planId", "name price")
+            .sort({ createdAt: -1 })
+            .limit(1000)
+            .maxTimeMS(30000)
+            .lean(),
 
-      // 5. Get pending payments
-      Payment.find({ status: "pending" })
-        .sort({ createdAt: -1 })
-        .limit(100)
-        .lean(),
+          // 2. Get all unpaid bills
+          Billing.find({
+            status: { $in: ["sent", "overdue", "pending_confirmation"] },
+          })
+            .sort({ dueDate: 1 })
+            .limit(1000)
+            .maxTimeMS(30000)
+            .lean(),
 
-      // 6. Get customers without accounts
-      Application.find({
-        status: "approved",
-        $or: [
-          { registeredUserId: { $exists: false } },
-          { registeredUserId: null },
-        ],
-        billingStarted: { $ne: true },
-      })
-        .select("firstName lastName email applicationId planId buildingName")
-        .populate("planId", "name price")
-        .limit(100)
-        .lean(),
+          // 3. Get all users
+          User.find({})
+            .select(
+              "firstName lastName email username phoneNumber status planId building unitNumber floor",
+            )
+            .populate("planId", "name price")
+            .limit(1000)
+            .maxTimeMS(30000)
+            .lean(),
 
-      // 7. Get pending installation bills
-      Billing.find({
-        isInstallationBill: true,
-        installationFeePaid: false,
-        status: { $in: ["sent", "overdue"] },
-      })
-        .sort({ dueDate: 1 })
-        .limit(100)
-        .lean(),
+          // 4. Get all applications
+          Application.find({ status: { $in: ["approved", "pending"] } })
+            .select(
+              "firstName lastName email phoneNumber status applicationId planId buildingId buildingName unitNumber floor installationFee installationFeePaid billingStarted",
+            )
+            .populate("planId", "name price")
+            .populate("buildingId", "buildingName streetAddress city")
+            .limit(1000)
+            .maxTimeMS(30000)
+            .lean(),
 
-      // 8. Get pending pro-rated bills
-      Billing.find({
-        isProRated: true,
-        status: "pending_confirmation",
-        isInstallationBill: false,
-      })
-        .sort({ createdAt: -1 })
-        .limit(100)
-        .lean(),
+          // 5. Get pending payments
+          Payment.find({ status: "pending" })
+            .sort({ createdAt: -1 })
+            .limit(100)
+            .maxTimeMS(30000)
+            .lean(),
 
-      // 9. Get pending activations
-      BillingCycle.find({
-        status: "pending_activation",
-        proRatedPaid: true,
-        manualBillStart: false,
-      })
-        .populate("planId", "name price")
-        .sort({ proRatedPaidAt: -1 })
-        .limit(100)
-        .lean(),
-    ]);
+          // 6. Get customers without accounts
+          Application.find({
+            status: "approved",
+            $or: [
+              { registeredUserId: { $exists: false } },
+              { registeredUserId: null },
+            ],
+            billingStarted: { $ne: true },
+          })
+            .select(
+              "firstName lastName email applicationId planId buildingName",
+            )
+            .populate("planId", "name price")
+            .limit(100)
+            .maxTimeMS(30000)
+            .lean(),
 
-    // Build customers array (combine users and applications)
+          // 7. Get pending installation bills
+          Billing.find({
+            isInstallationBill: true,
+            installationFeePaid: false,
+            status: { $in: ["sent", "overdue"] },
+          })
+            .sort({ dueDate: 1 })
+            .limit(100)
+            .maxTimeMS(30000)
+            .lean(),
+
+          // 8. Get pending pro-rated bills
+          Billing.find({
+            isProRated: true,
+            status: "pending_confirmation",
+            isInstallationBill: false,
+          })
+            .sort({ createdAt: -1 })
+            .limit(100)
+            .maxTimeMS(30000)
+            .lean(),
+
+          // 9. Get pending activations
+          BillingCycle.find({
+            status: "pending_activation",
+            proRatedPaid: true,
+            manualBillStart: false,
+          })
+            .populate("planId", "name price")
+            .sort({ proRatedPaidAt: -1 })
+            .limit(100)
+            .maxTimeMS(30000)
+            .lean(),
+        ]);
+
+        billingCycles = results[0];
+        bills = results[1];
+        users = results[2];
+        applications = results[3];
+        pendingPayments = results[4];
+        customersWithoutAccounts = results[5];
+        pendingInstallationBills = results[6];
+        pendingProRated = results[7];
+        pendingActivations = results[8];
+
+        console.log(`✅ Dashboard data fetched successfully`);
+        break;
+      } catch (err: any) {
+        lastError = err;
+        retries--;
+        console.log(
+          `⏳ Retry ${4 - retries}/3 for dashboard... Error: ${err.message}`,
+        );
+        if (retries === 0) {
+          console.error("❌ All retries failed for dashboard");
+          throw err;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+    }
+
+    // ==================== BUILD CUSTOMERS ARRAY ====================
     const userCustomers = users.map((user: any) => {
       const userBills = bills.filter(
         (bill: any) =>
@@ -256,7 +303,7 @@ export const getDashboardData = async (
     const allCustomers = [...userCustomers, ...applicationCustomers];
     allCustomers.sort((a, b) => b.currentBalance - a.currentBalance);
 
-    // Calculate stats
+    // ==================== CALCULATE STATS ====================
     const totalBalance = allCustomers.reduce(
       (sum, c) => sum + c.currentBalance,
       0,
@@ -305,7 +352,7 @@ export const getDashboardData = async (
       installationFeesPaidCount: installationFeesPaidCount,
     };
 
-    // Build final response data
+    // ==================== BUILD FINAL RESPONSE ====================
     const dashboardData = {
       customers: allCustomers,
       billingCycles: billingCycles,
@@ -330,7 +377,50 @@ export const getDashboardData = async (
     });
   } catch (error) {
     console.error("Error in getDashboardData:", error);
-    next(error);
+
+    // ==================== RETURN CACHED DATA ON ERROR ====================
+    if (dashboardCache) {
+      console.log("📦 Returning cached dashboard data due to error");
+      return res.status(200).json({
+        success: true,
+        data: dashboardCache,
+        cached: true,
+        error: "Database timeout - using cached data",
+      });
+    }
+
+    // ==================== RETURN EMPTY DATA AS FALLBACK ====================
+    const emptyData = {
+      customers: [],
+      billingCycles: [],
+      bills: [],
+      pendingPayments: [],
+      customersWithoutAccounts: [],
+      pendingInstallationBills: [],
+      pendingProRated: [],
+      pendingActivations: [],
+      stats: {
+        totalCustomers: 0,
+        totalBalance: 0,
+        customersWithBalanceCount: 0,
+        overdueCustomersCount: 0,
+        activeCyclesCount: 0,
+        pausedCyclesCount: 0,
+        pendingProRatedCount: 0,
+        pendingActivationsCount: 0,
+        pendingPaymentsCount: 0,
+        pendingInstallationBillsCount: 0,
+        applicationsWithoutBilling: 0,
+        totalInstallationFeesDue: 0,
+        installationFeesPaidCount: 0,
+      },
+    };
+
+    res.status(200).json({
+      success: true,
+      data: emptyData,
+      error: "Database timeout - please refresh",
+    });
   }
 };
 
