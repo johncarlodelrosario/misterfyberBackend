@@ -1,4 +1,4 @@
-// backend/src/controllers/applicationController.ts - ULTIMATE FIX
+// backend/src/controllers/applicationController.ts - ULTRA FAST FINAL FIX
 import { Request, Response, NextFunction } from "express";
 import Application from "../models/Application";
 import Plan from "../models/Plan";
@@ -25,6 +25,21 @@ let allCities: any[] = [];
 let isDataInitialized = false;
 let lastCacheUpdate = 0;
 const CACHE_DURATION = 24 * 60 * 60 * 1000;
+
+// ============================================================
+// CACHE FOR APPLICATIONS - PARA MABILIS
+// ============================================================
+let applicationsCache: {
+  data: any[];
+  total: number;
+  timestamp: number;
+  queryKey: string;
+} | null = null;
+const CACHE_TTL = 30 * 1000; // 30 seconds cache
+
+function getCacheKey(match: any, page: number, limit: number): string {
+  return JSON.stringify({ match, page, limit });
+}
 
 async function initializeData() {
   const now = Date.now();
@@ -463,6 +478,9 @@ export const submitApplication = async (
     await session.commitTransaction();
     session.endSession();
 
+    // Clear cache after new application
+    applicationsCache = null;
+
     const fullImageUrl = getImageUrl(application.idImage);
     const populatedPlan = populatedApplication?.planId as any;
 
@@ -586,8 +604,7 @@ export const checkApplicationStatus = async (
 };
 
 // ============================================================
-// ULTIMATE FIX: Simple query with projection and lean()
-// No retry, no complex operations
+// ULTRA FAST - WITH CACHE AND OPTIMIZED QUERY
 // ============================================================
 export const getAllApplications = async (
   req: Request,
@@ -595,81 +612,202 @@ export const getAllApplications = async (
   next: NextFunction,
 ) => {
   try {
-    const { page = 1, limit = 20, status } = req.query;
+    console.log("📊 getAllApplications called");
+
+    if (mongoose.connection.readyState !== 1) {
+      console.error("❌ MongoDB not connected!");
+      return res.status(503).json({
+        success: false,
+        message: "Database connection unavailable",
+        data: [],
+        total: 0,
+        totalPages: 0,
+        currentPage: 1,
+        limit: 20,
+      });
+    }
+
+    const { page = 1, limit = 20, status, search } = req.query;
     const pageNum = parseInt(page as string);
     const limitNum = Math.min(parseInt(limit as string), 100);
     const skip = (pageNum - 1) * limitNum;
 
-    let query: any = {};
-    if (status && status !== "all") query.status = status;
+    // Build match conditions
+    let match: any = {};
+    if (status && status !== "all" && status !== "undefined") {
+      match.status = status;
+    }
 
-    console.log(
-      `📊 Fetching applications page ${pageNum} with limit ${limitNum}`,
-    );
+    if (search && search.toString().trim()) {
+      const searchTerm = search.toString().trim();
+      match.$or = [
+        { applicationId: { $regex: searchTerm, $options: "i" } },
+        { firstName: { $regex: searchTerm, $options: "i" } },
+        { lastName: { $regex: searchTerm, $options: "i" } },
+        { email: { $regex: searchTerm, $options: "i" } },
+        { phoneNumber: { $regex: searchTerm, $options: "i" } },
+      ];
+    }
 
-    let total = 0;
-    let applications: any[] = [];
+    const cacheKey = getCacheKey(match, pageNum, limitNum);
+    const now = Date.now();
 
-    try {
-      // ============================================================
-      // SIMPLE COUNT - NO OPTIONS
-      // ============================================================
-      total = await Application.countDocuments(query);
-      console.log(`📊 Total applications: ${total}`);
-
-      // ============================================================
-      // SIMPLE FIND - SELECT ONLY NEEDED FIELDS
-      // ============================================================
-      applications = await Application.find(query)
-        .select(
-          "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName planId",
-        )
-        .populate("planId", "name price speed")
-        .populate("buildingId", "buildingName")
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limitNum)
-        .lean();
-
-      console.log(`✅ Applications fetched: ${applications.length}`);
-    } catch (dbError: any) {
-      console.error("❌ Database query error:", dbError.message);
-
-      // Return empty data - no retry
+    // ============================================================
+    // CHECK CACHE
+    // ============================================================
+    if (
+      applicationsCache &&
+      applicationsCache.queryKey === cacheKey &&
+      now - applicationsCache.timestamp < CACHE_TTL
+    ) {
+      console.log("📦 Returning cached applications");
       return res.status(200).json({
         success: true,
-        data: [],
-        totalPages: 0,
+        data: applicationsCache.data,
+        totalPages: Math.ceil((applicationsCache.total || 0) / limitNum),
         currentPage: pageNum,
-        total: 0,
+        total: applicationsCache.total || 0,
         limit: limitNum,
-        _error: true,
-        message: "Database temporarily unavailable. Please refresh.",
+        _cached: true,
       });
     }
 
-    // Map applications with URLs
+    console.log(`📊 Match:`, JSON.stringify(match, null, 2));
+    console.log(`📊 Page: ${pageNum}, Limit: ${limitNum}, Skip: ${skip}`);
+
+    // ============================================================
+    // GET TOTAL COUNT - FAST
+    // ============================================================
+    let total = 0;
+    try {
+      total = await Application.countDocuments(match);
+      console.log(`📊 Total: ${total}`);
+    } catch (e) {
+      console.error("❌ Count error:", e);
+      total = 0;
+    }
+
+    // ============================================================
+    // GET DATA - OPTIMIZED QUERY
+    // ============================================================
+    let applications: any[] = [];
+    try {
+      console.log(`🔄 Fetching ${limitNum} applications...`);
+
+      // Use lean() for faster results
+      applications = await Application.find(match)
+        .select(
+          "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName planId",
+        )
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum)
+        .lean()
+        .maxTimeMS(15000); // 15 second timeout
+
+      console.log(`✅ Fetched: ${applications.length}`);
+    } catch (findError: any) {
+      console.error("❌ Find error:", findError.message);
+
+      // FALLBACK - without sort
+      try {
+        console.log("🔄 FALLBACK: Without sort...");
+        applications = await Application.find(match)
+          .select(
+            "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName planId",
+          )
+          .skip(skip)
+          .limit(limitNum)
+          .lean()
+          .maxTimeMS(10000);
+        console.log(`✅ Fallback: ${applications.length}`);
+      } catch (fallbackError: any) {
+        console.error("❌ Fallback failed:", fallbackError.message);
+        applications = [];
+      }
+    }
+
+    // ============================================================
+    // GET RELATED DATA - BATCH FETCH (FAST)
+    // ============================================================
+    if (applications.length > 0) {
+      try {
+        const planIds = applications
+          .map((a) => a.planId)
+          .filter((id) => id && id.toString());
+
+        const buildingIds = applications
+          .map((a) => a.buildingId)
+          .filter((id) => id && id.toString());
+
+        // Fetch plans and buildings in parallel
+        const [plans, buildings] = await Promise.all([
+          planIds.length > 0
+            ? Plan.find({ _id: { $in: planIds } })
+                .select("name price speed")
+                .lean()
+                .maxTimeMS(5000)
+            : Promise.resolve([]),
+          buildingIds.length > 0
+            ? Building.find({ _id: { $in: buildingIds } })
+                .select("buildingName streetAddress city")
+                .lean()
+                .maxTimeMS(5000)
+            : Promise.resolve([]),
+        ]);
+
+        const planMap = new Map();
+        plans.forEach((p) => planMap.set(p._id.toString(), p));
+
+        const buildingMap = new Map();
+        buildings.forEach((b) => buildingMap.set(b._id.toString(), b));
+
+        applications = applications.map((app) => ({
+          ...app,
+          plan: app.planId ? planMap.get(app.planId.toString()) || null : null,
+          building: app.buildingId
+            ? buildingMap.get(app.buildingId.toString()) || null
+            : null,
+        }));
+
+        console.log(
+          `✅ Related data mapped: ${plans.length} plans, ${buildings.length} buildings`,
+        );
+      } catch (e) {
+        console.error("❌ Error fetching related data:", e);
+      }
+    }
+
+    // Format response with image URLs
     const applicationsWithUrls = applications.map((app) => ({
       ...app,
       idImageUrl: getImageUrl(app.idImage),
       hasAccount: !!app.registeredUserId,
       macAddress: app.macAddress || "",
       tower: app.tower || "",
-      building: app.buildingId,
     }));
+
+    // ============================================================
+    // SAVE TO CACHE
+    // ============================================================
+    applicationsCache = {
+      data: applicationsWithUrls,
+      total: total,
+      timestamp: now,
+      queryKey: cacheKey,
+    };
 
     res.status(200).json({
       success: true,
       data: applicationsWithUrls,
-      totalPages: Math.ceil(total / limitNum),
+      totalPages: Math.ceil((total || 0) / limitNum),
       currentPage: pageNum,
-      total,
+      total: total || 0,
       limit: limitNum,
+      _cached: false,
     });
-  } catch (error) {
-    console.error("❌ Error in getAllApplications:", error);
-
-    // Always return empty data - never crash
+  } catch (error: any) {
+    console.error("❌ ERROR:", error);
     res.status(200).json({
       success: true,
       data: [],
@@ -678,7 +816,7 @@ export const getAllApplications = async (
       total: 0,
       limit: 20,
       _error: true,
-      message: "Error loading applications",
+      message: error.message || "Error loading applications",
     });
   }
 };
@@ -770,6 +908,9 @@ export const approveApplication = async (
     await session.commitTransaction();
     session.endSession();
 
+    // Clear cache
+    applicationsCache = null;
+
     const plan = application.planId as any;
     await emailService.sendApplicationApproved(application, plan);
 
@@ -839,6 +980,9 @@ export const rejectApplication = async (
 
     await session.commitTransaction();
     session.endSession();
+
+    // Clear cache
+    applicationsCache = null;
 
     await emailService.sendApplicationRejected(
       application,
@@ -1157,6 +1301,9 @@ export const startBillingForApplication = async (
 
     await session.commitTransaction();
     session.endSession();
+
+    // Clear cache
+    applicationsCache = null;
 
     await emailService.sendBillWithoutAccount(application, bill[0], plan);
 

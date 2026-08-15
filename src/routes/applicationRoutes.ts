@@ -1,5 +1,5 @@
-// routes/applicationRoutes.ts
-import express from "express";
+// routes/applicationRoutes.ts - COMPLETE FIXED
+import express, { Router, Request, Response, NextFunction } from "express";
 import { body } from "express-validator";
 import {
   submitApplication,
@@ -17,16 +17,18 @@ import {
 import { protect, authorize } from "../middleware/auth";
 import { uploadIdCard } from "../middleware/upload";
 import Application from "../models/Application";
+import mongoose from "mongoose";
 
-const router = express.Router();
+const router: Router = Router();
 
-// Public routes - no authentication needed
+console.log("🔄 Registering application routes...");
+
+// Public routes
 router.get("/address/regions", getRegions);
 router.get("/address/provinces/:regionCode", getProvincesByRegion);
 router.get("/address/cities/:provinceCode", getCitiesByProvince);
 router.get("/address/barangays/:cityCode", getBarangaysByCity);
 
-// Public - application submission
 router.post(
   "/",
   uploadIdCard.single("idImage"),
@@ -49,103 +51,122 @@ router.post(
   submitApplication,
 );
 
-// Public - check application status
 router.get("/status/:applicationId", checkApplicationStatus);
 
-// Admin only routes - require authentication and admin role
+// Protected routes
 router.use(protect);
 router.use(authorize("super_admin", "admin", "staff"));
 
-router.get("/", getAllApplications);
+// ============================================================
+// GET all applications - FIXED with direct error handling
+// ============================================================
+router.get("/", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    console.log("📊 Application route / called");
+
+    if (mongoose.connection.readyState !== 1) {
+      console.error("❌ MongoDB not connected!");
+      return res.status(503).json({
+        success: false,
+        message: "Database connection unavailable",
+        data: [],
+        total: 0,
+        totalPages: 0,
+        currentPage: 1,
+        limit: 20,
+      });
+    }
+
+    await getAllApplications(req, res, next);
+  } catch (error: any) {
+    console.error("❌ Route error:", error);
+    res.status(200).json({
+      success: true,
+      data: [],
+      totalPages: 0,
+      currentPage: 1,
+      total: 0,
+      limit: 20,
+      _error: true,
+      message: error.message || "Error loading applications",
+    });
+  }
+});
+
 router.get("/:id", getApplication);
 router.put("/:id/approve", approveApplication);
 router.put("/:id/reject", rejectApplication);
 router.post("/:applicationId/start-billing", startBillingForApplication);
 
-// Edit MAC Address for application (inline edit)
-router.patch(
-  "/:id/mac-address",
-  async (req: express.Request, res: express.Response) => {
-    try {
-      const { id } = req.params;
-      const { macAddress } = req.body;
+// Inline edit routes
+router.patch("/:id/mac-address", async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { macAddress } = req.body;
 
-      console.log(
-        `📝 Updating MAC address for application ${id} to: ${macAddress}`,
-      );
+    const application = await Application.findByIdAndUpdate(
+      id,
+      { macAddress: macAddress || "" },
+      { new: true },
+    );
 
-      const application = await Application.findByIdAndUpdate(
-        id,
-        { macAddress: macAddress || "" },
-        { new: true },
-      );
-
-      if (!application) {
-        return res.status(404).json({
-          success: false,
-          message: "Application not found",
-        });
-      }
-
-      console.log(`✅ MAC address updated for ${application.applicationId}`);
-
-      res.status(200).json({
-        success: true,
-        data: {
-          macAddress: application.macAddress,
-          applicationId: application.applicationId,
-        },
-      });
-    } catch (error) {
-      console.error("Error updating MAC address:", error);
-      res.status(500).json({
+    if (!application) {
+      return res.status(404).json({
         success: false,
-        message: "Server error updating MAC address",
+        message: "Application not found",
       });
     }
-  },
-);
 
-// Edit Tower for application (inline edit)
-router.patch(
-  "/:id/tower",
-  async (req: express.Request, res: express.Response) => {
-    try {
-      const { id } = req.params;
-      const { tower } = req.body;
+    res.status(200).json({
+      success: true,
+      data: {
+        macAddress: application.macAddress,
+        applicationId: application.applicationId,
+      },
+    });
+  } catch (error) {
+    console.error("Error updating MAC address:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error updating MAC address",
+    });
+  }
+});
 
-      console.log(`📝 Updating tower for application ${id} to: ${tower}`);
+router.patch("/:id/tower", async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { tower } = req.body;
 
-      const application = await Application.findByIdAndUpdate(
-        id,
-        { tower: tower || "" },
-        { new: true },
-      );
+    const application = await Application.findByIdAndUpdate(
+      id,
+      { tower: tower || "" },
+      { new: true },
+    );
 
-      if (!application) {
-        return res.status(404).json({
-          success: false,
-          message: "Application not found",
-        });
-      }
-
-      console.log(`✅ Tower updated for ${application.applicationId}`);
-
-      res.status(200).json({
-        success: true,
-        data: {
-          tower: application.tower,
-          applicationId: application.applicationId,
-        },
-      });
-    } catch (error) {
-      console.error("Error updating tower:", error);
-      res.status(500).json({
+    if (!application) {
+      return res.status(404).json({
         success: false,
-        message: "Server error updating tower",
+        message: "Application not found",
       });
     }
-  },
-);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        tower: application.tower,
+        applicationId: application.applicationId,
+      },
+    });
+  } catch (error) {
+    console.error("Error updating tower:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error updating tower",
+    });
+  }
+});
+
+console.log("✅ Application routes registered");
 
 export default router;

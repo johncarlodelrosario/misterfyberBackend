@@ -1,4 +1,4 @@
-// backend/src/app.ts - COMPLETE FIXED VERSION WITH WEBSOCKET
+// backend/src/app.ts - COMPLETE FIXED VERSION
 import express, { Application, Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import cors from "cors";
@@ -29,8 +29,12 @@ import {
   autoGenerateMonthlyBills,
   autoSuspendOverdue,
 } from "./controllers/billingController";
-import { ensureIndexes } from "./models/Index";
 import BillingSettings from "./models/BillingSettings";
+
+// ============================================================
+// IMPORT DATABASE - FIXED
+// ============================================================
+import Database from "./config/database";
 
 // Load environment variables
 dotenv.config({ path: path.join(__dirname, "../.env") });
@@ -68,7 +72,7 @@ const app: Application = express();
 const server = createServer(app);
 
 // ============================================================
-// FIX: WEBSOCKET WITH PROPER PATH
+// WEBSOCKET WITH PROPER PATH
 // ============================================================
 const io = new Server(server, {
   cors: {
@@ -281,27 +285,14 @@ const initializeDatabase = async () => {
       throw new Error("MONGODB_URI is not defined in environment variables");
     }
 
-    console.log(`🔗 Connecting to MongoDB...`);
-    console.log(
-      `   URI: ${process.env.MONGODB_URI.replace(/\/\/([^:]+):([^@]+)@/, "//***:***@")}`,
-    );
-
-    await mongoose.connect(process.env.MONGODB_URI, {
-      maxPoolSize: 10,
-      minPoolSize: 2,
-      socketTimeoutMS: 30000,
-      connectTimeoutMS: 30000,
-      serverSelectionTimeoutMS: 30000,
-      heartbeatFrequencyMS: 10000,
-      retryWrites: true,
-      retryReads: true,
-      family: 4,
-      maxIdleTimeMS: 30000,
-      waitQueueTimeoutMS: 10000,
-    });
+    // ============================================================
+    // USE Database class for connection
+    // ============================================================
+    await Database.connect();
 
     console.log("✅ MongoDB connected successfully");
 
+    // Set up event listeners
     mongoose.connection.on("error", (err) => {
       console.error("❌ MongoDB connection error:", err);
     });
@@ -314,10 +305,7 @@ const initializeDatabase = async () => {
       console.log("✅ MongoDB reconnected");
     });
 
-    console.log("🔍 Creating/Ensuring database indexes for performance...");
-    await ensureIndexes();
-    console.log("✅ Database indexes verified");
-
+    // Initialize billing settings
     const settings = await BillingSettings.findOne();
     if (!settings) {
       await BillingSettings.create({

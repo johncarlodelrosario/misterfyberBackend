@@ -1,5 +1,9 @@
+// backend/src/config/database.ts - WITHOUT TEXT INDEX (FASTER)
 import mongoose from "mongoose";
-import logger from "../utils/logger";
+import dotenv from "dotenv";
+import path from "path";
+
+dotenv.config({ path: path.join(__dirname, "../../.env") });
 
 interface DatabaseConfig {
   uri: string;
@@ -11,7 +15,7 @@ class Database {
   private isConnected: boolean = false;
   private connectionRetries: number = 0;
   private maxRetries: number = 5;
-  private retryDelay: number = 5000; // 5 seconds
+  private retryDelay: number = 5000;
 
   private constructor() {}
 
@@ -25,19 +29,19 @@ class Database {
   private getConfig(): DatabaseConfig {
     const baseOptions: mongoose.ConnectOptions = {
       autoIndex: process.env.NODE_ENV === "development",
-      serverSelectionTimeoutMS: 5000,
-      socketTimeoutMS: 45000,
+      serverSelectionTimeoutMS: 60000,
+      socketTimeoutMS: 120000,
+      connectTimeoutMS: 60000,
       family: 4,
       maxPoolSize: 10,
       minPoolSize: 2,
-      maxIdleTimeMS: 10000,
-      connectTimeoutMS: 10000,
+      maxIdleTimeMS: 60000,
       heartbeatFrequencyMS: 30000,
       retryWrites: true,
       retryReads: true,
+      waitQueueTimeoutMS: 30000,
     };
 
-    // Add authentication if provided
     if (process.env.MONGODB_USER && process.env.MONGODB_PASS) {
       baseOptions.auth = {
         username: process.env.MONGODB_USER,
@@ -55,33 +59,32 @@ class Database {
 
   private setupEventListeners(): void {
     mongoose.connection.on("connected", () => {
-      logger.info("MongoDB connected successfully");
+      console.log("✅ MongoDB connected successfully");
       this.isConnected = true;
       this.connectionRetries = 0;
     });
 
     mongoose.connection.on("error", (err) => {
-      logger.error("MongoDB connection error:", err);
+      console.error("❌ MongoDB connection error:", err);
       this.isConnected = false;
     });
 
     mongoose.connection.on("disconnected", () => {
-      logger.warn("MongoDB disconnected");
+      console.warn("⚠️ MongoDB disconnected");
       this.isConnected = false;
       this.handleDisconnection();
     });
 
     mongoose.connection.on("reconnected", () => {
-      logger.info("MongoDB reconnected");
+      console.log("✅ MongoDB reconnected");
       this.isConnected = true;
     });
 
     mongoose.connection.on("reconnectFailed", () => {
-      logger.error("MongoDB reconnection failed");
+      console.error("❌ MongoDB reconnection failed");
       this.handleReconnectFailure();
     });
 
-    // Graceful shutdown
     process.on("SIGINT", this.gracefulShutdown.bind(this));
     process.on("SIGTERM", this.gracefulShutdown.bind(this));
   }
@@ -89,62 +92,69 @@ class Database {
   private async handleDisconnection(): Promise<void> {
     if (this.connectionRetries < this.maxRetries) {
       this.connectionRetries++;
-      logger.info(
-        `Attempting to reconnect (${this.connectionRetries}/${this.maxRetries})...`,
+      console.log(
+        `🔄 Attempting to reconnect (${this.connectionRetries}/${this.maxRetries})...`,
       );
 
       setTimeout(async () => {
         try {
           await this.connect();
         } catch (error) {
-          logger.error("Reconnection attempt failed:", error);
+          console.error("❌ Reconnection attempt failed:", error);
         }
       }, this.retryDelay * this.connectionRetries);
     } else {
-      logger.error("Max reconnection attempts reached. Exiting...");
+      console.error("❌ Max reconnection attempts reached. Exiting...");
       process.exit(1);
     }
   }
 
   private handleReconnectFailure(): void {
-    logger.error(
-      "Failed to reconnect to MongoDB. Please check your database server.",
+    console.error(
+      "❌ Failed to reconnect to MongoDB. Please check your database server.",
     );
-    // You might want to implement additional notification here
   }
 
   private async gracefulShutdown(): Promise<void> {
     try {
       await mongoose.connection.close();
-      logger.info("MongoDB connection closed through app termination");
+      console.log("✅ MongoDB connection closed through app termination");
       process.exit(0);
     } catch (err) {
-      logger.error("Error during graceful shutdown:", err);
+      console.error("❌ Error during graceful shutdown:", err);
       process.exit(1);
     }
   }
 
   public async connect(): Promise<void> {
     try {
-      if (this.isConnected) {
-        logger.info("Using existing database connection");
+      if (this.isConnected && mongoose.connection.readyState === 1) {
+        console.log("✅ Using existing database connection");
         return;
       }
 
       const config = this.getConfig();
 
-      logger.info("Connecting to MongoDB...");
+      console.log("🔗 Connecting to MongoDB...");
+      console.log(
+        `   URI: ${config.uri.replace(/\/\/([^:]+):([^@]+)@/, "//***:***@")}`,
+      );
 
       await mongoose.connect(config.uri, config.options);
 
       this.setupEventListeners();
+      this.isConnected = true;
 
-      // Create indexes
       await this.createIndexes();
 
-      logger.info("Database connection established");
+      console.log("✅ Database connection established");
     } catch (error) {
-      logger.error("Failed to connect to MongoDB:", error);
+      console.error("❌ Failed to connect to MongoDB:", error);
+      this.isConnected = false;
+
+      console.log("⚠️ Will retry connection in 10 seconds...");
+      setTimeout(() => this.connect(), 10000);
+
       throw error;
     }
   }
@@ -156,152 +166,293 @@ class Database {
         throw new Error("Database connection not established");
       }
 
-      // Get all collections
       const collections = await db.listCollections().toArray();
       const collectionNames = collections.map((c) => c.name);
 
-      // User indexes
+      // ============================================================
+      // APPLICATION INDEXES - NO TEXT INDEX
+      // ============================================================
+      if (collectionNames.includes("applications")) {
+        const applicationsCollection = db.collection("applications");
+        const appIndexes = await applicationsCollection.indexes();
+        const appIndexNames = appIndexes.map((idx) => idx.name);
+
+        // Single field indexes - CRITICAL
+        if (!appIndexNames.includes("applicationId_1")) {
+          await applicationsCollection.createIndex(
+            { applicationId: 1 },
+            { unique: true },
+          );
+          console.log("✅ Created applicationId index");
+        }
+
+        if (!appIndexNames.includes("email_1")) {
+          await applicationsCollection.createIndex({ email: 1 });
+          console.log("✅ Created email index");
+        }
+
+        if (!appIndexNames.includes("buildingId_1")) {
+          await applicationsCollection.createIndex({ buildingId: 1 });
+          console.log("✅ Created buildingId index");
+        }
+
+        if (!appIndexNames.includes("status_1")) {
+          await applicationsCollection.createIndex({ status: 1 });
+          console.log("✅ Created status index");
+        }
+
+        if (!appIndexNames.includes("createdAt_-1")) {
+          await applicationsCollection.createIndex({ createdAt: -1 });
+          console.log("✅ Created createdAt index");
+        }
+
+        if (!appIndexNames.includes("phoneNumber_1")) {
+          await applicationsCollection.createIndex({ phoneNumber: 1 });
+          console.log("✅ Created phoneNumber index");
+        }
+
+        if (!appIndexNames.includes("planId_1")) {
+          await applicationsCollection.createIndex({ planId: 1 });
+          console.log("✅ Created planId index");
+        }
+
+        if (!appIndexNames.includes("billingStarted_1")) {
+          await applicationsCollection.createIndex({ billingStarted: 1 });
+          console.log("✅ Created billingStarted index");
+        }
+
+        if (!appIndexNames.includes("registeredUserId_1")) {
+          await applicationsCollection.createIndex({ registeredUserId: 1 });
+          console.log("✅ Created registeredUserId index");
+        }
+
+        // Compound indexes - CRITICAL FOR PERFORMANCE
+        if (!appIndexNames.includes("status_1_createdAt_-1")) {
+          await applicationsCollection.createIndex({
+            status: 1,
+            createdAt: -1,
+          });
+          console.log("✅ Created compound index status+createdAt");
+        }
+
+        if (
+          !appIndexNames.includes("buildingId_1_floor_1_unitNumber_1_tower_1")
+        ) {
+          await applicationsCollection.createIndex({
+            buildingId: 1,
+            floor: 1,
+            unitNumber: 1,
+            tower: 1,
+          });
+          console.log("✅ Created compound index for duplicate check");
+        }
+
+        // ============================================================
+        // NO TEXT INDEX - MAS MABILIS
+        // ============================================================
+        console.log("✅ Application indexes created (no text index)");
+      }
+
+      // ============================================================
+      // USER INDEXES
+      // ============================================================
       if (collectionNames.includes("users")) {
         const usersCollection = db.collection("users");
-
-        // Check if indexes exist before creating
         const userIndexes = await usersCollection.indexes();
         const userIndexNames = userIndexes.map((idx) => idx.name);
 
         if (!userIndexNames.includes("email_1")) {
           await usersCollection.createIndex({ email: 1 }, { unique: true });
-          logger.info("Created email index on users");
+          console.log("✅ Created email index on users");
         }
-
         if (!userIndexNames.includes("username_1")) {
           await usersCollection.createIndex({ username: 1 }, { unique: true });
-          logger.info("Created username index on users");
+          console.log("✅ Created username index on users");
         }
-
         if (!userIndexNames.includes("status_1")) {
           await usersCollection.createIndex({ status: 1 });
-          logger.info("Created status index on users");
+          console.log("✅ Created status index on users");
         }
-
         if (!userIndexNames.includes("role_1")) {
           await usersCollection.createIndex({ role: 1 });
-          logger.info("Created role index on users");
+          console.log("✅ Created role index on users");
         }
-
-        // Compound indexes
         if (!userIndexNames.includes("status_1_role_1")) {
           await usersCollection.createIndex({ status: 1, role: 1 });
-          logger.info("Created compound index on users");
+          console.log("✅ Created compound index on users");
         }
       }
 
-      // Plan indexes
+      // ============================================================
+      // PLAN INDEXES
+      // ============================================================
       if (collectionNames.includes("plans")) {
         const plansCollection = db.collection("plans");
-
         const planIndexes = await plansCollection.indexes();
         const planIndexNames = planIndexes.map((idx) => idx.name);
 
         if (!planIndexNames.includes("name_1")) {
           await plansCollection.createIndex({ name: 1 }, { unique: true });
-          logger.info("Created name index on plans");
+          console.log("✅ Created name index on plans");
         }
-
         if (!planIndexNames.includes("isActive_1")) {
           await plansCollection.createIndex({ isActive: 1 });
-          logger.info("Created isActive index on plans");
+          console.log("✅ Created isActive index on plans");
         }
-
         if (!planIndexNames.includes("price_1")) {
           await plansCollection.createIndex({ price: 1 });
-          logger.info("Created price index on plans");
+          console.log("✅ Created price index on plans");
         }
       }
 
-      // Payment indexes
+      // ============================================================
+      // PAYMENT INDEXES
+      // ============================================================
       if (collectionNames.includes("payments")) {
         const paymentsCollection = db.collection("payments");
-
         const paymentIndexes = await paymentsCollection.indexes();
         const paymentIndexNames = paymentIndexes.map((idx) => idx.name);
 
         if (!paymentIndexNames.includes("userId_1_createdAt_-1")) {
           await paymentsCollection.createIndex({ userId: 1, createdAt: -1 });
-          logger.info("Created userId+createdAt index on payments");
+          console.log("✅ Created userId+createdAt index on payments");
         }
-
         if (!paymentIndexNames.includes("status_1")) {
           await paymentsCollection.createIndex({ status: 1 });
-          logger.info("Created status index on payments");
+          console.log("✅ Created status index on payments");
         }
-
         if (!paymentIndexNames.includes("referenceNumber_1")) {
           await paymentsCollection.createIndex(
             { referenceNumber: 1 },
             { unique: true },
           );
-          logger.info("Created referenceNumber index on payments");
+          console.log("✅ Created referenceNumber index on payments");
         }
-
         if (!paymentIndexNames.includes("transactionId_1")) {
           await paymentsCollection.createIndex({ transactionId: 1 });
-          logger.info("Created transactionId index on payments");
+          console.log("✅ Created transactionId index on payments");
+        }
+        if (!paymentIndexNames.includes("applicationId_1")) {
+          await paymentsCollection.createIndex({ applicationId: 1 });
+          console.log("✅ Created applicationId index on payments");
+        }
+        if (!paymentIndexNames.includes("paymentType_1")) {
+          await paymentsCollection.createIndex({ paymentType: 1 });
+          console.log("✅ Created paymentType index on payments");
+        }
+        if (!paymentIndexNames.includes("customerName_1")) {
+          await paymentsCollection.createIndex({ customerName: 1 });
+          console.log("✅ Created customerName index on payments");
         }
       }
 
-      // Billing indexes
+      // ============================================================
+      // BILLING INDEXES
+      // ============================================================
       if (collectionNames.includes("billings")) {
         const billingsCollection = db.collection("billings");
-
         const billingIndexes = await billingsCollection.indexes();
         const billingIndexNames = billingIndexes.map((idx) => idx.name);
 
         if (!billingIndexNames.includes("userId_1_dueDate_-1")) {
           await billingsCollection.createIndex({ userId: 1, dueDate: -1 });
-          logger.info("Created userId+dueDate index on billings");
+          console.log("✅ Created userId+dueDate index on billings");
         }
-
         if (!billingIndexNames.includes("status_1")) {
           await billingsCollection.createIndex({ status: 1 });
-          logger.info("Created status index on billings");
+          console.log("✅ Created status index on billings");
         }
-
         if (!billingIndexNames.includes("invoiceNumber_1")) {
           await billingsCollection.createIndex(
             { invoiceNumber: 1 },
             { unique: true },
           );
-          logger.info("Created invoiceNumber index on billings");
+          console.log("✅ Created invoiceNumber index on billings");
         }
-
         if (!billingIndexNames.includes("dueDate_1")) {
           await billingsCollection.createIndex({ dueDate: 1 });
-          logger.info("Created dueDate index on billings");
+          console.log("✅ Created dueDate index on billings");
+        }
+        if (!billingIndexNames.includes("applicationId_1")) {
+          await billingsCollection.createIndex({ applicationId: 1 });
+          console.log("✅ Created applicationId index on billings");
         }
       }
 
-      // MikroTik Config indexes
+      // ============================================================
+      // BILLING CYCLE INDEXES
+      // ============================================================
+      if (collectionNames.includes("billingcycles")) {
+        const billingCycleCollection = db.collection("billingcycles");
+        const cycleIndexes = await billingCycleCollection.indexes();
+        const cycleIndexNames = cycleIndexes.map((idx) => idx.name);
+
+        if (!cycleIndexNames.includes("applicationId_1")) {
+          await billingCycleCollection.createIndex({ applicationId: 1 });
+          console.log("✅ Created applicationId index on billingcycles");
+        }
+        if (!cycleIndexNames.includes("status_1")) {
+          await billingCycleCollection.createIndex({ status: 1 });
+          console.log("✅ Created status index on billingcycles");
+        }
+        if (!cycleIndexNames.includes("nextBillingDate_1")) {
+          await billingCycleCollection.createIndex({ nextBillingDate: 1 });
+          console.log("✅ Created nextBillingDate index on billingcycles");
+        }
+      }
+
+      // ============================================================
+      // INVOICE INDEXES
+      // ============================================================
+      if (collectionNames.includes("invoices")) {
+        const invoiceCollection = db.collection("invoices");
+        const invoiceIndexes = await invoiceCollection.indexes();
+        const invoiceIndexNames = invoiceIndexes.map((idx) => idx.name);
+
+        if (!invoiceIndexNames.includes("invoiceNumber_1")) {
+          await invoiceCollection.createIndex(
+            { invoiceNumber: 1 },
+            { unique: true },
+          );
+          console.log("✅ Created invoiceNumber index on invoices");
+        }
+        if (!invoiceIndexNames.includes("applicationId_1")) {
+          await invoiceCollection.createIndex({ applicationId: 1 });
+          console.log("✅ Created applicationId index on invoices");
+        }
+        if (!invoiceIndexNames.includes("status_1")) {
+          await invoiceCollection.createIndex({ status: 1 });
+          console.log("✅ Created status index on invoices");
+        }
+        if (!invoiceIndexNames.includes("billingId_1")) {
+          await invoiceCollection.createIndex({ billingId: 1 });
+          console.log("✅ Created billingId index on invoices");
+        }
+      }
+
+      // ============================================================
+      // MIKROTIK CONFIG INDEXES
+      // ============================================================
       if (collectionNames.includes("mikrotikconfigs")) {
         const mikrotikCollection = db.collection("mikrotikconfigs");
-
         const mikrotikIndexes = await mikrotikCollection.indexes();
         const mikrotikIndexNames = mikrotikIndexes.map((idx) => idx.name);
 
         if (!mikrotikIndexNames.includes("isActive_1")) {
           await mikrotikCollection.createIndex({ isActive: 1 });
-          logger.info("Created isActive index on mikrotikconfigs");
+          console.log("✅ Created isActive index on mikrotikconfigs");
         }
-
         if (!mikrotikIndexNames.includes("host_1")) {
           await mikrotikCollection.createIndex({ host: 1 }, { unique: true });
-          logger.info("Created host index on mikrotikconfigs");
+          console.log("✅ Created host index on mikrotikconfigs");
         }
       }
 
-      // Notification indexes
+      // ============================================================
+      // NOTIFICATION INDEXES
+      // ============================================================
       if (collectionNames.includes("notifications")) {
         const notificationsCollection = db.collection("notifications");
-
         const notificationIndexes = await notificationsCollection.indexes();
         const notificationIndexNames = notificationIndexes.map(
           (idx) => idx.name,
@@ -312,19 +463,17 @@ class Database {
             userId: 1,
             createdAt: -1,
           });
-          logger.info("Created userId+createdAt index on notifications");
+          console.log("✅ Created userId+createdAt index on notifications");
         }
-
         if (!notificationIndexNames.includes("isRead_1")) {
           await notificationsCollection.createIndex({ isRead: 1 });
-          logger.info("Created isRead index on notifications");
+          console.log("✅ Created isRead index on notifications");
         }
       }
 
-      logger.info("All database indexes created successfully");
+      console.log("✅ All database indexes created successfully");
     } catch (error) {
-      logger.error("Error creating indexes:", error);
-      // Don't throw error - indexes are not critical for application startup
+      console.error("❌ Error creating indexes:", error);
     }
   }
 
@@ -332,15 +481,15 @@ class Database {
     try {
       await mongoose.connection.close();
       this.isConnected = false;
-      logger.info("Database disconnected");
+      console.log("✅ Database disconnected");
     } catch (error) {
-      logger.error("Error disconnecting from database:", error);
+      console.error("❌ Error disconnecting from database:", error);
       throw error;
     }
   }
 
   public getConnectionStatus(): boolean {
-    return this.isConnected;
+    return this.isConnected && mongoose.connection.readyState === 1;
   }
 
   public async healthCheck(): Promise<{
@@ -351,11 +500,8 @@ class Database {
     const start = Date.now();
 
     try {
-      // Execute a simple command to check connection
       await mongoose.connection.db.admin().ping();
-
       const latency = Date.now() - start;
-      // Fix for the client property error
       const connections = mongoose.connection.readyState === 1 ? 1 : 0;
 
       return {
@@ -364,7 +510,7 @@ class Database {
         connections,
       };
     } catch (error) {
-      logger.error("Database health check failed:", error);
+      console.error("❌ Database health check failed:", error);
       return {
         status: "unhealthy",
         latency: Date.now() - start,
@@ -372,44 +518,20 @@ class Database {
       };
     }
   }
-
-  public async backup(): Promise<string> {
-    // This would implement database backup
-    // For production, you'd use mongodump or a backup service
-    const backupPath = `./backups/mongodb-${new Date().toISOString()}.gz`;
-    logger.info(`Database backup initiated to ${backupPath}`);
-
-    // Implementation would depend on your backup strategy
-    // Could use child_process to run mongodump
-
-    return backupPath;
-  }
-
-  public async restore(backupPath: string): Promise<void> {
-    // This would implement database restore
-    logger.info(`Restoring database from ${backupPath}`);
-
-    // Implementation would depend on your backup strategy
-    // Could use child_process to run mongorestore
-  }
 }
 
-// Export singleton instance
 export default Database.getInstance();
 
-// Export connection function for easy use
 export const connectDB = async (): Promise<void> => {
   const db = Database.getInstance();
   await db.connect();
 };
 
-// Export disconnect function
 export const disconnectDB = async (): Promise<void> => {
   const db = Database.getInstance();
   await db.disconnect();
 };
 
-// Export health check
 export const checkDBHealth = async () => {
   const db = Database.getInstance();
   return await db.healthCheck();

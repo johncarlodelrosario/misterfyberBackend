@@ -268,6 +268,9 @@ ApplicationSchema.pre("validate", function (next) {
   next();
 });
 
+// ============================================================
+// INDEXES - COMPLETE FIXED
+// ============================================================
 ApplicationSchema.index({ applicationId: 1 }, { unique: true });
 ApplicationSchema.index({ email: 1 });
 ApplicationSchema.index({ buildingId: 1 });
@@ -275,5 +278,11 @@ ApplicationSchema.index({ status: 1 });
 ApplicationSchema.index({ billingStarted: 1 });
 ApplicationSchema.index({ registeredUserId: 1 });
 ApplicationSchema.index({ createdAt: -1 });
+
+// FIXED: COMPOUND INDEXES FOR PERFORMANCE
+ApplicationSchema.index({ status: 1, createdAt: -1 });
+ApplicationSchema.index({ buildingId: 1, floor: 1, unitNumber: 1, tower: 1 });
+ApplicationSchema.index({ phoneNumber: 1 });
+ApplicationSchema.index({ planId: 1 });
 
 export default mongoose.model<IApplication>("Application", ApplicationSchema);
