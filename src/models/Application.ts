@@ -1,4 +1,4 @@
-// models/application.model.ts
+// models/application.model.ts - WITH PROPER INDEXES
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IApplication extends Document {
@@ -222,6 +222,7 @@ const ApplicationSchema: Schema = new Schema(
   },
 );
 
+// ============ PRE-SAVE HOOKS ============
 ApplicationSchema.pre("save", async function (next) {
   if (!this.applicationId) {
     try {
@@ -268,21 +269,47 @@ ApplicationSchema.pre("validate", function (next) {
   next();
 });
 
-// ============================================================
-// INDEXES - COMPLETE FIXED
-// ============================================================
+// ============ ⚡ CRITICAL INDEXES FOR FAST QUERIES ============
+// ✅ Single Field Indexes
 ApplicationSchema.index({ applicationId: 1 }, { unique: true });
-ApplicationSchema.index({ email: 1 });
-ApplicationSchema.index({ buildingId: 1 });
 ApplicationSchema.index({ status: 1 });
-ApplicationSchema.index({ billingStarted: 1 });
-ApplicationSchema.index({ registeredUserId: 1 });
 ApplicationSchema.index({ createdAt: -1 });
-
-// FIXED: COMPOUND INDEXES FOR PERFORMANCE
-ApplicationSchema.index({ status: 1, createdAt: -1 });
-ApplicationSchema.index({ buildingId: 1, floor: 1, unitNumber: 1, tower: 1 });
+ApplicationSchema.index({ email: 1 });
 ApplicationSchema.index({ phoneNumber: 1 });
+ApplicationSchema.index({ buildingId: 1 });
 ApplicationSchema.index({ planId: 1 });
+ApplicationSchema.index({ registeredUserId: 1 });
+ApplicationSchema.index({ billingStarted: 1 });
+ApplicationSchema.index({ macAddress: 1 });
+
+// ✅ Compound Indexes - PARA SA FILTERING + SORTING!
+ApplicationSchema.index({ status: 1, createdAt: -1 });
+ApplicationSchema.index({ buildingId: 1, status: 1 });
+ApplicationSchema.index({ status: 1, billingStarted: 1 });
+
+// ✅ Text Index - PARA SA SEARCH!
+ApplicationSchema.index(
+  {
+    applicationId: "text",
+    firstName: "text",
+    lastName: "text",
+    email: "text",
+    buildingName: "text",
+    macAddress: "text",
+  },
+  {
+    weights: {
+      applicationId: 10,
+      firstName: 5,
+      lastName: 5,
+      email: 3,
+      buildingName: 2,
+      macAddress: 2,
+    },
+    name: "text_search_index",
+  },
+);
+
+console.log("✅ Application indexes configured");
 
 export default mongoose.model<IApplication>("Application", ApplicationSchema);

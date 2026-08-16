@@ -1,4 +1,5 @@
-// routes/planRoutes.ts - COMPLETE (ADD super_admin)
+// backend/src/routes/planRoutes.ts - COMPLETE WITH CACHE
+
 import express from "express";
 import { body } from "express-validator";
 import {
@@ -14,14 +15,13 @@ import { protect, authorize } from "../middleware/auth";
 
 const router = express.Router();
 
-// Public routes
+// Public routes - WITH CACHE!
 router.get("/", getPlans);
 router.get("/features", getPlanFeatures);
 router.get("/compare", comparePlans);
 router.get("/:id", getPlan);
 
 // Admin routes
-// FIXED: Include super_admin in allowed roles
 router.post(
   "/",
   protect,

@@ -1,4 +1,4 @@
-// backend/src/controllers/applicationController.ts - ULTRA FAST FINAL FIX
+// controllers/applicationController.ts - COMPLETE FIXED VERSION
 import { Request, Response, NextFunction } from "express";
 import Application from "../models/Application";
 import Plan from "../models/Plan";
@@ -10,6 +10,23 @@ import emailService from "../services/emailService";
 import { validationResult, ValidationError } from "express-validator";
 import axios from "axios";
 import mongoose from "mongoose";
+import NodeCache from "node-cache";
+
+// ============ CACHE SETUP ============
+const appCache = new NodeCache({ stdTTL: 60, checkperiod: 120 });
+
+// ============ DASHBOARD CACHE ============
+let dashboardCache: any = null;
+let dashboardCacheTime = 0;
+const DASHBOARD_CACHE_TTL = 5 * 60 * 1000;
+
+// ============ ADDRESS DATA CACHE ============
+let allRegions: any[] = [];
+let allProvinces: any[] = [];
+let allCities: any[] = [];
+let isDataInitialized = false;
+let lastCacheUpdate = 0;
+const CACHE_DURATION = 24 * 60 * 60 * 1000;
 
 interface AuthRequest extends Request {
   user?: any;
@@ -19,28 +36,7 @@ interface AuthRequest extends Request {
   query: any;
 }
 
-let allRegions: any[] = [];
-let allProvinces: any[] = [];
-let allCities: any[] = [];
-let isDataInitialized = false;
-let lastCacheUpdate = 0;
-const CACHE_DURATION = 24 * 60 * 60 * 1000;
-
-// ============================================================
-// CACHE FOR APPLICATIONS - PARA MABILIS
-// ============================================================
-let applicationsCache: {
-  data: any[];
-  total: number;
-  timestamp: number;
-  queryKey: string;
-} | null = null;
-const CACHE_TTL = 30 * 1000; // 30 seconds cache
-
-function getCacheKey(match: any, page: number, limit: number): string {
-  return JSON.stringify({ match, page, limit });
-}
-
+// ============ ADDRESS DATA FUNCTIONS ============
 async function initializeData() {
   const now = Date.now();
   if (isDataInitialized && now - lastCacheUpdate < CACHE_DURATION) return;
@@ -69,6 +65,7 @@ async function initializeData() {
   }
 }
 
+// ============ ADDRESS ENDPOINTS ============
 export const getRegions = async (
   req: Request,
   res: Response,
@@ -148,7 +145,8 @@ export const getBarangaysByCity = async (
   }
 };
 
-const getImageUrl = (imagePath?: string): string => {
+// ============ HELPERS ============
+export const getImageUrl = (imagePath?: string): string => {
   if (!imagePath) return "";
   if (
     imagePath.includes("cloudinary.com") ||
@@ -167,6 +165,284 @@ const getImageUrl = (imagePath?: string): string => {
   return `${PRODUCTION_URL}/uploads/id-cards/${filename}`;
 };
 
+// ============ GET ALL APPLICATIONS (PAGINATED) ============
+export const getAllApplications = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  const startTime = Date.now();
+
+  try {
+    const { page = 1, limit = 20, status } = req.query;
+    const pageNum = parseInt(page as string);
+    const limitNum = parseInt(limit as string);
+    const skip = (pageNum - 1) * limitNum;
+
+    console.log(
+      `🔄 getAllApplications - page: ${pageNum}, limit: ${limitNum}, status: ${status || "all"}`,
+    );
+
+    // Build filter
+    const filter: any = {};
+    if (status && status !== "all") {
+      filter.status = status;
+    }
+
+    // Fetch applications with lean for performance
+    const applications = await Application.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limitNum)
+      .lean();
+
+    const total = await Application.countDocuments(filter);
+
+    console.log(
+      `✅ Found ${applications.length} applications, Total: ${total}`,
+    );
+
+    // Format response
+    const formattedData = applications.map((app: any) => ({
+      _id: app._id,
+      applicationId: app.applicationId,
+      firstName: app.firstName,
+      lastName: app.lastName,
+      email: app.email,
+      phoneNumber: app.phoneNumber,
+      status: app.status,
+      createdAt: app.createdAt,
+      idImage: app.idImage,
+      idImageUrl: getImageUrl(app.idImage),
+      billingStarted: app.billingStarted || false,
+      registeredUserId: app.registeredUserId,
+      billingCycleId: app.billingCycleId,
+      idType: app.idType,
+      idNumber: app.idNumber,
+      tower: app.tower || "",
+      floor: app.floor,
+      unitNumber: app.unitNumber,
+      macAddress: app.macAddress || "",
+      buildingId: app.buildingId,
+      buildingName: app.buildingName,
+      hasAccount: !!app.registeredUserId,
+      installationFee: app.installationFee || 0,
+      installationFeePaid: app.installationFeePaid || false,
+      serviceStatus: app.serviceStatus || "pending",
+      plan: null,
+      building: null,
+    }));
+
+    const responseData = {
+      success: true,
+      data: formattedData,
+      totalPages: Math.ceil(total / limitNum) || 1,
+      currentPage: pageNum,
+      total: total || 0,
+      limit: limitNum,
+      _responseTime: `${Date.now() - startTime}ms`,
+    };
+
+    console.log(`✅ Response sent in ${Date.now() - startTime}ms`);
+
+    return res.status(200).json(responseData);
+  } catch (error) {
+    console.error("❌ Error in getAllApplications:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Error fetching applications",
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+};
+
+// ============ DASHBOARD DATA ============
+export const getApplicationDashboardData = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const now = Date.now();
+
+    if (dashboardCache && now - dashboardCacheTime < DASHBOARD_CACHE_TTL) {
+      console.log("📦 Returning cached application dashboard data");
+      return res.status(200).json({
+        success: true,
+        data: dashboardCache,
+      });
+    }
+
+    console.log("🔄 Fetching fresh application dashboard data...");
+
+    const [
+      totalApplications,
+      pendingApplications,
+      approvedApplications,
+      rejectedApplications,
+      suspendedApplications,
+      totalUsers,
+      totalBuildings,
+      totalPlans,
+      recentApplications,
+    ] = await Promise.all([
+      Application.estimatedDocumentCount(),
+      Application.countDocuments({ status: "pending" }),
+      Application.countDocuments({ status: "approved" }),
+      Application.countDocuments({ status: "rejected" }),
+      Application.countDocuments({ status: "suspended" }),
+      User.estimatedDocumentCount(),
+      Building.countDocuments({ isActive: true }),
+      Plan.countDocuments({ isActive: true }),
+      Application.find()
+        .sort({ createdAt: -1 })
+        .limit(10)
+        .select(
+          "applicationId firstName lastName email status createdAt buildingName",
+        )
+        .lean(),
+    ]);
+
+    // Get by building - simple grouping
+    const allApps = await Application.find()
+      .select("buildingName status planId")
+      .lean();
+    const plans = await Plan.find().select("name").lean();
+    const planMap: Record<string, string> = {};
+    plans.forEach((p: any) => {
+      planMap[p._id.toString()] = p.name;
+    });
+
+    const buildingCount: Record<string, number> = {};
+    const planCount: Record<string, number> = {};
+    const monthlyCount: Record<string, number> = {};
+    const statusCount: Record<string, number> = {};
+
+    allApps.forEach((app: any) => {
+      const bName = app.buildingName || "Unknown";
+      buildingCount[bName] = (buildingCount[bName] || 0) + 1;
+
+      const pName = planMap[app.planId?.toString()] || "Unknown";
+      planCount[pName] = (planCount[pName] || 0) + 1;
+
+      const d = new Date(app.createdAt);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      monthlyCount[key] = (monthlyCount[key] || 0) + 1;
+
+      const s = app.status || "unknown";
+      statusCount[s] = (statusCount[s] || 0) + 1;
+    });
+
+    const applicationsByBuilding = Object.entries(buildingCount)
+      .map(([name, count]) => ({ _id: name, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
+
+    const applicationsByPlan = Object.entries(planCount)
+      .map(([name, count]) => ({ _id: name, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
+
+    const monthlyApplications = Object.entries(monthlyCount)
+      .map(([month, count]) => ({
+        _id: {
+          year: parseInt(month.split("-")[0]),
+          month: parseInt(month.split("-")[1]),
+        },
+        count,
+      }))
+      .sort((a, b) => {
+        if (a._id.year !== b._id.year) return b._id.year - a._id.year;
+        return b._id.month - a._id.month;
+      })
+      .slice(0, 12);
+
+    const statusDistribution = Object.entries(statusCount).map(
+      ([status, count]) => ({ _id: status, count }),
+    );
+
+    const stats = {
+      totalApplications,
+      pendingApplications,
+      approvedApplications,
+      rejectedApplications,
+      suspendedApplications,
+      totalUsers,
+      totalBuildings,
+      totalPlans,
+      approvalRate:
+        totalApplications > 0
+          ? Math.round((approvedApplications / totalApplications) * 100)
+          : 0,
+      pendingRate:
+        totalApplications > 0
+          ? Math.round((pendingApplications / totalApplications) * 100)
+          : 0,
+      rejectedRate:
+        totalApplications > 0
+          ? Math.round((rejectedApplications / totalApplications) * 100)
+          : 0,
+      statusDistribution,
+    };
+
+    const dashboardData = {
+      stats,
+      recentApplications,
+      applicationsByBuilding,
+      applicationsByPlan,
+      monthlyApplications,
+      lastUpdated: new Date().toISOString(),
+    };
+
+    dashboardCache = dashboardData;
+    dashboardCacheTime = now;
+
+    console.log(`✅ Application dashboard cached`);
+
+    res.status(200).json({
+      success: true,
+      data: dashboardData,
+    });
+  } catch (error) {
+    console.error("Error in getApplicationDashboardData:", error);
+    next(error);
+  }
+};
+
+// ============ QUICK STATS ============
+export const getApplicationStats = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const [total, pending, approved, rejected, suspended] = await Promise.all([
+      Application.estimatedDocumentCount(),
+      Application.countDocuments({ status: "pending" }),
+      Application.countDocuments({ status: "approved" }),
+      Application.countDocuments({ status: "rejected" }),
+      Application.countDocuments({ status: "suspended" }),
+    ]);
+
+    const stats = {
+      totalApplications: total,
+      pending,
+      approved,
+      rejected,
+      suspended,
+      approvalRate: total > 0 ? Math.round((approved / total) * 100) : 0,
+      pendingRate: total > 0 ? Math.round((pending / total) * 100) : 0,
+      rejectedRate: total > 0 ? Math.round((rejected / total) * 100) : 0,
+    };
+
+    res.status(200).json({ success: true, data: stats });
+  } catch (error) {
+    console.error("Error in getApplicationStats:", error);
+    next(error);
+  }
+};
+
+// ============ SUBMIT APPLICATION ============
 export const submitApplication = async (
   req: AuthRequest,
   res: Response,
@@ -178,10 +454,6 @@ export const submitApplication = async (
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      console.log(
-        "❌ Validation errors:",
-        JSON.stringify(errors.array(), null, 2),
-      );
       await session.abortTransaction();
       session.endSession();
 
@@ -221,86 +493,14 @@ export const submitApplication = async (
       macAddress,
     } = req.body;
 
-    console.log("📥 Received application data:", {
-      firstName,
-      lastName,
-      email,
-      phoneNumber,
-      buildingId,
-      tower,
-      floor,
-      unitNumber,
-      planId,
-      idType,
-      idNumber,
-      macAddress,
-    });
-
-    const requiredFields = [
-      "firstName",
-      "lastName",
-      "email",
-      "phoneNumber",
-      "buildingId",
-      "floor",
-      "unitNumber",
-      "planId",
-      "idType",
-      "idNumber",
-    ];
-    const missingFields = requiredFields.filter((field) => {
-      const value = req.body[field];
-      return !value || value === "undefined" || value === "null";
-    });
-
-    if (missingFields.length > 0) {
-      await session.abortTransaction();
-      session.endSession();
-      return res.status(400).json({
-        success: false,
-        message: `Missing required fields: ${missingFields.join(", ")}`,
-        missingFields: missingFields,
-      });
-    }
-
     if (!tower || tower === "undefined" || tower === "null") {
-      console.warn("⚠️ Tower not provided, using default empty string");
       tower = "";
-    }
-
-    if (!buildingId || buildingId === "undefined" || buildingId === "null") {
-      await session.abortTransaction();
-      session.endSession();
-      return res
-        .status(400)
-        .json({ success: false, message: "Building selection is required" });
-    }
-
-    if (!floor || floor === "undefined" || floor === "null") {
-      await session.abortTransaction();
-      session.endSession();
-      return res
-        .status(400)
-        .json({ success: false, message: "Floor is required" });
-    }
-    if (!unitNumber || unitNumber === "undefined" || unitNumber === "null") {
-      await session.abortTransaction();
-      session.endSession();
-      return res
-        .status(400)
-        .json({ success: false, message: "Unit number is required" });
-    }
-    if (!planId || planId === "undefined" || planId === "null") {
-      await session.abortTransaction();
-      session.endSession();
-      return res
-        .status(400)
-        .json({ success: false, message: "Plan selection is required" });
     }
 
     const normalizedEmail = email?.trim().toLowerCase();
     const normalizedPhoneNumber = phoneNumber?.trim();
 
+    // Check existing user
     const existingUser = await User.findOne({
       email: normalizedEmail,
     }).lean();
@@ -310,13 +510,13 @@ export const submitApplication = async (
       session.endSession();
       return res.status(400).json({
         success: false,
-        message:
-          "This email address is already registered as a user. Please login to your account instead of submitting a new application.",
+        message: "This email address is already registered as a user.",
         alreadyRegistered: true,
         email: normalizedEmail,
       });
     }
 
+    // Check existing application by email
     const existingApplicationByEmail = await Application.findOne({
       email: normalizedEmail,
     }).lean();
@@ -359,6 +559,7 @@ export const submitApplication = async (
       });
     }
 
+    // Check existing application by phone
     const existingApplicationByPhone = await Application.findOne({
       phoneNumber: normalizedPhoneNumber,
     }).lean();
@@ -375,6 +576,7 @@ export const submitApplication = async (
       });
     }
 
+    // Check duplicate unit
     const existingActiveServiceQuery: any = {
       buildingId: new mongoose.Types.ObjectId(buildingId),
       floor: floor?.toString().trim(),
@@ -396,10 +598,11 @@ export const submitApplication = async (
       session.endSession();
       return res.status(409).json({
         success: false,
-        message: `Unit ${towerMsg}${floor}-${unitNumber} already has an active or pending application. Please contact support for assistance.`,
+        message: `Unit ${towerMsg}${floor}-${unitNumber} already has an active or pending application.`,
       });
     }
 
+    // Get building and plan
     const [building, plan] = await Promise.all([
       Building.findById(buildingId)
         .lean()
@@ -433,16 +636,20 @@ export const submitApplication = async (
         .json({ success: false, message: "Plan not found" });
     }
 
+    // Handle file upload
     let idImagePath = "uploads/id-cards/placeholder.jpg";
     if (req.file) {
       if (req.file.path) {
         idImagePath = req.file.path;
         console.log(`📁 File uploaded: ${idImagePath}`);
       } else if (req.file.buffer) {
-        idImagePath = `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`;
+        idImagePath = `data:${req.file.mimetype};base64,${req.file.buffer.toString(
+          "base64",
+        )}`;
       }
     }
 
+    // Create application
     const applicationData = {
       firstName: firstName?.trim(),
       lastName: lastName?.trim(),
@@ -478,12 +685,15 @@ export const submitApplication = async (
     await session.commitTransaction();
     session.endSession();
 
-    // Clear cache after new application
-    applicationsCache = null;
+    // Clear cache
+    appCache.flushAll();
+    dashboardCache = null;
+    dashboardCacheTime = 0;
 
     const fullImageUrl = getImageUrl(application.idImage);
     const populatedPlan = populatedApplication?.planId as any;
 
+    // Send emails (non-blocking)
     try {
       console.log("📧 Sending application received email to client...");
       await emailService.sendApplicationReceived(application, populatedPlan);
@@ -546,6 +756,7 @@ export const submitApplication = async (
   }
 };
 
+// ============ CHECK APPLICATION STATUS ============
 export const checkApplicationStatus = async (
   req: Request,
   res: Response,
@@ -603,224 +814,7 @@ export const checkApplicationStatus = async (
   }
 };
 
-// ============================================================
-// ULTRA FAST - WITH CACHE AND OPTIMIZED QUERY
-// ============================================================
-export const getAllApplications = async (
-  req: Request,
-  res: Response,
-  next: NextFunction,
-) => {
-  try {
-    console.log("📊 getAllApplications called");
-
-    if (mongoose.connection.readyState !== 1) {
-      console.error("❌ MongoDB not connected!");
-      return res.status(503).json({
-        success: false,
-        message: "Database connection unavailable",
-        data: [],
-        total: 0,
-        totalPages: 0,
-        currentPage: 1,
-        limit: 20,
-      });
-    }
-
-    const { page = 1, limit = 20, status, search } = req.query;
-    const pageNum = parseInt(page as string);
-    const limitNum = Math.min(parseInt(limit as string), 100);
-    const skip = (pageNum - 1) * limitNum;
-
-    // Build match conditions
-    let match: any = {};
-    if (status && status !== "all" && status !== "undefined") {
-      match.status = status;
-    }
-
-    if (search && search.toString().trim()) {
-      const searchTerm = search.toString().trim();
-      match.$or = [
-        { applicationId: { $regex: searchTerm, $options: "i" } },
-        { firstName: { $regex: searchTerm, $options: "i" } },
-        { lastName: { $regex: searchTerm, $options: "i" } },
-        { email: { $regex: searchTerm, $options: "i" } },
-        { phoneNumber: { $regex: searchTerm, $options: "i" } },
-      ];
-    }
-
-    const cacheKey = getCacheKey(match, pageNum, limitNum);
-    const now = Date.now();
-
-    // ============================================================
-    // CHECK CACHE
-    // ============================================================
-    if (
-      applicationsCache &&
-      applicationsCache.queryKey === cacheKey &&
-      now - applicationsCache.timestamp < CACHE_TTL
-    ) {
-      console.log("📦 Returning cached applications");
-      return res.status(200).json({
-        success: true,
-        data: applicationsCache.data,
-        totalPages: Math.ceil((applicationsCache.total || 0) / limitNum),
-        currentPage: pageNum,
-        total: applicationsCache.total || 0,
-        limit: limitNum,
-        _cached: true,
-      });
-    }
-
-    console.log(`📊 Match:`, JSON.stringify(match, null, 2));
-    console.log(`📊 Page: ${pageNum}, Limit: ${limitNum}, Skip: ${skip}`);
-
-    // ============================================================
-    // GET TOTAL COUNT - FAST
-    // ============================================================
-    let total = 0;
-    try {
-      total = await Application.countDocuments(match);
-      console.log(`📊 Total: ${total}`);
-    } catch (e) {
-      console.error("❌ Count error:", e);
-      total = 0;
-    }
-
-    // ============================================================
-    // GET DATA - OPTIMIZED QUERY
-    // ============================================================
-    let applications: any[] = [];
-    try {
-      console.log(`🔄 Fetching ${limitNum} applications...`);
-
-      // Use lean() for faster results
-      applications = await Application.find(match)
-        .select(
-          "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName planId",
-        )
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limitNum)
-        .lean()
-        .maxTimeMS(15000); // 15 second timeout
-
-      console.log(`✅ Fetched: ${applications.length}`);
-    } catch (findError: any) {
-      console.error("❌ Find error:", findError.message);
-
-      // FALLBACK - without sort
-      try {
-        console.log("🔄 FALLBACK: Without sort...");
-        applications = await Application.find(match)
-          .select(
-            "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName planId",
-          )
-          .skip(skip)
-          .limit(limitNum)
-          .lean()
-          .maxTimeMS(10000);
-        console.log(`✅ Fallback: ${applications.length}`);
-      } catch (fallbackError: any) {
-        console.error("❌ Fallback failed:", fallbackError.message);
-        applications = [];
-      }
-    }
-
-    // ============================================================
-    // GET RELATED DATA - BATCH FETCH (FAST)
-    // ============================================================
-    if (applications.length > 0) {
-      try {
-        const planIds = applications
-          .map((a) => a.planId)
-          .filter((id) => id && id.toString());
-
-        const buildingIds = applications
-          .map((a) => a.buildingId)
-          .filter((id) => id && id.toString());
-
-        // Fetch plans and buildings in parallel
-        const [plans, buildings] = await Promise.all([
-          planIds.length > 0
-            ? Plan.find({ _id: { $in: planIds } })
-                .select("name price speed")
-                .lean()
-                .maxTimeMS(5000)
-            : Promise.resolve([]),
-          buildingIds.length > 0
-            ? Building.find({ _id: { $in: buildingIds } })
-                .select("buildingName streetAddress city")
-                .lean()
-                .maxTimeMS(5000)
-            : Promise.resolve([]),
-        ]);
-
-        const planMap = new Map();
-        plans.forEach((p) => planMap.set(p._id.toString(), p));
-
-        const buildingMap = new Map();
-        buildings.forEach((b) => buildingMap.set(b._id.toString(), b));
-
-        applications = applications.map((app) => ({
-          ...app,
-          plan: app.planId ? planMap.get(app.planId.toString()) || null : null,
-          building: app.buildingId
-            ? buildingMap.get(app.buildingId.toString()) || null
-            : null,
-        }));
-
-        console.log(
-          `✅ Related data mapped: ${plans.length} plans, ${buildings.length} buildings`,
-        );
-      } catch (e) {
-        console.error("❌ Error fetching related data:", e);
-      }
-    }
-
-    // Format response with image URLs
-    const applicationsWithUrls = applications.map((app) => ({
-      ...app,
-      idImageUrl: getImageUrl(app.idImage),
-      hasAccount: !!app.registeredUserId,
-      macAddress: app.macAddress || "",
-      tower: app.tower || "",
-    }));
-
-    // ============================================================
-    // SAVE TO CACHE
-    // ============================================================
-    applicationsCache = {
-      data: applicationsWithUrls,
-      total: total,
-      timestamp: now,
-      queryKey: cacheKey,
-    };
-
-    res.status(200).json({
-      success: true,
-      data: applicationsWithUrls,
-      totalPages: Math.ceil((total || 0) / limitNum),
-      currentPage: pageNum,
-      total: total || 0,
-      limit: limitNum,
-      _cached: false,
-    });
-  } catch (error: any) {
-    console.error("❌ ERROR:", error);
-    res.status(200).json({
-      success: true,
-      data: [],
-      totalPages: 0,
-      currentPage: 1,
-      total: 0,
-      limit: 20,
-      _error: true,
-      message: error.message || "Error loading applications",
-    });
-  }
-};
-
+// ============ GET SINGLE APPLICATION ============
 export const getApplication = async (
   req: Request,
   res: Response,
@@ -835,7 +829,8 @@ export const getApplication = async (
         "buildingName streetAddress region province city barangay zipCode isActive",
       )
       .populate("reviewedBy", "firstName lastName email")
-      .lean();
+      .lean()
+      .exec();
 
     if (!application) {
       return res
@@ -860,6 +855,7 @@ export const getApplication = async (
   }
 };
 
+// ============ APPROVE APPLICATION ============
 export const approveApplication = async (
   req: AuthRequest,
   res: Response,
@@ -908,14 +904,14 @@ export const approveApplication = async (
     await session.commitTransaction();
     session.endSession();
 
-    // Clear cache
-    applicationsCache = null;
+    appCache.flushAll();
+    dashboardCache = null;
+    dashboardCacheTime = 0;
 
     const plan = application.planId as any;
     await emailService.sendApplicationApproved(application, plan);
 
     console.log(`✅ Application approved: ${application.applicationId}`);
-    console.log(`📧 Approval email sent to: ${application.email}`);
 
     res.status(200).json({
       success: true,
@@ -934,6 +930,7 @@ export const approveApplication = async (
   }
 };
 
+// ============ REJECT APPLICATION ============
 export const rejectApplication = async (
   req: AuthRequest,
   res: Response,
@@ -981,8 +978,9 @@ export const rejectApplication = async (
     await session.commitTransaction();
     session.endSession();
 
-    // Clear cache
-    applicationsCache = null;
+    appCache.flushAll();
+    dashboardCache = null;
+    dashboardCacheTime = 0;
 
     await emailService.sendApplicationRejected(
       application,
@@ -1005,6 +1003,7 @@ export const rejectApplication = async (
   }
 };
 
+// ============ START BILLING ============
 export const startBillingForApplication = async (
   req: AuthRequest,
   res: Response,
@@ -1022,6 +1021,7 @@ export const startBillingForApplication = async (
     let application = null;
 
     if (mongoose.Types.ObjectId.isValid(applicationId)) {
+      console.log(`📌 Attempt 1: Find by MongoDB _id: ${applicationId}`);
       application = await Application.findById(applicationId)
         .populate("planId")
         .session(session)
@@ -1029,6 +1029,9 @@ export const startBillingForApplication = async (
     }
 
     if (!application) {
+      console.log(
+        `📌 Attempt 2: Find by string applicationId field: ${applicationId}`,
+      );
       application = await Application.findOne({
         applicationId: applicationId,
       })
@@ -1038,6 +1041,7 @@ export const startBillingForApplication = async (
     }
 
     if (!application) {
+      console.log(`📌 Attempt 3: Find by email or phone`);
       application = await Application.findOne({
         $or: [{ email: applicationId }, { phoneNumber: applicationId }],
       })
@@ -1049,11 +1053,16 @@ export const startBillingForApplication = async (
     if (!application) {
       await session.abortTransaction();
       session.endSession();
+      console.error(`❌ Application NOT FOUND for ID: ${applicationId}`);
       return res.status(404).json({
         success: false,
-        message: `Application not found with ID: ${applicationId}`,
+        message: `Application not found with ID: ${applicationId}.`,
       });
     }
+
+    console.log(
+      `✅ Found application: ${application.applicationId} - ${application.firstName} ${application.lastName}`,
+    );
 
     if (application.status !== "approved") {
       await session.abortTransaction();
@@ -1064,6 +1073,7 @@ export const startBillingForApplication = async (
       });
     }
 
+    // Check existing billing cycle
     const existingBillingCycle = await BillingCycle.findOne({
       applicationId: application.applicationId,
     })
@@ -1251,7 +1261,11 @@ export const startBillingForApplication = async (
       { session },
     );
 
-    const invoiceNumber = `INV-${new Date().getFullYear()}${(new Date().getMonth() + 1).toString().padStart(2, "0")}-${Date.now().toString().slice(-6)}${Math.floor(
+    const invoiceNumber = `INV-${new Date().getFullYear()}${(
+      new Date().getMonth() + 1
+    )
+      .toString()
+      .padStart(2, "0")}-${Date.now().toString().slice(-6)}${Math.floor(
       Math.random() * 1000,
     )
       .toString()
@@ -1302,8 +1316,9 @@ export const startBillingForApplication = async (
     await session.commitTransaction();
     session.endSession();
 
-    // Clear cache
-    applicationsCache = null;
+    appCache.flushAll();
+    dashboardCache = null;
+    dashboardCacheTime = 0;
 
     await emailService.sendBillWithoutAccount(application, bill[0], plan);
 
@@ -1333,6 +1348,14 @@ export const startBillingForApplication = async (
   }
 };
 
+// ============ CLEAR CACHE ============
+export const clearApplicationCache = () => {
+  appCache.flushAll();
+  dashboardCache = null;
+  dashboardCacheTime = 0;
+  console.log("🗑️ Application cache cleared");
+};
+
 export default {
   getRegions,
   getProvincesByRegion,
@@ -1345,4 +1368,7 @@ export default {
   approveApplication,
   rejectApplication,
   startBillingForApplication,
+  getApplicationDashboardData,
+  getApplicationStats,
+  clearApplicationCache,
 };

@@ -1,4 +1,4 @@
-// routes/applicationRoutes.ts - COMPLETE FIXED
+// routes/applicationRoutes.ts - COMPLETE WITH ALL ENDPOINTS
 import express, { Router, Request, Response, NextFunction } from "express";
 import { body } from "express-validator";
 import {
@@ -13,6 +13,9 @@ import {
   getCitiesByProvince,
   getBarangaysByCity,
   startBillingForApplication,
+  getApplicationDashboardData,
+  getApplicationStats,
+  clearApplicationCache,
 } from "../controllers/applicationController";
 import { protect, authorize } from "../middleware/auth";
 import { uploadIdCard } from "../middleware/upload";
@@ -23,7 +26,7 @@ const router: Router = Router();
 
 console.log("🔄 Registering application routes...");
 
-// Public routes
+// ============ PUBLIC ROUTES ============
 router.get("/address/regions", getRegions);
 router.get("/address/provinces/:regionCode", getProvincesByRegion);
 router.get("/address/cities/:provinceCode", getCitiesByProvince);
@@ -53,13 +56,15 @@ router.post(
 
 router.get("/status/:applicationId", checkApplicationStatus);
 
-// Protected routes
+// ============ PROTECTED ROUTES ============
 router.use(protect);
 router.use(authorize("super_admin", "admin", "staff"));
 
-// ============================================================
-// GET all applications - FIXED with direct error handling
-// ============================================================
+// ============ DASHBOARD ENDPOINTS ============
+router.get("/dashboard/data", getApplicationDashboardData);
+router.get("/dashboard/stats", getApplicationStats);
+
+// ============ GET ALL APPLICATIONS - WITH PAGINATION ============
 router.get("/", async (req: Request, res: Response, next: NextFunction) => {
   try {
     console.log("📊 Application route / called");
@@ -93,12 +98,108 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
   }
 });
 
+// ============ GET ALL APPLICATIONS - NO LIMIT (ALL DATA) ============
+router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    console.log("📊 Application route /all called - fetching ALL data");
+
+    if (mongoose.connection.readyState !== 1) {
+      console.error("❌ MongoDB not connected!");
+      return res.status(503).json({
+        success: false,
+        message: "Database connection unavailable",
+        data: [],
+        total: 0,
+      });
+    }
+
+    // Fetch ALL applications without pagination limit
+    const applications = await Application.find()
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const total = applications.length;
+
+    console.log(`✅ Found ${total} total applications`);
+
+    // Format response
+    const formattedData = applications.map((app: any) => ({
+      _id: app._id,
+      applicationId: app.applicationId,
+      firstName: app.firstName,
+      lastName: app.lastName,
+      email: app.email,
+      phoneNumber: app.phoneNumber,
+      status: app.status,
+      createdAt: app.createdAt,
+      idImage: app.idImage,
+      idImageUrl: app.idImage ? getImageUrl(app.idImage) : "",
+      billingStarted: app.billingStarted || false,
+      registeredUserId: app.registeredUserId,
+      billingCycleId: app.billingCycleId,
+      idType: app.idType,
+      idNumber: app.idNumber,
+      tower: app.tower || "",
+      floor: app.floor,
+      unitNumber: app.unitNumber,
+      macAddress: app.macAddress || "",
+      buildingId: app.buildingId,
+      buildingName: app.buildingName,
+      hasAccount: !!app.registeredUserId,
+      installationFee: app.installationFee || 0,
+      installationFeePaid: app.installationFeePaid || false,
+      serviceStatus: app.serviceStatus || "pending",
+      plan: app.planId,
+      building: app.buildingId,
+    }));
+
+    return res.status(200).json({
+      success: true,
+      data: formattedData,
+      total: total,
+      message: `All ${total} applications fetched successfully`,
+    });
+  } catch (error: any) {
+    console.error("❌ Error fetching all applications:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Error fetching all applications",
+      error: error.message || "Unknown error",
+    });
+  }
+});
+
+// Helper function (moved from controller)
+function getImageUrl(imagePath?: string): string {
+  if (!imagePath) return "";
+  if (
+    imagePath.includes("cloudinary.com") ||
+    imagePath.startsWith("https://res.cloudinary.com")
+  ) {
+    return imagePath;
+  }
+  if (imagePath.startsWith("data:")) return imagePath;
+  const PRODUCTION_URL = "https://misterfyberbackend.onrender.com";
+  let filename = "";
+  const parts = imagePath.split(/[\\\/]/);
+  filename = parts[parts.length - 1];
+  if (!filename || filename === "placeholder.jpg") {
+    return `${PRODUCTION_URL}/uploads/id-cards/placeholder.jpg`;
+  }
+  return `${PRODUCTION_URL}/uploads/id-cards/${filename}`;
+}
+
+// ============ SINGLE APPLICATION ============
 router.get("/:id", getApplication);
+
+// ============ APPROVE / REJECT ============
 router.put("/:id/approve", approveApplication);
 router.put("/:id/reject", rejectApplication);
+
+// ============ START BILLING ============
 router.post("/:applicationId/start-billing", startBillingForApplication);
 
-// Inline edit routes
+// ============ INLINE EDIT ROUTES ============
 router.patch("/:id/mac-address", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -116,6 +217,8 @@ router.patch("/:id/mac-address", async (req: Request, res: Response) => {
         message: "Application not found",
       });
     }
+
+    clearApplicationCache();
 
     res.status(200).json({
       success: true,
@@ -151,6 +254,8 @@ router.patch("/:id/tower", async (req: Request, res: Response) => {
       });
     }
 
+    clearApplicationCache();
+
     res.status(200).json({
       success: true,
       data: {
@@ -163,6 +268,82 @@ router.patch("/:id/tower", async (req: Request, res: Response) => {
     res.status(500).json({
       success: false,
       message: "Server error updating tower",
+    });
+  }
+});
+
+// ============ CLEAR CACHE ============
+router.post("/cache/clear", (req: Request, res: Response) => {
+  clearApplicationCache();
+  res.status(200).json({ success: true, message: "Cache cleared" });
+});
+
+// ============ TEST ROUTES ============
+router.get("/test/direct", async (req: Request, res: Response) => {
+  try {
+    console.log("🧪 TEST ROUTE 1: Direct database query");
+
+    const total = await Application.countDocuments();
+    console.log(`📊 Total applications: ${total}`);
+
+    const apps = await Application.find()
+      .limit(5)
+      .select("applicationId firstName lastName email status createdAt")
+      .lean();
+
+    console.log(`📋 Found ${apps.length} applications`);
+
+    res.status(200).json({
+      success: true,
+      total,
+      sample: apps,
+      message: "Direct database query successful",
+    });
+  } catch (error) {
+    console.error("❌ Test route error:", error);
+    res.status(500).json({
+      success: false,
+      error: String(error),
+    });
+  }
+});
+
+router.get("/test/simple", async (req: Request, res: Response) => {
+  try {
+    console.log("🧪 TEST ROUTE 2: Simple pagination");
+
+    const { page = 1, limit = 10 } = req.query;
+    const pageNum = parseInt(page as string);
+    const limitNum = parseInt(limit as string);
+    const skip = (pageNum - 1) * limitNum;
+
+    const [apps, total] = await Promise.all([
+      Application.find()
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum)
+        .select(
+          "applicationId firstName lastName email status createdAt buildingName",
+        )
+        .lean(),
+      Application.countDocuments(),
+    ]);
+
+    console.log(`📋 Found ${apps.length} applications, Total: ${total}`);
+
+    res.status(200).json({
+      success: true,
+      data: apps,
+      total,
+      page: pageNum,
+      limit: limitNum,
+      totalPages: Math.ceil(total / limitNum),
+    });
+  } catch (error) {
+    console.error("❌ Test route error:", error);
+    res.status(500).json({
+      success: false,
+      error: String(error),
     });
   }
 });

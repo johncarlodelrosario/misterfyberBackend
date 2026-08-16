@@ -16,7 +16,7 @@ import { protect, adminMiddleware } from "../middleware/auth";
 
 const router = express.Router();
 
-// Public route for active buildings
+// Public route for active buildings - WITH CACHE!
 router.get("/active", getActiveBuildings);
 
 // Get building installation fee - semi-public (can be accessed with auth)

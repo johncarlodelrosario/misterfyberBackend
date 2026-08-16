@@ -71,6 +71,9 @@ const BuildingSchema: Schema = new Schema(
   },
 );
 
+// ============================================================
+// INDEXES FOR FAST QUERIES
+// ============================================================
 BuildingSchema.index({ buildingName: 1 });
 BuildingSchema.index({ region: 1, province: 1, city: 1 });
 BuildingSchema.index({ isActive: 1 });

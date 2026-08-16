@@ -1,4 +1,4 @@
-// backend/src/config/database.ts - WITHOUT TEXT INDEX (FASTER)
+// backend/src/config/database.ts - WITH TEXT INDEX
 import mongoose from "mongoose";
 import dotenv from "dotenv";
 import path from "path";
@@ -170,14 +170,14 @@ class Database {
       const collectionNames = collections.map((c) => c.name);
 
       // ============================================================
-      // APPLICATION INDEXES - NO TEXT INDEX
+      // APPLICATION INDEXES - WITH TEXT INDEX
       // ============================================================
       if (collectionNames.includes("applications")) {
         const applicationsCollection = db.collection("applications");
         const appIndexes = await applicationsCollection.indexes();
         const appIndexNames = appIndexes.map((idx) => idx.name);
 
-        // Single field indexes - CRITICAL
+        // Single field indexes
         if (!appIndexNames.includes("applicationId_1")) {
           await applicationsCollection.createIndex(
             { applicationId: 1 },
@@ -226,7 +226,7 @@ class Database {
           console.log("✅ Created registeredUserId index");
         }
 
-        // Compound indexes - CRITICAL FOR PERFORMANCE
+        // Compound indexes
         if (!appIndexNames.includes("status_1_createdAt_-1")) {
           await applicationsCollection.createIndex({
             status: 1,
@@ -248,9 +248,40 @@ class Database {
         }
 
         // ============================================================
-        // NO TEXT INDEX - MAS MABILIS
+        // 🔥 TEXT INDEX FOR FAST SEARCH - CRITICAL!
         // ============================================================
-        console.log("✅ Application indexes created (no text index)");
+        const hasTextIndex = appIndexes.some((idx) => idx.key && idx.key._fts);
+
+        if (!hasTextIndex) {
+          try {
+            await applicationsCollection.createIndex(
+              {
+                firstName: "text",
+                lastName: "text",
+                email: "text",
+                phoneNumber: "text",
+                applicationId: "text",
+              },
+              {
+                weights: {
+                  applicationId: 10,
+                  firstName: 5,
+                  lastName: 5,
+                  email: 3,
+                  phoneNumber: 2,
+                },
+                name: "search_text_index",
+              },
+            );
+            console.log("✅ Created TEXT INDEX for search");
+          } catch (textError) {
+            console.error("❌ Failed to create text index:", textError);
+          }
+        } else {
+          console.log("✅ Text index already exists");
+        }
+
+        console.log("✅ Application indexes created with text search");
       }
 
       // ============================================================

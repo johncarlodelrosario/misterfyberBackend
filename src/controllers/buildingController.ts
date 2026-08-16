@@ -1,10 +1,25 @@
-// backend/src/controllers/buildingController.ts - COMPLETE WITH INSTALLATION FEE
+// backend/src/controllers/buildingController.ts - WITH CACHE!
 
 import { Request, Response, NextFunction } from "express";
 import Building from "../models/Building";
 import { validationResult } from "express-validator";
 
 type AuthRequest = Request & { user?: any };
+
+// ============================================================
+// 🔥 CACHE FOR ACTIVE BUILDINGS - SOBRANG BILIS!
+// ============================================================
+let activeBuildingsCache: any[] = [];
+let activeBuildingsCacheTimestamp = 0;
+const ACTIVE_BUILDINGS_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+let allBuildingsCache: {
+  data: any[];
+  total: number;
+  timestamp: number;
+  queryKey: string;
+} | null = null;
+const ALL_BUILDINGS_CACHE_TTL = 30 * 1000; // 30 seconds
 
 function checkAdmin(req: AuthRequest, res: Response): boolean {
   if (!req.user || !req.user.role) {
@@ -71,6 +86,11 @@ export const createBuilding = async (
       isActive: true,
     });
 
+    // Clear caches
+    activeBuildingsCache = [];
+    activeBuildingsCacheTimestamp = 0;
+    allBuildingsCache = null;
+
     res.status(201).json({
       success: true,
       data: building,
@@ -89,46 +109,107 @@ export const getAllBuildings = async (
 
   try {
     const { page = 1, limit = 10, isActive } = req.query;
+    const pageNum = parseInt(page as string);
+    const limitNum = parseInt(limit as string);
 
     let query: any = {};
     if (isActive !== undefined) {
       query.isActive = isActive === "true";
     }
 
+    const cacheKey = JSON.stringify({ query, pageNum, limitNum });
+    const now = Date.now();
+
+    // Check cache
+    if (
+      allBuildingsCache &&
+      allBuildingsCache.queryKey === cacheKey &&
+      now - allBuildingsCache.timestamp < ALL_BUILDINGS_CACHE_TTL
+    ) {
+      console.log("📦 Returning cached buildings");
+      return res.status(200).json({
+        success: true,
+        data: allBuildingsCache.data,
+        totalPages: Math.ceil((allBuildingsCache.total || 0) / limitNum),
+        currentPage: pageNum,
+        total: allBuildingsCache.total || 0,
+        _cached: true,
+      });
+    }
+
     const buildings = await Building.find(query)
       .sort({ createdAt: -1 })
-      .limit(parseInt(limit as string) * 1)
-      .skip((parseInt(page as string) - 1) * parseInt(limit as string));
+      .limit(limitNum)
+      .skip((pageNum - 1) * limitNum)
+      .lean()
+      .maxTimeMS(5000);
 
     const total = await Building.countDocuments(query);
+
+    // Save to cache
+    allBuildingsCache = {
+      data: buildings,
+      total: total,
+      timestamp: now,
+      queryKey: cacheKey,
+    };
 
     res.status(200).json({
       success: true,
       data: buildings,
-      totalPages: Math.ceil(total / parseInt(limit as string)),
-      currentPage: parseInt(page as string),
+      totalPages: Math.ceil(total / limitNum),
+      currentPage: pageNum,
       total,
+      _cached: false,
     });
   } catch (error) {
     next(error);
   }
 };
 
+// ============================================================
+// 🔥 GET ACTIVE BUILDINGS - WITH CACHE!
+// ============================================================
 export const getActiveBuildings = async (
   req: Request,
   res: Response,
   next: NextFunction,
 ) => {
   try {
+    const now = Date.now();
+
+    // Check cache
+    if (
+      activeBuildingsCache.length > 0 &&
+      now - activeBuildingsCacheTimestamp < ACTIVE_BUILDINGS_CACHE_TTL
+    ) {
+      console.log("📦 Returning cached active buildings");
+      return res.status(200).json({
+        success: true,
+        data: activeBuildingsCache,
+        _cached: true,
+      });
+    }
+
+    console.log("🔄 Fetching active buildings from database...");
     const buildings = await Building.find({ isActive: true })
       .select(
         "buildingName region province city barangay streetAddress zipCode location installationFee",
       )
-      .sort({ buildingName: 1 });
+      .sort({ buildingName: 1 })
+      .lean()
+      .maxTimeMS(5000);
+
+    // Save to cache
+    activeBuildingsCache = buildings;
+    activeBuildingsCacheTimestamp = now;
+
+    console.log(`✅ Cached ${buildings.length} active buildings`);
 
     res.status(200).json({
       success: true,
       data: buildings,
+      _cached: false,
     });
   } catch (error) {
     next(error);
@@ -143,7 +224,7 @@ export const getBuilding = async (
   if (!checkAdmin(req, res)) return;
 
   try {
-    const building = await Building.findById(req.params.id);
+    const building = await Building.findById(req.params.id).lean();
 
     if (!building) {
       return res.status(404).json({
@@ -216,6 +297,11 @@ export const updateBuilding = async (
 
     await building.save();
 
+    // Clear caches
+    activeBuildingsCache = [];
+    activeBuildingsCacheTimestamp = 0;
+    allBuildingsCache = null;
+
     res.status(200).json({
       success: true,
       data: building,
@@ -244,6 +330,11 @@ export const deleteBuilding = async (
 
     await building.deleteOne();
 
+    // Clear caches
+    activeBuildingsCache = [];
+    activeBuildingsCacheTimestamp = 0;
+    allBuildingsCache = null;
+
     res.status(200).json({
       success: true,
       message: "Building deleted successfully",
@@ -261,7 +352,11 @@ export const getBuildingInstallationFee = async (
   try {
     const { buildingId } = req.params;
 
-    const building = await Building.findById(buildingId);
+    const building = await Building.findById(buildingId)
+      .select("_id buildingName installationFee location")
+      .lean()
+      .maxTimeMS(3000);
+
     if (!building) {
       return res.status(404).json({
         success: false,
@@ -311,6 +406,11 @@ export const updateBuildingInstallationFee = async (
 
     building.installationFee = installationFee;
     await building.save();
+
+    // Clear caches
+    activeBuildingsCache = [];
+    activeBuildingsCacheTimestamp = 0;
+    allBuildingsCache = null;
 
     res.status(200).json({
       success: true,
