@@ -245,7 +245,6 @@ class EmailService {
 
   constructor() {
     this.adminEmail = process.env.ADMIN_EMAIL || "admin@misterfyber.com";
-    this.supportEmail = process.env.SUPPORT_EMAIL || "support@misterfyber.com";
     this.emailFrom =
       process.env.EMAIL_FROM || "Mister Fyber <admin@misterfyber.com>";
     this.apiKey = process.env.BREVO_API_KEY || "";

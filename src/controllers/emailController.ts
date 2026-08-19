@@ -152,7 +152,7 @@ function generateEmailPreview(
         </div>
         <div class="footer">
           <p>Mister Fyber - Your trusted internet provider</p>
-          <p><small>Need help? Contact us at <a href="mailto:support@misterfyber.com">support@misterfyber.com</a></small></p>
+          <p><small>Need help? Contact us at <a href="mailto:admin@misterfyber.com">admin@misterfyber.com</a></small></p>
         </div>
       </div>
     </html>
