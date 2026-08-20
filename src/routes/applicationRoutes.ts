@@ -1,10 +1,9 @@
-// routes/applicationRoutes.ts - COMPLETE WITH ALL ENDPOINTS
+// routes/applicationRoutes.ts - COMPLETE FIXED - PINAKAMABILIS!
 import express, { Router, Request, Response, NextFunction } from "express";
 import { body } from "express-validator";
 import {
   submitApplication,
   checkApplicationStatus,
-  getAllApplications,
   getApplication,
   approveApplication,
   rejectApplication,
@@ -25,6 +24,11 @@ import mongoose from "mongoose";
 const router: Router = Router();
 
 console.log("🔄 Registering application routes...");
+
+// ============ CACHE ============
+let allApplicationsCache: any = null;
+let allApplicationsCacheTime = 0;
+const ALL_CACHE_TTL = 30 * 1000; // 30 seconds lang!
 
 // ============ PUBLIC ROUTES ============
 router.get("/address/regions", getRegions);
@@ -82,47 +86,26 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
       });
     }
 
-    await getAllApplications(req, res, next);
-  } catch (error: any) {
-    console.error("❌ Route error:", error);
-    res.status(200).json({
-      success: true,
-      data: [],
-      totalPages: 0,
-      currentPage: 1,
-      total: 0,
-      limit: 20,
-      _error: true,
-      message: error.message || "Error loading applications",
-    });
-  }
-});
+    // Use controller function
+    const { page = 1, limit = 20, status } = req.query;
+    const pageNum = parseInt(page as string);
+    const limitNum = parseInt(limit as string);
+    const skip = (pageNum - 1) * limitNum;
 
-// ============ GET ALL APPLICATIONS - NO LIMIT (ALL DATA) ============
-router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    console.log("📊 Application route /all called - fetching ALL data");
-
-    if (mongoose.connection.readyState !== 1) {
-      console.error("❌ MongoDB not connected!");
-      return res.status(503).json({
-        success: false,
-        message: "Database connection unavailable",
-        data: [],
-        total: 0,
-      });
+    const filter: any = {};
+    if (status && status !== "all") {
+      filter.status = status;
     }
 
-    // Fetch ALL applications without pagination limit
-    const applications = await Application.find()
-      .sort({ createdAt: -1 })
-      .lean();
+    const [applications, total] = await Promise.all([
+      Application.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum)
+        .lean(),
+      Application.countDocuments(filter),
+    ]);
 
-    const total = applications.length;
-
-    console.log(`✅ Found ${total} total applications`);
-
-    // Format response
     const formattedData = applications.map((app: any) => ({
       _id: app._id,
       applicationId: app.applicationId,
@@ -149,27 +132,182 @@ router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
       installationFee: app.installationFee || 0,
       installationFeePaid: app.installationFeePaid || false,
       serviceStatus: app.serviceStatus || "pending",
-      plan: app.planId,
-      building: app.buildingId,
+      plan: null,
+      building: null,
     }));
 
     return res.status(200).json({
       success: true,
       data: formattedData,
-      total: total,
-      message: `All ${total} applications fetched successfully`,
+      totalPages: Math.ceil(total / limitNum) || 1,
+      currentPage: pageNum,
+      total: total || 0,
+      limit: limitNum,
     });
   } catch (error: any) {
-    console.error("❌ Error fetching all applications:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Error fetching all applications",
-      error: error.message || "Unknown error",
+    console.error("❌ Route error:", error);
+    return res.status(200).json({
+      success: true,
+      data: [],
+      totalPages: 0,
+      currentPage: 1,
+      total: 0,
+      limit: 20,
+      _error: true,
+      message: error.message || "Error loading applications",
     });
   }
 });
 
-// Helper function (moved from controller)
+// ============ GET ALL APPLICATIONS - PINAKAMABILIS! ============
+router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
+  const startTime = Date.now();
+
+  try {
+    // Check cache first - PARA HINDI NA PUMUNTA SA MONGODB!
+    const now = Date.now();
+    if (
+      allApplicationsCache &&
+      now - allApplicationsCacheTime < ALL_CACHE_TTL
+    ) {
+      console.log("📦 Returning cached all applications data");
+      return res.status(200).json({
+        success: true,
+        data: allApplicationsCache.data,
+        total: allApplicationsCache.total,
+        page: allApplicationsCache.page,
+        limit: allApplicationsCache.limit,
+        totalPages: allApplicationsCache.totalPages,
+        cached: true,
+        _responseTime: `${Date.now() - startTime}ms`,
+      });
+    }
+
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 50;
+    const finalLimit = Math.min(limit, 100);
+    const skip = (page - 1) * finalLimit;
+
+    console.log(
+      `📊 Application route /all - page: ${page}, limit: ${finalLimit}`,
+    );
+
+    if (mongoose.connection.readyState !== 1) {
+      console.error("❌ MongoDB not connected!");
+      return res.status(503).json({
+        success: false,
+        message: "Database connection unavailable",
+        data: [],
+        total: 0,
+        page: 1,
+        limit: finalLimit,
+        totalPages: 0,
+      });
+    }
+
+    // ✅ SIMPLENG QUERY - WALANG POPULATE, WALANG COMPLEX!
+    const [applications, total] = await Promise.all([
+      Application.find()
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(finalLimit)
+        .lean(),
+      Application.countDocuments(),
+    ]);
+
+    console.log(
+      `✅ Found ${applications.length} applications in ${Date.now() - startTime}ms`,
+    );
+
+    // Format response - simple lang!
+    const formattedData = applications.map((app: any) => ({
+      _id: app._id,
+      applicationId: app.applicationId,
+      firstName: app.firstName,
+      lastName: app.lastName,
+      email: app.email,
+      phoneNumber: app.phoneNumber,
+      status: app.status,
+      createdAt: app.createdAt,
+      idImage: app.idImage,
+      idImageUrl: app.idImage ? getImageUrl(app.idImage) : "",
+      billingStarted: app.billingStarted || false,
+      registeredUserId: app.registeredUserId,
+      billingCycleId: app.billingCycleId,
+      idType: app.idType,
+      idNumber: app.idNumber,
+      tower: app.tower || "",
+      floor: app.floor,
+      unitNumber: app.unitNumber,
+      macAddress: app.macAddress || "",
+      buildingId: app.buildingId,
+      buildingName: app.buildingName,
+      hasAccount: !!app.registeredUserId,
+      installationFee: app.installationFee || 0,
+      installationFeePaid: app.installationFeePaid || false,
+      serviceStatus: app.serviceStatus || "pending",
+      planId: app.planId,
+      plan: null,
+      building: null,
+    }));
+
+    const totalPages = Math.ceil(total / finalLimit);
+
+    // Cache the result - PARA NEXT TIME, CACHE NA AGAD!
+    allApplicationsCache = {
+      data: formattedData,
+      total: total,
+      page: page,
+      limit: finalLimit,
+      totalPages: totalPages,
+    };
+    allApplicationsCacheTime = Date.now();
+
+    return res.status(200).json({
+      success: true,
+      data: formattedData,
+      total: total,
+      page: page,
+      limit: finalLimit,
+      totalPages: totalPages,
+      hasNextPage: page < totalPages,
+      hasPrevPage: page > 1,
+      _responseTime: `${Date.now() - startTime}ms`,
+    });
+  } catch (error: any) {
+    console.error("❌ Error fetching all applications:", error.message);
+
+    // ✅ PAG MAY CACHE, GAMITIN KAHIT EXPIRED NA!
+    if (allApplicationsCache) {
+      console.log("📦 Returning expired cached data due to error");
+      return res.status(200).json({
+        success: true,
+        data: allApplicationsCache.data,
+        total: allApplicationsCache.total,
+        page: allApplicationsCache.page,
+        limit: allApplicationsCache.limit,
+        totalPages: allApplicationsCache.totalPages,
+        cached: true,
+        error: "Using cached data due to database timeout",
+        _responseTime: `${Date.now() - startTime}ms`,
+      });
+    }
+
+    // ✅ PAG WALANG CACHE, RETURN EMPTY DATA - WAG MAG-HANG!
+    return res.status(200).json({
+      success: true,
+      data: [],
+      total: 0,
+      page: 1,
+      limit: 50,
+      totalPages: 0,
+      _responseTime: `${Date.now() - startTime}ms`,
+      error: "Database timeout - please refresh",
+    });
+  }
+});
+
+// Helper function
 function getImageUrl(imagePath?: string): string {
   if (!imagePath) return "";
   if (
@@ -188,6 +326,94 @@ function getImageUrl(imagePath?: string): string {
   }
   return `${PRODUCTION_URL}/uploads/id-cards/${filename}`;
 }
+
+// ============ DELETE APPLICATION ============
+router.delete("/:id", async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const application = await Application.findById(id);
+
+    if (!application) {
+      return res.status(404).json({
+        success: false,
+        message: "Application not found",
+      });
+    }
+
+    await Application.findByIdAndDelete(id);
+
+    allApplicationsCache = null;
+    allApplicationsCacheTime = 0;
+    clearApplicationCache();
+
+    res.status(200).json({
+      success: true,
+      message: `Application ${application.applicationId} deleted successfully`,
+      data: {
+        applicationId: application.applicationId,
+        firstName: application.firstName,
+        lastName: application.lastName,
+      },
+    });
+  } catch (error) {
+    console.error("Error deleting application:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error deleting application",
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
+// ============ BULK DELETE ============
+router.post("/bulk-delete", async (req: Request, res: Response) => {
+  try {
+    const { applicationIds } = req.body;
+
+    if (
+      !applicationIds ||
+      !Array.isArray(applicationIds) ||
+      applicationIds.length === 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "applicationIds array is required",
+      });
+    }
+
+    const deleted = await Application.deleteMany({
+      _id: { $in: applicationIds },
+    });
+
+    allApplicationsCache = null;
+    allApplicationsCacheTime = 0;
+    clearApplicationCache();
+
+    res.status(200).json({
+      success: true,
+      message: `${deleted.deletedCount} applications deleted successfully`,
+      data: {
+        deletedCount: deleted.deletedCount,
+      },
+    });
+  } catch (error) {
+    console.error("Error bulk deleting applications:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error deleting applications",
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
+// ============ CLEAR CACHE ============
+router.post("/cache/clear", (req: Request, res: Response) => {
+  allApplicationsCache = null;
+  allApplicationsCacheTime = 0;
+  clearApplicationCache();
+  res.status(200).json({ success: true, message: "All cache cleared" });
+});
 
 // ============ SINGLE APPLICATION ============
 router.get("/:id", getApplication);
@@ -218,6 +444,8 @@ router.patch("/:id/mac-address", async (req: Request, res: Response) => {
       });
     }
 
+    allApplicationsCache = null;
+    allApplicationsCacheTime = 0;
     clearApplicationCache();
 
     res.status(200).json({
@@ -254,6 +482,8 @@ router.patch("/:id/tower", async (req: Request, res: Response) => {
       });
     }
 
+    allApplicationsCache = null;
+    allApplicationsCacheTime = 0;
     clearApplicationCache();
 
     res.status(200).json({
@@ -272,16 +502,10 @@ router.patch("/:id/tower", async (req: Request, res: Response) => {
   }
 });
 
-// ============ CLEAR CACHE ============
-router.post("/cache/clear", (req: Request, res: Response) => {
-  clearApplicationCache();
-  res.status(200).json({ success: true, message: "Cache cleared" });
-});
-
 // ============ TEST ROUTES ============
 router.get("/test/direct", async (req: Request, res: Response) => {
   try {
-    console.log("🧪 TEST ROUTE 1: Direct database query");
+    console.log("🧪 TEST ROUTE: Direct database query");
 
     const total = await Application.countDocuments();
     console.log(`📊 Total applications: ${total}`);
@@ -310,7 +534,7 @@ router.get("/test/direct", async (req: Request, res: Response) => {
 
 router.get("/test/simple", async (req: Request, res: Response) => {
   try {
-    console.log("🧪 TEST ROUTE 2: Simple pagination");
+    console.log("🧪 TEST ROUTE: Simple pagination");
 
     const { page = 1, limit = 10 } = req.query;
     const pageNum = parseInt(page as string);

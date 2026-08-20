@@ -1,4 +1,4 @@
-// controllers/applicationController.ts - COMPLETE FIXED VERSION
+// controllers/applicationController.ts - COMPLETE FIXED (TULAD NG BILLING)
 import { Request, Response, NextFunction } from "express";
 import Application from "../models/Application";
 import Plan from "../models/Plan";
@@ -165,7 +165,7 @@ export const getImageUrl = (imagePath?: string): string => {
   return `${PRODUCTION_URL}/uploads/id-cards/${filename}`;
 };
 
-// ============ GET ALL APPLICATIONS (PAGINATED) ============
+// ============ GET ALL APPLICATIONS (PAGINATED) - TULAD NG BILLING ============
 export const getAllApplications = async (
   req: Request,
   res: Response,
@@ -183,26 +183,24 @@ export const getAllApplications = async (
       `🔄 getAllApplications - page: ${pageNum}, limit: ${limitNum}, status: ${status || "all"}`,
     );
 
-    // Build filter
     const filter: any = {};
     if (status && status !== "all") {
       filter.status = status;
     }
 
-    // Fetch applications with lean for performance
-    const applications = await Application.find(filter)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limitNum)
-      .lean();
-
-    const total = await Application.countDocuments(filter);
+    const [applications, total] = await Promise.all([
+      Application.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum)
+        .lean(),
+      Application.countDocuments(filter),
+    ]);
 
     console.log(
-      `✅ Found ${applications.length} applications, Total: ${total}`,
+      `✅ Found ${applications.length} applications, Total: ${total} in ${Date.now() - startTime}ms`,
     );
 
-    // Format response
     const formattedData = applications.map((app: any) => ({
       _id: app._id,
       applicationId: app.applicationId,
@@ -252,11 +250,17 @@ export const getAllApplications = async (
       success: false,
       message: "Error fetching applications",
       error: error instanceof Error ? error.message : "Unknown error",
+      data: [],
+      total: 0,
+      totalPages: 0,
+      currentPage: 1,
+      limit: 20,
+      _responseTime: `${Date.now() - startTime}ms`,
     });
   }
 };
 
-// ============ DASHBOARD DATA ============
+// ============ DASHBOARD DATA - TULAD NG BILLING ============
 export const getApplicationDashboardData = async (
   req: AuthRequest,
   res: Response,
@@ -285,6 +289,8 @@ export const getApplicationDashboardData = async (
       totalBuildings,
       totalPlans,
       recentApplications,
+      allApps,
+      plans,
     ] = await Promise.all([
       Application.estimatedDocumentCount(),
       Application.countDocuments({ status: "pending" }),
@@ -301,13 +307,10 @@ export const getApplicationDashboardData = async (
           "applicationId firstName lastName email status createdAt buildingName",
         )
         .lean(),
+      Application.find().select("buildingName status planId").lean(),
+      Plan.find().select("name").lean(),
     ]);
 
-    // Get by building - simple grouping
-    const allApps = await Application.find()
-      .select("buildingName status planId")
-      .lean();
-    const plans = await Plan.find().select("name").lean();
     const planMap: Record<string, string> = {};
     plans.forEach((p: any) => {
       planMap[p._id.toString()] = p.name;
@@ -405,11 +408,48 @@ export const getApplicationDashboardData = async (
     });
   } catch (error) {
     console.error("Error in getApplicationDashboardData:", error);
-    next(error);
+
+    if (dashboardCache) {
+      console.log("📦 Returning cached dashboard data due to error");
+      return res.status(200).json({
+        success: true,
+        data: dashboardCache,
+        cached: true,
+        error: "Database timeout - using cached data",
+      });
+    }
+
+    const emptyData = {
+      stats: {
+        totalApplications: 0,
+        pendingApplications: 0,
+        approvedApplications: 0,
+        rejectedApplications: 0,
+        suspendedApplications: 0,
+        totalUsers: 0,
+        totalBuildings: 0,
+        totalPlans: 0,
+        approvalRate: 0,
+        pendingRate: 0,
+        rejectedRate: 0,
+        statusDistribution: [],
+      },
+      recentApplications: [],
+      applicationsByBuilding: [],
+      applicationsByPlan: [],
+      monthlyApplications: [],
+      lastUpdated: new Date().toISOString(),
+    };
+
+    res.status(200).json({
+      success: true,
+      data: emptyData,
+      error: "Database timeout - please refresh",
+    });
   }
 };
 
-// ============ QUICK STATS ============
+// ============ QUICK STATS - TULAD NG BILLING ============
 export const getApplicationStats = async (
   req: AuthRequest,
   res: Response,
@@ -500,10 +540,15 @@ export const submitApplication = async (
     const normalizedEmail = email?.trim().toLowerCase();
     const normalizedPhoneNumber = phoneNumber?.trim();
 
-    // Check existing user
-    const existingUser = await User.findOne({
-      email: normalizedEmail,
-    }).lean();
+    const [
+      existingUser,
+      existingApplicationByEmail,
+      existingApplicationByPhone,
+    ] = await Promise.all([
+      User.findOne({ email: normalizedEmail }).lean(),
+      Application.findOne({ email: normalizedEmail }).lean(),
+      Application.findOne({ phoneNumber: normalizedPhoneNumber }).lean(),
+    ]);
 
     if (existingUser) {
       await session.abortTransaction();
@@ -515,11 +560,6 @@ export const submitApplication = async (
         email: normalizedEmail,
       });
     }
-
-    // Check existing application by email
-    const existingApplicationByEmail = await Application.findOne({
-      email: normalizedEmail,
-    }).lean();
 
     if (existingApplicationByEmail) {
       let message = "";
@@ -559,11 +599,6 @@ export const submitApplication = async (
       });
     }
 
-    // Check existing application by phone
-    const existingApplicationByPhone = await Application.findOne({
-      phoneNumber: normalizedPhoneNumber,
-    }).lean();
-
     if (existingApplicationByPhone) {
       await session.abortTransaction();
       session.endSession();
@@ -576,7 +611,6 @@ export const submitApplication = async (
       });
     }
 
-    // Check duplicate unit
     const existingActiveServiceQuery: any = {
       buildingId: new mongoose.Types.ObjectId(buildingId),
       floor: floor?.toString().trim(),
@@ -602,7 +636,6 @@ export const submitApplication = async (
       });
     }
 
-    // Get building and plan
     const [building, plan] = await Promise.all([
       Building.findById(buildingId)
         .lean()
@@ -636,7 +669,6 @@ export const submitApplication = async (
         .json({ success: false, message: "Plan not found" });
     }
 
-    // Handle file upload
     let idImagePath = "uploads/id-cards/placeholder.jpg";
     if (req.file) {
       if (req.file.path) {
@@ -649,7 +681,6 @@ export const submitApplication = async (
       }
     }
 
-    // Create application
     const applicationData = {
       firstName: firstName?.trim(),
       lastName: lastName?.trim(),
@@ -685,7 +716,6 @@ export const submitApplication = async (
     await session.commitTransaction();
     session.endSession();
 
-    // Clear cache
     appCache.flushAll();
     dashboardCache = null;
     dashboardCacheTime = 0;
@@ -693,7 +723,6 @@ export const submitApplication = async (
     const fullImageUrl = getImageUrl(application.idImage);
     const populatedPlan = populatedApplication?.planId as any;
 
-    // Send emails (non-blocking)
     try {
       console.log("📧 Sending application received email to client...");
       await emailService.sendApplicationReceived(application, populatedPlan);
@@ -1073,12 +1102,18 @@ export const startBillingForApplication = async (
       });
     }
 
-    // Check existing billing cycle
-    const existingBillingCycle = await BillingCycle.findOne({
-      applicationId: application.applicationId,
-    })
-      .session(session)
-      .lean();
+    const [existingBillingCycle, existingBills] = await Promise.all([
+      BillingCycle.findOne({
+        applicationId: application.applicationId,
+      })
+        .session(session)
+        .lean(),
+      Billing.findOne({
+        applicationId: application.applicationId,
+      })
+        .session(session)
+        .lean(),
+    ]);
 
     if (existingBillingCycle) {
       await session.abortTransaction();
@@ -1101,12 +1136,6 @@ export const startBillingForApplication = async (
         },
       });
     }
-
-    const existingBills = await Billing.findOne({
-      applicationId: application.applicationId,
-    })
-      .session(session)
-      .lean();
 
     if (existingBills) {
       await session.abortTransaction();
