@@ -1,4 +1,4 @@
-// routes/applicationRoutes.ts - COMPLETE FIXED - PINAKAMABILIS!
+// routes/applicationRoutes.ts - COMPLETE FIXED - RETURNS ALL DATA
 import express, { Router, Request, Response, NextFunction } from "express";
 import { body } from "express-validator";
 import {
@@ -28,7 +28,7 @@ console.log("🔄 Registering application routes...");
 // ============ CACHE ============
 let allApplicationsCache: any = null;
 let allApplicationsCacheTime = 0;
-const ALL_CACHE_TTL = 30 * 1000; // 30 seconds lang!
+const ALL_CACHE_TTL = 30 * 1000; // 30 seconds
 
 // ============ PUBLIC ROUTES ============
 router.get("/address/regions", getRegions);
@@ -86,7 +86,6 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
       });
     }
 
-    // Use controller function
     const { page = 1, limit = 20, status } = req.query;
     const pageNum = parseInt(page as string);
     const limitNum = parseInt(limit as string);
@@ -159,12 +158,12 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
   }
 });
 
-// ============ GET ALL APPLICATIONS - PINAKAMABILIS! ============
+// ============ GET ALL APPLICATIONS - NO LIMIT (RETURNS ALL DATA) ============
 router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
   const startTime = Date.now();
 
   try {
-    // Check cache first - PARA HINDI NA PUMUNTA SA MONGODB!
+    // Check cache first
     const now = Date.now();
     if (
       allApplicationsCache &&
@@ -175,22 +174,12 @@ router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
         success: true,
         data: allApplicationsCache.data,
         total: allApplicationsCache.total,
-        page: allApplicationsCache.page,
-        limit: allApplicationsCache.limit,
-        totalPages: allApplicationsCache.totalPages,
         cached: true,
         _responseTime: `${Date.now() - startTime}ms`,
       });
     }
 
-    const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 50;
-    const finalLimit = Math.min(limit, 100);
-    const skip = (page - 1) * finalLimit;
-
-    console.log(
-      `📊 Application route /all - page: ${page}, limit: ${finalLimit}`,
-    );
+    console.log("📊 Application route /all - fetching ALL data (no limit)");
 
     if (mongoose.connection.readyState !== 1) {
       console.error("❌ MongoDB not connected!");
@@ -199,27 +188,20 @@ router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
         message: "Database connection unavailable",
         data: [],
         total: 0,
-        page: 1,
-        limit: finalLimit,
-        totalPages: 0,
       });
     }
 
-    // ✅ SIMPLENG QUERY - WALANG POPULATE, WALANG COMPLEX!
+    // ✅ FETCH ALL DATA - NO LIMIT, NO PAGINATION
     const [applications, total] = await Promise.all([
-      Application.find()
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(finalLimit)
-        .lean(),
+      Application.find().sort({ createdAt: -1 }).lean(),
       Application.countDocuments(),
     ]);
 
     console.log(
-      `✅ Found ${applications.length} applications in ${Date.now() - startTime}ms`,
+      `✅ Found ${applications.length} total applications in ${Date.now() - startTime}ms`,
     );
 
-    // Format response - simple lang!
+    // Format response
     const formattedData = applications.map((app: any) => ({
       _id: app._id,
       applicationId: app.applicationId,
@@ -251,15 +233,10 @@ router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
       building: null,
     }));
 
-    const totalPages = Math.ceil(total / finalLimit);
-
-    // Cache the result - PARA NEXT TIME, CACHE NA AGAD!
+    // Cache the result
     allApplicationsCache = {
       data: formattedData,
       total: total,
-      page: page,
-      limit: finalLimit,
-      totalPages: totalPages,
     };
     allApplicationsCacheTime = Date.now();
 
@@ -267,40 +244,29 @@ router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
       success: true,
       data: formattedData,
       total: total,
-      page: page,
-      limit: finalLimit,
-      totalPages: totalPages,
-      hasNextPage: page < totalPages,
-      hasPrevPage: page > 1,
       _responseTime: `${Date.now() - startTime}ms`,
     });
   } catch (error: any) {
     console.error("❌ Error fetching all applications:", error.message);
 
-    // ✅ PAG MAY CACHE, GAMITIN KAHIT EXPIRED NA!
+    // If cache exists, use it even if expired
     if (allApplicationsCache) {
       console.log("📦 Returning expired cached data due to error");
       return res.status(200).json({
         success: true,
         data: allApplicationsCache.data,
         total: allApplicationsCache.total,
-        page: allApplicationsCache.page,
-        limit: allApplicationsCache.limit,
-        totalPages: allApplicationsCache.totalPages,
         cached: true,
         error: "Using cached data due to database timeout",
         _responseTime: `${Date.now() - startTime}ms`,
       });
     }
 
-    // ✅ PAG WALANG CACHE, RETURN EMPTY DATA - WAG MAG-HANG!
+    // Return empty data
     return res.status(200).json({
       success: true,
       data: [],
       total: 0,
-      page: 1,
-      limit: 50,
-      totalPages: 0,
       _responseTime: `${Date.now() - startTime}ms`,
       error: "Database timeout - please refresh",
     });

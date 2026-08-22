@@ -1,4 +1,5 @@
 // backend/src/services/emailService.ts - COMPLETE FIXED VERSION WITH NO FORCE ENABLING
+// REMOVED ADMIN NOTIFICATIONS FOR NEW CUSTOMER REGISTRATION AND WELCOME EMAILS
 
 import { IUser } from "../models/User";
 import Admin from "../models/Admin";
@@ -950,7 +951,6 @@ class EmailService {
         <p>If you have any questions, please contact our support team.</p>
         <hr>
         <p style="color: #666; font-size: 12px;">Mister Fyber - Your trusted internet provider</p>
-        <p style="color: #666; font-size: 12px;">Need help? Contact us at support@misterfyber.com</p>
       </div>
     `;
   }
@@ -1189,12 +1189,8 @@ class EmailService {
         }
       }
 
-      if (isCustomerEmail && this.adminEmail) {
-        if (!bccEmails.includes(this.adminEmail)) {
-          bccEmails.push(this.adminEmail);
-          console.log(`📧 Added admin email to BCC: ${this.adminEmail}`);
-        }
-      }
+      // NOTE: Admin email BCC is intentionally removed for customer welcome emails
+      // Admin will still receive notifications for other important emails
 
       console.log(
         `📧 Sending email via Brevo API to ${validToArray.join(", ")}...`,
@@ -1725,7 +1721,7 @@ class EmailService {
         htmlContent: html,
         bcc: [
           { email: collectionEmail.trim() },
-          { email: this.adminEmail.trim() },
+          // Admin email removed from BCC for customer emails - only collection email gets BCC
         ],
         replyTo: { email: collectionEmail },
         attachment: [
@@ -1742,7 +1738,7 @@ class EmailService {
         `📧 Subject: 🧾 Invoice #${invoiceData.invoiceNumber} - Mister Fyber`,
       );
       console.log(`📧 Sender: ${senderName} <${senderEmailAddress}>`);
-      console.log(`📧 BCC: ${collectionEmail}, ${this.adminEmail}`);
+      console.log(`📧 BCC: ${collectionEmail}`);
       console.log(
         `📧 PDF Attachment: ${pdfFileName} (${pdfBuffer.length} bytes)`,
       );
@@ -1974,7 +1970,7 @@ class EmailService {
           {
             bcc: [
               getCollectionEmailByLocation(location || ""),
-              this.adminEmail,
+              // Admin email removed from BCC for customer emails - only collection email gets BCC
             ],
             replyTo: getCollectionEmailByLocation(location || ""),
           },
@@ -2121,7 +2117,7 @@ class EmailService {
           {
             bcc: [
               getCollectionEmailByLocation(location || ""),
-              this.adminEmail,
+              // Admin email removed from BCC for customer emails - only collection email gets BCC
             ],
             replyTo: getCollectionEmailByLocation(location || ""),
           },
@@ -2436,7 +2432,7 @@ class EmailService {
         htmlContent: html,
         bcc: [
           { email: collectionEmail.trim() },
-          { email: this.adminEmail.trim() },
+          // Admin email removed from BCC for customer emails - only collection email gets BCC
         ],
         replyTo: { email: collectionEmail },
         attachment: [
@@ -2453,7 +2449,7 @@ class EmailService {
         `📧 Subject: ✅ Payment Confirmed - ${invoiceData.invoiceNumber}`,
       );
       console.log(`📧 Sender: ${senderName} <${senderEmailAddress}>`);
-      console.log(`📧 BCC: ${collectionEmail}, ${this.adminEmail}`);
+      console.log(`📧 BCC: ${collectionEmail}`);
       console.log(
         `📧 PDF Attachment: ${finalPdfFileName} (${finalPdfBuffer.length} bytes)`,
       );
@@ -2578,7 +2574,7 @@ class EmailService {
           cc: options?.cc,
           attachments: options?.attachments,
           replyTo: options?.replyTo || collectionEmail,
-          bcc: [collectionEmail, this.adminEmail],
+          bcc: [collectionEmail],
           useAdminSender: options?.useAdminSender || false,
         },
       );
@@ -2665,7 +2661,7 @@ class EmailService {
         true,
         userLocation,
         {
-          bcc: [collectionEmail, this.adminEmail],
+          bcc: [collectionEmail],
           replyTo: collectionEmail,
           useAdminSender: useAdminSender || false,
         },
@@ -2736,7 +2732,7 @@ class EmailService {
         true,
         userLocation,
         {
-          bcc: [collectionEmail, this.adminEmail],
+          bcc: [collectionEmail],
           replyTo: collectionEmail,
           useAdminSender: useAdminSender || false,
         },
@@ -2800,7 +2796,7 @@ class EmailService {
         true,
         userLocation,
         {
-          bcc: [collectionEmail, this.adminEmail],
+          bcc: [collectionEmail],
           replyTo: collectionEmail,
           useAdminSender: useAdminSender || false,
         },
@@ -2919,7 +2915,7 @@ class EmailService {
         true,
         userLocation,
         {
-          bcc: [collectionEmail, this.adminEmail],
+          bcc: [collectionEmail],
           replyTo: collectionEmail,
           useAdminSender: useAdminSender || false,
         },
@@ -2940,22 +2936,10 @@ class EmailService {
       true,
     );
 
-    const adminHtml = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-          <h2 style="color: #28a745;">👤 New User Registration</h2>
-          <p>A new user has registered on Mister Fyber.</p>
-          <hr>
-          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px;">
-              <p><strong>Name:</strong> ${user.firstName || ""} ${user.lastName || ""}</p>
-              <p><strong>Username:</strong> ${user.username || user.email}</p>
-              <p><strong>Email:</strong> ${user.email}</p>
-              <p><strong>Phone:</strong> ${user.phoneNumber || "N/A"}</p>
-              <p><strong>Status:</strong> ${user.status || "pending"}</p>
-              <p><strong>Registered:</strong> ${new Date().toLocaleString()}</p>
-          </div>
-      </div>
-    `;
-    await this.sendToAdmin(`New User Registration: ${user.email}`, adminHtml);
+    // REMOVED: Admin notification for welcome email - no longer sending admin email
+    console.log(
+      `📧 Welcome email sent to ${user.email} - Admin notification skipped`,
+    );
   }
 
   async sendPasswordReset(user: IUser, resetToken: string): Promise<void> {
@@ -2992,6 +2976,7 @@ class EmailService {
       true,
     );
 
+    // Keep admin notification for application received
     const adminHtml = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
           <h2 style="color: #f39c12;">📋 New Application</h2>
@@ -3018,6 +3003,7 @@ class EmailService {
       true,
     );
 
+    // Keep admin notification for application approved
     const adminHtml = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
           <h2 style="color: #28a745;">✅ Application Approved</h2>
@@ -3046,6 +3032,7 @@ class EmailService {
       true,
     );
 
+    // Keep admin notification for application rejected
     const adminHtml = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
           <h2 style="color: #dc3545;">Application Rejected</h2>
