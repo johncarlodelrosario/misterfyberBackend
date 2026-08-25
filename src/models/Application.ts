@@ -1,4 +1,4 @@
-// models/application.model.ts - WITH PROPER INDEXES
+// models/application.model.ts - COMPLETE WITH INDEXES
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IApplication extends Document {
@@ -269,7 +269,10 @@ ApplicationSchema.pre("validate", function (next) {
   next();
 });
 
-// ============ ⚡ CRITICAL INDEXES FOR FAST QUERIES ============
+// ============================================================
+// ✅ CRITICAL INDEXES - PARA SUPER FAST!
+// ============================================================
+
 // ✅ Single Field Indexes
 ApplicationSchema.index({ applicationId: 1 }, { unique: true });
 ApplicationSchema.index({ status: 1 });
@@ -282,8 +285,8 @@ ApplicationSchema.index({ registeredUserId: 1 });
 ApplicationSchema.index({ billingStarted: 1 });
 ApplicationSchema.index({ macAddress: 1 });
 
-// ✅ Compound Indexes - PARA SA FILTERING + SORTING!
-ApplicationSchema.index({ status: 1, createdAt: -1 });
+// ✅ Compound Indexes - PARA SA FILTERING + SORTING! (PINAKAIMPORTANTE!)
+ApplicationSchema.index({ status: 1, createdAt: -1 }); // 👈 ETO ANG SUSI!
 ApplicationSchema.index({ buildingId: 1, status: 1 });
 ApplicationSchema.index({ status: 1, billingStarted: 1 });
 

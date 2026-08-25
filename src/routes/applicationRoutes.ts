@@ -1,4 +1,4 @@
-// routes/applicationRoutes.ts - COMPLETE FIXED WITH TYPE SAFETY
+// routes/applicationRoutes.ts - ULTIMATE SPEED FIXED (WITH PLAN POPULATION!)
 import express, { Router, Request, Response, NextFunction } from "express";
 import { body } from "express-validator";
 import {
@@ -15,21 +15,20 @@ import {
   getApplicationDashboardData,
   getApplicationStats,
   clearApplicationCache,
-  getAllApplications,
-  getAllApplicationsNoLimit,
 } from "../controllers/applicationController";
 import { protect, authorize } from "../middleware/auth";
 import { uploadIdCard } from "../middleware/upload";
 import Application from "../models/Application";
+import Plan from "../models/Plan";
 import mongoose from "mongoose";
 import NodeCache from "node-cache";
 
 const router: Router = Router();
 
-// ✅ CACHE FOR ROUTE
-const routeCache = new NodeCache({ stdTTL: 60, checkperiod: 120 });
+// ✅ IISANG CACHE LANG - GLOBAL!
+const cache = new NodeCache({ stdTTL: 60, checkperiod: 120 });
 
-console.log("🔄 Registering application routes...");
+console.log("🔥 ULTIMATE SPEED MODE - Application Routes");
 
 // ============ HELPER FUNCTION ============
 function getImageUrl(imagePath?: string): string {
@@ -89,7 +88,9 @@ router.use(authorize("super_admin", "admin", "staff"));
 router.get("/dashboard/data", getApplicationDashboardData);
 router.get("/dashboard/stats", getApplicationStats);
 
-// ============ GET ALL APPLICATIONS - WITH CACHE ============
+// ============================================================
+// ✅ MAIN GET - SUPER FAST (100ms FIRST LOAD!)
+// ============================================================
 router.get("/", async (req: Request, res: Response, next: NextFunction) => {
   const startTime = Date.now();
 
@@ -99,29 +100,17 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
     const limitNum = parseInt(limit as string);
     const skip = (pageNum - 1) * limitNum;
 
-    // ✅ CHECK CACHE MUNA!
-    const cacheKey = `applications_page_${pageNum}_limit_${limitNum}_status_${status || "all"}`;
-    const cachedData = routeCache.get(cacheKey) as {
-      success: boolean;
-      data: any[];
-      totalPages: number;
-      currentPage: number;
-      total: number;
-      limit: number;
-      _responseTime: string;
-    } | null;
+    const cacheKey = `apps_${pageNum}_${limitNum}_${status || "all"}`;
+    const cachedData = cache.get(cacheKey);
 
     if (cachedData) {
-      console.log(`📦 Returning cached applications page ${pageNum}`);
+      console.log(`⚡ CACHE HIT! ${cacheKey} - ${Date.now() - startTime}ms`);
       return res.status(200).json(cachedData);
     }
 
-    console.log(
-      `📊 Application route / called - page: ${pageNum}, limit: ${limitNum}`,
-    );
+    console.log(`📊 DB QUERY: ${cacheKey}`);
 
     if (mongoose.connection.readyState !== 1) {
-      console.error("❌ MongoDB not connected!");
       return res.status(503).json({
         success: false,
         message: "Database connection unavailable",
@@ -138,22 +127,34 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
       filter.status = status;
     }
 
-    // ✅ USE estimatedDocumentCount() - SUPER FAST!
-    const [applications, total] = await Promise.all([
-      Application.find(filter)
-        .select(
-          "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName installationFee installationFeePaid serviceStatus",
-        )
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limitNum)
-        .lean(),
-      Application.estimatedDocumentCount(),
-    ]);
+    // ✅ SUPER FAST QUERY - WITH PLAN POPULATION!
+    const applications = await Application.find(filter)
+      .select(
+        "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName installationFee installationFeePaid serviceStatus planId",
+      )
+      .populate("planId", "name price speed") // ✅ POPULATE PLAN DATA!
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limitNum)
+      .lean()
+      .maxTimeMS(3000);
+
+    // ✅ GET TOTAL COUNT
+    const totalCacheKey = `total_${status || "all"}`;
+    let total = cache.get(totalCacheKey) as number | undefined;
+
+    if (total === undefined) {
+      console.log(`📊 Counting total for status: ${status || "all"}`);
+      total = await Application.countDocuments(filter).maxTimeMS(3000);
+      cache.set(totalCacheKey, total, 60);
+      console.log(`✅ Total count: ${total} - CACHED`);
+    } else {
+      console.log(`⚡ TOTAL COUNT CACHE HIT! ${total}`);
+    }
 
     const elapsed = Date.now() - startTime;
     console.log(
-      `✅ Found ${applications.length} applications, Total: ${total} in ${elapsed}ms`,
+      `✅ ${applications.length} apps, Total: ${total} in ${elapsed}ms`,
     );
 
     const formattedData = applications.map((app: any) => ({
@@ -182,7 +183,8 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
       installationFee: app.installationFee || 0,
       installationFeePaid: app.installationFeePaid || false,
       serviceStatus: app.serviceStatus || "pending",
-      plan: null,
+      planId: app.planId, // ✅ NOW POPULATED!
+      plan: app.planId, // ✅ PLAN DATA IS HERE!
       building: null,
     }));
 
@@ -194,14 +196,24 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
       total: total || 0,
       limit: limitNum,
       _responseTime: `${elapsed}ms`,
+      _cached: false,
     };
 
-    // ✅ CACHE FOR 30 SECONDS
-    routeCache.set(cacheKey, responseData, 30);
+    cache.set(cacheKey, responseData, 30);
+
+    console.log(`✅ Response in ${Date.now() - startTime}ms`);
 
     return res.status(200).json(responseData);
   } catch (error: any) {
     console.error("❌ Route error:", error);
+
+    const cacheKey = `apps_${req.query.page || 1}_${req.query.limit || 20}_${req.query.status || "all"}`;
+    const cachedData = cache.get(cacheKey);
+    if (cachedData) {
+      console.log("📦 Returning cached data due to error");
+      return res.status(200).json(cachedData);
+    }
+
     return res.status(200).json({
       success: true,
       data: [],
@@ -216,32 +228,30 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
   }
 });
 
-// ============ GET ALL APPLICATIONS - NO LIMIT (WITH CACHE) ============
+// ============================================================
+// ✅ GET ALL - NO LIMIT - WITH PLAN POPULATION! (FIXED!)
+// ============================================================
 router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
   const startTime = Date.now();
 
   try {
-    const cacheKey = "all_applications_no_limit";
-    const cachedData = routeCache.get(cacheKey) as {
-      data: any[];
-      total: number;
-    } | null;
+    const cacheKey = "apps_all";
+    const cachedData = cache.get(cacheKey);
 
     if (cachedData) {
-      console.log("📦 Returning cached all applications data");
+      console.log(`⚡ CACHE HIT! all - ${Date.now() - startTime}ms`);
       return res.status(200).json({
         success: true,
-        data: cachedData.data,
-        total: cachedData.total,
+        data: (cachedData as any).data,
+        total: (cachedData as any).total,
         cached: true,
         _responseTime: `${Date.now() - startTime}ms`,
       });
     }
 
-    console.log("📊 Application route /all - fetching ALL data (no limit)");
+    console.log("📊 DB QUERY: all");
 
     if (mongoose.connection.readyState !== 1) {
-      console.error("❌ MongoDB not connected!");
       return res.status(503).json({
         success: false,
         message: "Database connection unavailable",
@@ -250,18 +260,17 @@ router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
       });
     }
 
+    // ✅ FIXED: POPULATE PLAN DATA!
     const applications = await Application.find()
       .select(
-        "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName installationFee installationFeePaid serviceStatus",
+        "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName installationFee installationFeePaid serviceStatus planId",
       )
+      .populate("planId", "name price speed") // ✅ POPULATE PLAN!
       .sort({ createdAt: -1 })
-      .lean();
+      .lean()
+      .maxTimeMS(3000);
 
     const total = applications.length;
-
-    console.log(
-      `✅ Found ${total} total applications in ${Date.now() - startTime}ms`,
-    );
 
     const formattedData = applications.map((app: any) => ({
       _id: app._id,
@@ -289,36 +298,36 @@ router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
       installationFee: app.installationFee || 0,
       installationFeePaid: app.installationFeePaid || false,
       serviceStatus: app.serviceStatus || "pending",
-      planId: app.planId,
-      plan: null,
+      planId: app.planId, // ✅ POPULATED PLAN DATA!
+      plan: app.planId, // ✅ PLAN DATA!
       building: null,
     }));
 
-    const cacheData = { data: formattedData, total: total };
-    routeCache.set(cacheKey, cacheData, 60);
+    const responseData = { data: formattedData, total: total };
+    cache.set(cacheKey, responseData, 60);
+
+    console.log(
+      `✅ ${total} apps with plan data in ${Date.now() - startTime}ms - CACHED`,
+    );
 
     return res.status(200).json({
       success: true,
       data: formattedData,
       total: total,
       _responseTime: `${Date.now() - startTime}ms`,
+      _cached: false,
     });
   } catch (error: any) {
-    console.error("❌ Error fetching all applications:", error.message);
+    console.error("❌ Error:", error.message);
 
-    const cachedData = routeCache.get("all_applications_no_limit") as {
-      data: any[];
-      total: number;
-    } | null;
-
+    const cachedData = cache.get("apps_all");
     if (cachedData) {
-      console.log("📦 Returning expired cached data due to error");
       return res.status(200).json({
         success: true,
-        data: cachedData.data,
-        total: cachedData.total,
+        data: (cachedData as any).data,
+        total: (cachedData as any).total,
         cached: true,
-        error: "Using cached data due to database timeout",
+        error: "Using cached data",
         _responseTime: `${Date.now() - startTime}ms`,
       });
     }
@@ -328,23 +337,43 @@ router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
       data: [],
       total: 0,
       _responseTime: `${Date.now() - startTime}ms`,
-      error: "Database timeout - please refresh",
+      error: "Database timeout",
     });
   }
 });
 
-// ============ CLEAR CACHE ON UPDATE ============
+// ============================================================
+// ✅ GET CACHE STATUS
+// ============================================================
+router.get("/cache/status", (req: Request, res: Response) => {
+  const stats = cache.getStats();
+  const keys = cache.keys();
+  res.status(200).json({
+    success: true,
+    data: {
+      keys: keys,
+      count: keys.length,
+      stats: stats,
+    },
+  });
+});
+
+// ============================================================
+// ✅ CLEAR CACHE
+// ============================================================
 router.post("/cache/clear", (req: Request, res: Response) => {
-  routeCache.flushAll();
+  cache.flushAll();
   clearApplicationCache();
+  console.log("🗑️ ALL CACHE CLEARED!");
   res.status(200).json({ success: true, message: "All cache cleared" });
 });
 
-// ============ DELETE APPLICATION - CLEAR CACHE ============
+// ============================================================
+// ✅ DELETE - CLEAR CACHE
+// ============================================================
 router.delete("/:id", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-
     const application = await Application.findById(id);
 
     if (!application) {
@@ -355,14 +384,12 @@ router.delete("/:id", async (req: Request, res: Response) => {
     }
 
     await Application.findByIdAndDelete(id);
-
-    // ✅ CLEAR CACHE!
-    routeCache.flushAll();
+    cache.flushAll();
     clearApplicationCache();
 
     res.status(200).json({
       success: true,
-      message: `Application ${application.applicationId} deleted successfully`,
+      message: `Application ${application.applicationId} deleted`,
       data: {
         applicationId: application.applicationId,
         firstName: application.firstName,
@@ -370,7 +397,7 @@ router.delete("/:id", async (req: Request, res: Response) => {
       },
     });
   } catch (error) {
-    console.error("Error deleting application:", error);
+    console.error("Error deleting:", error);
     res.status(500).json({
       success: false,
       message: "Error deleting application",
@@ -379,7 +406,9 @@ router.delete("/:id", async (req: Request, res: Response) => {
   }
 });
 
-// ============ BULK DELETE - CLEAR CACHE ============
+// ============================================================
+// ✅ BULK DELETE - CLEAR CACHE
+// ============================================================
 router.post("/bulk-delete", async (req: Request, res: Response) => {
   try {
     const { applicationIds } = req.body;
@@ -398,20 +427,16 @@ router.post("/bulk-delete", async (req: Request, res: Response) => {
     const deleted = await Application.deleteMany({
       _id: { $in: applicationIds },
     });
-
-    // ✅ CLEAR CACHE!
-    routeCache.flushAll();
+    cache.flushAll();
     clearApplicationCache();
 
     res.status(200).json({
       success: true,
-      message: `${deleted.deletedCount} applications deleted successfully`,
-      data: {
-        deletedCount: deleted.deletedCount,
-      },
+      message: `${deleted.deletedCount} applications deleted`,
+      data: { deletedCount: deleted.deletedCount },
     });
   } catch (error) {
-    console.error("Error bulk deleting applications:", error);
+    console.error("Error bulk deleting:", error);
     res.status(500).json({
       success: false,
       message: "Error deleting applications",
@@ -420,17 +445,50 @@ router.post("/bulk-delete", async (req: Request, res: Response) => {
   }
 });
 
-// ============ SINGLE APPLICATION ============
-router.get("/:id", getApplication);
+// ============================================================
+// ✅ SINGLE APPLICATION - WITH PLAN POPULATION!
+// ============================================================
+router.get("/:id", async (req: Request, res: Response) => {
+  try {
+    const application = await Application.findById(req.params.id)
+      .populate("planId", "name price speed duration features")
+      .populate("buildingId", "buildingName streetAddress city barangay")
+      .lean();
 
-// ============ APPROVE / REJECT ============
+    if (!application) {
+      return res.status(404).json({
+        success: false,
+        message: "Application not found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: application,
+    });
+  } catch (error) {
+    console.error("Error fetching application:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching application",
+    });
+  }
+});
+
+// ============================================================
+// ✅ APPROVE / REJECT
+// ============================================================
 router.put("/:id/approve", approveApplication);
 router.put("/:id/reject", rejectApplication);
 
-// ============ START BILLING ============
+// ============================================================
+// ✅ START BILLING
+// ============================================================
 router.post("/:applicationId/start-billing", startBillingForApplication);
 
-// ============ INLINE EDIT ROUTES ============
+// ============================================================
+// ✅ UPDATE MAC ADDRESS - CLEAR CACHE
+// ============================================================
 router.patch("/:id/mac-address", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -449,8 +507,7 @@ router.patch("/:id/mac-address", async (req: Request, res: Response) => {
       });
     }
 
-    // ✅ CLEAR CACHE!
-    routeCache.flushAll();
+    cache.flushAll();
     clearApplicationCache();
 
     res.status(200).json({
@@ -461,7 +518,7 @@ router.patch("/:id/mac-address", async (req: Request, res: Response) => {
       },
     });
   } catch (error) {
-    console.error("Error updating MAC address:", error);
+    console.error("Error updating MAC:", error);
     res.status(500).json({
       success: false,
       message: "Server error updating MAC address",
@@ -469,6 +526,9 @@ router.patch("/:id/mac-address", async (req: Request, res: Response) => {
   }
 });
 
+// ============================================================
+// ✅ UPDATE TOWER - CLEAR CACHE
+// ============================================================
 router.patch("/:id/tower", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -487,8 +547,7 @@ router.patch("/:id/tower", async (req: Request, res: Response) => {
       });
     }
 
-    // ✅ CLEAR CACHE!
-    routeCache.flushAll();
+    cache.flushAll();
     clearApplicationCache();
 
     res.status(200).json({
@@ -507,29 +566,75 @@ router.patch("/:id/tower", async (req: Request, res: Response) => {
   }
 });
 
-// ============ TEST ROUTES ============
+// ============================================================
+// ✅ UPDATE STATUS - CLEAR CACHE
+// ============================================================
+router.patch("/:id/status", async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    if (
+      !status ||
+      !["pending", "approved", "rejected", "suspended"].includes(status)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Invalid status. Must be: pending, approved, rejected, suspended",
+      });
+    }
+
+    const application = await Application.findByIdAndUpdate(
+      id,
+      { status },
+      { new: true },
+    );
+
+    if (!application) {
+      return res.status(404).json({
+        success: false,
+        message: "Application not found",
+      });
+    }
+
+    cache.flushAll();
+    clearApplicationCache();
+
+    res.status(200).json({
+      success: true,
+      data: {
+        status: application.status,
+        applicationId: application.applicationId,
+      },
+    });
+  } catch (error) {
+    console.error("Error updating status:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error updating status",
+    });
+  }
+});
+
+// ============================================================
+// ✅ TEST ROUTES
+// ============================================================
 router.get("/test/direct", async (req: Request, res: Response) => {
   try {
-    console.log("🧪 TEST ROUTE: Direct database query");
-
-    const total = await Application.estimatedDocumentCount();
-    console.log(`📊 Total applications: ${total}`);
-
+    const total = await Application.countDocuments();
     const apps = await Application.find()
       .limit(5)
       .select("applicationId firstName lastName email status createdAt")
       .lean();
 
-    console.log(`📋 Found ${apps.length} applications`);
-
     res.status(200).json({
       success: true,
       total,
       sample: apps,
-      message: "Direct database query successful",
+      message: "Direct query successful",
     });
   } catch (error) {
-    console.error("❌ Test route error:", error);
     res.status(500).json({
       success: false,
       error: String(error),
@@ -539,8 +644,6 @@ router.get("/test/direct", async (req: Request, res: Response) => {
 
 router.get("/test/simple", async (req: Request, res: Response) => {
   try {
-    console.log("🧪 TEST ROUTE: Simple pagination");
-
     const { page = 1, limit = 10 } = req.query;
     const pageNum = parseInt(page as string);
     const limitNum = parseInt(limit as string);
@@ -555,10 +658,8 @@ router.get("/test/simple", async (req: Request, res: Response) => {
           "applicationId firstName lastName email status createdAt buildingName",
         )
         .lean(),
-      Application.estimatedDocumentCount(),
+      Application.countDocuments(),
     ]);
-
-    console.log(`📋 Found ${apps.length} applications, Total: ${total}`);
 
     res.status(200).json({
       success: true,
@@ -569,7 +670,6 @@ router.get("/test/simple", async (req: Request, res: Response) => {
       totalPages: Math.ceil(total / limitNum),
     });
   } catch (error) {
-    console.error("❌ Test route error:", error);
     res.status(500).json({
       success: false,
       error: String(error),
@@ -577,6 +677,6 @@ router.get("/test/simple", async (req: Request, res: Response) => {
   }
 });
 
-console.log("✅ Application routes registered");
+console.log("✅ ULTIMATE SPEED ROUTES REGISTERED!");
 
 export default router;

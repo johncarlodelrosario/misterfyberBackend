@@ -1,7 +1,9 @@
+// middleware/auth.ts - COMPLETE FIXED WITH CACHE!
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import User from "../models/User";
 import Admin from "../models/Admin";
+import NodeCache from "node-cache";
 
 export interface AuthRequest extends Request {
   user?: any;
@@ -10,6 +12,9 @@ export interface AuthRequest extends Request {
   headers: any;
   authorization?: string;
 }
+
+// ✅ AUTH CACHE - PARA SOBRANG BILIS!
+const authCache = new NodeCache({ stdTTL: 60, checkperiod: 120 });
 
 // ==================== OPTIONAL AUTH ====================
 export const optionalAuth = async (
@@ -32,6 +37,15 @@ export const optionalAuth = async (
     return next();
   }
 
+  // ✅ CHECK CACHE MUNA!
+  const cacheKey = `auth_${token}`;
+  const cachedUser = authCache.get(cacheKey);
+  if (cachedUser) {
+    req.user = cachedUser;
+    console.log(`⚡ AUTH CACHE HIT! ${req.user?.email}`);
+    return next();
+  }
+
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET!) as {
       id: string;
@@ -43,10 +57,12 @@ export const optionalAuth = async (
       role: decoded.role,
     });
 
+    let userData = null;
+
     if (decoded.role) {
       const admin = await Admin.findById(decoded.id);
       if (admin) {
-        req.user = {
+        userData = {
           _id: admin._id,
           id: admin._id,
           email: admin.email,
@@ -57,14 +73,11 @@ export const optionalAuth = async (
           status: admin.status,
         };
         console.log(`✅ Authenticated Admin: ${admin.email} (${admin.role})`);
-      } else {
-        console.log("[Auth] Admin not found for id:", decoded.id);
-        req.user = null;
       }
     } else {
       const user = await User.findById(decoded.id);
       if (user) {
-        req.user = {
+        userData = {
           _id: user._id,
           id: user._id,
           email: user.email,
@@ -75,10 +88,16 @@ export const optionalAuth = async (
           status: user.status,
         };
         console.log(`✅ Authenticated User: ${user.email}`);
-      } else {
-        console.log("[Auth] User not found for id:", decoded.id);
-        req.user = null;
       }
+    }
+
+    if (userData) {
+      // ✅ CACHE FOR 60 SECONDS
+      authCache.set(cacheKey, userData, 60);
+      req.user = userData;
+    } else {
+      console.log("[Auth] User not found for id:", decoded.id);
+      req.user = null;
     }
     next();
   } catch (error: any) {
@@ -114,6 +133,15 @@ export const protect = async (
     });
   }
 
+  // ✅ CHECK CACHE MUNA!
+  const cacheKey = `auth_${token}`;
+  const cachedUser = authCache.get(cacheKey);
+  if (cachedUser) {
+    req.user = cachedUser;
+    console.log(`⚡ AUTH CACHE HIT! ${req.user?.email}`);
+    return next();
+  }
+
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET!) as {
       id: string;
@@ -125,6 +153,8 @@ export const protect = async (
       role: decoded.role,
     });
 
+    let userData = null;
+
     // Check if admin
     if (decoded.role) {
       const admin = await Admin.findById(decoded.id);
@@ -135,7 +165,7 @@ export const protect = async (
           .json({ success: false, message: "Admin account not found" });
       }
 
-      req.user = {
+      userData = {
         _id: admin._id,
         id: admin._id,
         email: admin.email,
@@ -156,7 +186,7 @@ export const protect = async (
           .json({ success: false, message: "User account not found" });
       }
 
-      req.user = {
+      userData = {
         _id: user._id,
         id: user._id,
         email: user.email,
@@ -169,6 +199,9 @@ export const protect = async (
       console.log(`✅ Authenticated User: ${user.email}`);
     }
 
+    // ✅ CACHE FOR 60 SECONDS
+    authCache.set(cacheKey, userData, 60);
+    req.user = userData;
     next();
   } catch (error: any) {
     console.error("[Auth] Verification error:", error.message);
@@ -294,4 +327,10 @@ export const staffOrAdmin = (
   }
 
   next();
+};
+
+// ==================== CLEAR AUTH CACHE ====================
+export const clearAuthCache = () => {
+  authCache.flushAll();
+  console.log("🗑️ Auth cache cleared");
 };
