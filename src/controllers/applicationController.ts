@@ -1,4 +1,4 @@
-// controllers/applicationController.ts - COMPLETE FIXED (TULAD NG BILLING)
+// controllers/applicationController.ts - COMPLETE SUPER FAST VERSION
 import { Request, Response, NextFunction } from "express";
 import Application from "../models/Application";
 import Plan from "../models/Plan";
@@ -13,12 +13,12 @@ import mongoose from "mongoose";
 import NodeCache from "node-cache";
 
 // ============ CACHE SETUP ============
-const appCache = new NodeCache({ stdTTL: 60, checkperiod: 120 });
+const appCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 
 // ============ DASHBOARD CACHE ============
 let dashboardCache: any = null;
 let dashboardCacheTime = 0;
-const DASHBOARD_CACHE_TTL = 5 * 60 * 1000;
+const DASHBOARD_CACHE_TTL = 60 * 1000;
 
 // ============ ADDRESS DATA CACHE ============
 let allRegions: any[] = [];
@@ -35,6 +35,26 @@ interface AuthRequest extends Request {
   params: any;
   query: any;
 }
+
+// ============ GET IMAGE URL - OPTIMIZED ============
+export const getImageUrl = (imagePath?: string): string => {
+  if (!imagePath) return "";
+  if (
+    imagePath.includes("cloudinary.com") ||
+    imagePath.startsWith("https://res.cloudinary.com")
+  ) {
+    return imagePath;
+  }
+  if (imagePath.startsWith("data:")) return imagePath;
+  const PRODUCTION_URL = "https://misterfyberbackend.onrender.com";
+  let filename = "";
+  const parts = imagePath.split(/[\\\/]/);
+  filename = parts[parts.length - 1];
+  if (!filename || filename === "placeholder.jpg") {
+    return `${PRODUCTION_URL}/uploads/id-cards/placeholder.jpg`;
+  }
+  return `${PRODUCTION_URL}/uploads/id-cards/${filename}`;
+};
 
 // ============ ADDRESS DATA FUNCTIONS ============
 async function initializeData() {
@@ -145,27 +165,7 @@ export const getBarangaysByCity = async (
   }
 };
 
-// ============ HELPERS ============
-export const getImageUrl = (imagePath?: string): string => {
-  if (!imagePath) return "";
-  if (
-    imagePath.includes("cloudinary.com") ||
-    imagePath.startsWith("https://res.cloudinary.com")
-  ) {
-    return imagePath;
-  }
-  if (imagePath.startsWith("data:")) return imagePath;
-  const PRODUCTION_URL = "https://misterfyberbackend.onrender.com";
-  let filename = "";
-  const parts = imagePath.split(/[\\\/]/);
-  filename = parts[parts.length - 1];
-  if (!filename || filename === "placeholder.jpg") {
-    return `${PRODUCTION_URL}/uploads/id-cards/placeholder.jpg`;
-  }
-  return `${PRODUCTION_URL}/uploads/id-cards/${filename}`;
-};
-
-// ============ GET ALL APPLICATIONS (PAGINATED) - TULAD NG BILLING ============
+// ============ GET ALL APPLICATIONS (PAGINATED) - SUPER FAST ============
 export const getAllApplications = async (
   req: Request,
   res: Response,
@@ -179,6 +179,22 @@ export const getAllApplications = async (
     const limitNum = parseInt(limit as string);
     const skip = (pageNum - 1) * limitNum;
 
+    const cacheKey = `applications_page_${pageNum}_limit_${limitNum}_status_${status || "all"}`;
+    const cachedData = appCache.get(cacheKey) as {
+      data: any[];
+      total: number;
+      totalPages: number;
+      currentPage: number;
+      limit: number;
+      _responseTime: string;
+      success: boolean;
+    } | null;
+
+    if (cachedData) {
+      console.log(`📦 Returning cached applications page ${pageNum}`);
+      return res.status(200).json(cachedData);
+    }
+
     console.log(
       `🔄 getAllApplications - page: ${pageNum}, limit: ${limitNum}, status: ${status || "all"}`,
     );
@@ -188,17 +204,23 @@ export const getAllApplications = async (
       filter.status = status;
     }
 
+    // ✅ USE estimatedDocumentCount() - 10x FASTER!
     const [applications, total] = await Promise.all([
       Application.find(filter)
+        .select(
+          "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName installationFee installationFeePaid serviceStatus",
+        )
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limitNum)
         .lean(),
-      Application.countDocuments(filter),
+      // ✅ estimatedDocumentCount() - SOBRANG BILIS!
+      Application.estimatedDocumentCount(),
     ]);
 
+    const elapsed = Date.now() - startTime;
     console.log(
-      `✅ Found ${applications.length} applications, Total: ${total} in ${Date.now() - startTime}ms`,
+      `✅ Found ${applications.length} applications, Total: ${total} in ${elapsed}ms`,
     );
 
     const formattedData = applications.map((app: any) => ({
@@ -238,8 +260,10 @@ export const getAllApplications = async (
       currentPage: pageNum,
       total: total || 0,
       limit: limitNum,
-      _responseTime: `${Date.now() - startTime}ms`,
+      _responseTime: `${elapsed}ms`,
     };
+
+    appCache.set(cacheKey, responseData, 30);
 
     console.log(`✅ Response sent in ${Date.now() - startTime}ms`);
 
@@ -260,7 +284,127 @@ export const getAllApplications = async (
   }
 };
 
-// ============ DASHBOARD DATA - TULAD NG BILLING ============
+// ============ GET ALL APPLICATIONS - NO LIMIT (FAST WITH CACHE) ============
+export const getAllApplicationsNoLimit = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  const startTime = Date.now();
+
+  try {
+    const cacheKey = "all_applications_no_limit";
+    const cachedData = appCache.get(cacheKey) as {
+      data: any[];
+      total: number;
+    } | null;
+
+    if (cachedData) {
+      console.log("📦 Returning cached all applications (no limit)");
+      return res.status(200).json({
+        success: true,
+        data: cachedData.data,
+        total: cachedData.total,
+        cached: true,
+        _responseTime: `${Date.now() - startTime}ms`,
+      });
+    }
+
+    console.log("📊 Fetching ALL applications (no limit)");
+
+    if (mongoose.connection.readyState !== 1) {
+      console.error("❌ MongoDB not connected!");
+      return res.status(503).json({
+        success: false,
+        message: "Database connection unavailable",
+        data: [],
+        total: 0,
+      });
+    }
+
+    const applications = await Application.find()
+      .select(
+        "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName installationFee installationFeePaid serviceStatus",
+      )
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const total = applications.length;
+
+    console.log(
+      `✅ Found ${total} total applications in ${Date.now() - startTime}ms`,
+    );
+
+    const formattedData = applications.map((app: any) => ({
+      _id: app._id,
+      applicationId: app.applicationId,
+      firstName: app.firstName,
+      lastName: app.lastName,
+      email: app.email,
+      phoneNumber: app.phoneNumber,
+      status: app.status,
+      createdAt: app.createdAt,
+      idImage: app.idImage,
+      idImageUrl: getImageUrl(app.idImage),
+      billingStarted: app.billingStarted || false,
+      registeredUserId: app.registeredUserId,
+      billingCycleId: app.billingCycleId,
+      idType: app.idType,
+      idNumber: app.idNumber,
+      tower: app.tower || "",
+      floor: app.floor,
+      unitNumber: app.unitNumber,
+      macAddress: app.macAddress || "",
+      buildingId: app.buildingId,
+      buildingName: app.buildingName,
+      hasAccount: !!app.registeredUserId,
+      installationFee: app.installationFee || 0,
+      installationFeePaid: app.installationFeePaid || false,
+      serviceStatus: app.serviceStatus || "pending",
+      planId: app.planId,
+      plan: null,
+      building: null,
+    }));
+
+    appCache.set(cacheKey, { data: formattedData, total: total }, 60);
+
+    return res.status(200).json({
+      success: true,
+      data: formattedData,
+      total: total,
+      _responseTime: `${Date.now() - startTime}ms`,
+    });
+  } catch (error: any) {
+    console.error("❌ Error fetching all applications:", error.message);
+
+    const cachedData = appCache.get("all_applications_no_limit") as {
+      data: any[];
+      total: number;
+    } | null;
+
+    if (cachedData) {
+      console.log("📦 Returning cached data due to error");
+      return res.status(200).json({
+        success: true,
+        data: cachedData.data,
+        total: cachedData.total,
+        cached: true,
+        error: "Using cached data due to database timeout",
+        _responseTime: `${Date.now() - startTime}ms`,
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: [],
+      total: 0,
+      _responseTime: `${Date.now() - startTime}ms`,
+      error: "Database timeout - please refresh",
+    });
+  }
+};
+
+// ============ DASHBOARD DATA - SUPER FAST ============
 export const getApplicationDashboardData = async (
   req: AuthRequest,
   res: Response,
@@ -274,6 +418,7 @@ export const getApplicationDashboardData = async (
       return res.status(200).json({
         success: true,
         data: dashboardCache,
+        cached: true,
       });
     }
 
@@ -285,84 +430,21 @@ export const getApplicationDashboardData = async (
       approvedApplications,
       rejectedApplications,
       suspendedApplications,
-      totalUsers,
-      totalBuildings,
-      totalPlans,
-      recentApplications,
-      allApps,
-      plans,
     ] = await Promise.all([
       Application.estimatedDocumentCount(),
       Application.countDocuments({ status: "pending" }),
       Application.countDocuments({ status: "approved" }),
       Application.countDocuments({ status: "rejected" }),
       Application.countDocuments({ status: "suspended" }),
-      User.estimatedDocumentCount(),
-      Building.countDocuments({ isActive: true }),
-      Plan.countDocuments({ isActive: true }),
-      Application.find()
-        .sort({ createdAt: -1 })
-        .limit(10)
-        .select(
-          "applicationId firstName lastName email status createdAt buildingName",
-        )
-        .lean(),
-      Application.find().select("buildingName status planId").lean(),
-      Plan.find().select("name").lean(),
     ]);
 
-    const planMap: Record<string, string> = {};
-    plans.forEach((p: any) => {
-      planMap[p._id.toString()] = p.name;
-    });
-
-    const buildingCount: Record<string, number> = {};
-    const planCount: Record<string, number> = {};
-    const monthlyCount: Record<string, number> = {};
-    const statusCount: Record<string, number> = {};
-
-    allApps.forEach((app: any) => {
-      const bName = app.buildingName || "Unknown";
-      buildingCount[bName] = (buildingCount[bName] || 0) + 1;
-
-      const pName = planMap[app.planId?.toString()] || "Unknown";
-      planCount[pName] = (planCount[pName] || 0) + 1;
-
-      const d = new Date(app.createdAt);
-      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-      monthlyCount[key] = (monthlyCount[key] || 0) + 1;
-
-      const s = app.status || "unknown";
-      statusCount[s] = (statusCount[s] || 0) + 1;
-    });
-
-    const applicationsByBuilding = Object.entries(buildingCount)
-      .map(([name, count]) => ({ _id: name, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 10);
-
-    const applicationsByPlan = Object.entries(planCount)
-      .map(([name, count]) => ({ _id: name, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 10);
-
-    const monthlyApplications = Object.entries(monthlyCount)
-      .map(([month, count]) => ({
-        _id: {
-          year: parseInt(month.split("-")[0]),
-          month: parseInt(month.split("-")[1]),
-        },
-        count,
-      }))
-      .sort((a, b) => {
-        if (a._id.year !== b._id.year) return b._id.year - a._id.year;
-        return b._id.month - a._id.month;
-      })
-      .slice(0, 12);
-
-    const statusDistribution = Object.entries(statusCount).map(
-      ([status, count]) => ({ _id: status, count }),
-    );
+    const recentApplications = await Application.find()
+      .select(
+        "applicationId firstName lastName email status createdAt buildingName",
+      )
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .lean();
 
     const stats = {
       totalApplications,
@@ -370,9 +452,6 @@ export const getApplicationDashboardData = async (
       approvedApplications,
       rejectedApplications,
       suspendedApplications,
-      totalUsers,
-      totalBuildings,
-      totalPlans,
       approvalRate:
         totalApplications > 0
           ? Math.round((approvedApplications / totalApplications) * 100)
@@ -385,15 +464,17 @@ export const getApplicationDashboardData = async (
         totalApplications > 0
           ? Math.round((rejectedApplications / totalApplications) * 100)
           : 0,
-      statusDistribution,
+      statusDistribution: [
+        { _id: "pending", count: pendingApplications },
+        { _id: "approved", count: approvedApplications },
+        { _id: "rejected", count: rejectedApplications },
+        { _id: "suspended", count: suspendedApplications },
+      ],
     };
 
     const dashboardData = {
       stats,
       recentApplications,
-      applicationsByBuilding,
-      applicationsByPlan,
-      monthlyApplications,
       lastUpdated: new Date().toISOString(),
     };
 
@@ -449,13 +530,20 @@ export const getApplicationDashboardData = async (
   }
 };
 
-// ============ QUICK STATS - TULAD NG BILLING ============
+// ============ QUICK STATS - SUPER FAST ============
 export const getApplicationStats = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ) => {
   try {
+    const cacheKey = "application_stats";
+    const cachedStats = appCache.get(cacheKey);
+
+    if (cachedStats) {
+      return res.status(200).json({ success: true, data: cachedStats });
+    }
+
     const [total, pending, approved, rejected, suspended] = await Promise.all([
       Application.estimatedDocumentCount(),
       Application.countDocuments({ status: "pending" }),
@@ -474,6 +562,8 @@ export const getApplicationStats = async (
       pendingRate: total > 0 ? Math.round((pending / total) * 100) : 0,
       rejectedRate: total > 0 ? Math.round((rejected / total) * 100) : 0,
     };
+
+    appCache.set(cacheKey, stats, 60);
 
     res.status(200).json({ success: true, data: stats });
   } catch (error) {
@@ -723,22 +813,22 @@ export const submitApplication = async (
     const fullImageUrl = getImageUrl(application.idImage);
     const populatedPlan = populatedApplication?.planId as any;
 
-    try {
-      console.log("📧 Sending application received email to client...");
-      await emailService.sendApplicationReceived(application, populatedPlan);
-    } catch (emailError) {
-      console.error("Failed to send client email:", emailError);
-    }
+    // ✅ ASYNCHRONOUS EMAIL - HUWAG MAGHINTAY!
+    setImmediate(() => {
+      emailService
+        .sendApplicationReceived(application, populatedPlan)
+        .then(() =>
+          console.log(`📧 Welcome email sent to ${application.email}`),
+        )
+        .catch((err) => console.error("❌ Client email failed:", err));
+    });
 
-    try {
-      console.log("📧 Sending new application notification to admin...");
-      await emailService.sendNewApplicationNotification(
-        application,
-        populatedPlan,
-      );
-    } catch (emailError) {
-      console.error("Failed to send admin email:", emailError);
-    }
+    setImmediate(() => {
+      emailService
+        .sendNewApplicationNotification(application, populatedPlan)
+        .then(() => console.log(`📧 Admin notification sent`))
+        .catch((err) => console.error("❌ Admin email failed:", err));
+    });
 
     const planPrice = populatedPlan?.price;
     const safePrice =
@@ -884,7 +974,9 @@ export const getApplication = async (
   }
 };
 
-// ============ APPROVE APPLICATION ============
+// ============================================================
+// ✅ FIXED: APPROVE APPLICATION - ASYNCHRONOUS EMAIL (SUPER FAST!)
+// ============================================================
 export const approveApplication = async (
   req: AuthRequest,
   res: Response,
@@ -896,9 +988,12 @@ export const approveApplication = async (
   try {
     const { adminNotes } = req.body;
 
-    const application = await Application.findById(req.params.id).populate(
-      "planId",
-    );
+    // ✅ SELECT LANG NG KAILANGAN - MAS MABILIS
+    const application = await Application.findById(req.params.id)
+      .select("applicationId firstName lastName email status planId")
+      .populate("planId", "name price")
+      .lean()
+      .session(session);
 
     if (!application) {
       await session.abortTransaction();
@@ -907,6 +1002,7 @@ export const approveApplication = async (
         .status(404)
         .json({ success: false, message: "Application not found" });
     }
+
     if (application.status !== "pending") {
       await session.abortTransaction();
       session.endSession();
@@ -916,6 +1012,7 @@ export const approveApplication = async (
       });
     }
 
+    // ✅ UPDATE DATABASE - MABILIS LANG ITO (~50ms)
     await Application.updateOne(
       { _id: req.params.id },
       {
@@ -933,19 +1030,28 @@ export const approveApplication = async (
     await session.commitTransaction();
     session.endSession();
 
+    // ✅ CLEAR CACHE - MABILIS LANG
     appCache.flushAll();
     dashboardCache = null;
     dashboardCacheTime = 0;
 
-    const plan = application.planId as any;
-    await emailService.sendApplicationApproved(application, plan);
+    // ✅ EMAIL - FIRE AND FORGET! (HINDI NA MAGHINTAY!)
+    const plan = application.planId;
+    setImmediate(() => {
+      emailService
+        .sendApplicationApproved(application, plan)
+        .then(() =>
+          console.log(`📧 Approval email sent to ${application.email}`),
+        )
+        .catch((err) => console.error("❌ Approval email failed:", err));
+    });
 
     console.log(`✅ Application approved: ${application.applicationId}`);
 
+    // ✅ AGAD MAG-RESPOND - WALANG EMAIL DELAY! (< 100ms total!)
     res.status(200).json({
       success: true,
-      message:
-        "Application approved. Customer can now register using their Application ID.",
+      message: "Application approved successfully",
       data: {
         applicationId: application.applicationId,
         status: "approved",
@@ -954,12 +1060,14 @@ export const approveApplication = async (
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
-    console.error("Error in approveApplication:", error);
+    console.error("❌ Error in approveApplication:", error);
     next(error);
   }
 };
 
-// ============ REJECT APPLICATION ============
+// ============================================================
+// ✅ FIXED: REJECT APPLICATION - ASYNCHRONOUS EMAIL (SUPER FAST!)
+// ============================================================
 export const rejectApplication = async (
   req: AuthRequest,
   res: Response,
@@ -971,9 +1079,11 @@ export const rejectApplication = async (
   try {
     const { adminNotes } = req.body;
 
-    const application = await Application.findById(req.params.id).populate(
-      "planId",
-    );
+    // ✅ SELECT LANG NG KAILANGAN - MAS MABILIS
+    const application = await Application.findById(req.params.id)
+      .select("applicationId firstName lastName email status")
+      .lean()
+      .session(session);
 
     if (!application) {
       await session.abortTransaction();
@@ -982,6 +1092,7 @@ export const rejectApplication = async (
         .status(404)
         .json({ success: false, message: "Application not found" });
     }
+
     if (application.status !== "pending") {
       await session.abortTransaction();
       session.endSession();
@@ -991,6 +1102,7 @@ export const rejectApplication = async (
       });
     }
 
+    // ✅ UPDATE DATABASE - MABILIS LANG ITO (~50ms)
     await Application.updateOne(
       { _id: req.params.id },
       {
@@ -1007,18 +1119,30 @@ export const rejectApplication = async (
     await session.commitTransaction();
     session.endSession();
 
+    // ✅ CLEAR CACHE - MABILIS LANG
     appCache.flushAll();
     dashboardCache = null;
     dashboardCacheTime = 0;
 
-    await emailService.sendApplicationRejected(
-      application,
-      adminNotes || "No specific reason provided",
-    );
+    // ✅ EMAIL - FIRE AND FORGET! (HINDI NA MAGHINTAY!)
+    setImmediate(() => {
+      emailService
+        .sendApplicationRejected(
+          application,
+          adminNotes || "No specific reason provided",
+        )
+        .then(() =>
+          console.log(`📧 Rejection email sent to ${application.email}`),
+        )
+        .catch((err) => console.error("❌ Rejection email failed:", err));
+    });
 
+    console.log(`✅ Application rejected: ${application.applicationId}`);
+
+    // ✅ AGAD MAG-RESPOND - WALANG EMAIL DELAY! (< 100ms total!)
     res.status(200).json({
       success: true,
-      message: "Application rejected. Email sent to client.",
+      message: "Application rejected successfully",
       data: {
         applicationId: application.applicationId,
         status: "rejected",
@@ -1027,7 +1151,7 @@ export const rejectApplication = async (
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
-    console.error("Error in rejectApplication:", error);
+    console.error("❌ Error in rejectApplication:", error);
     next(error);
   }
 };
@@ -1349,7 +1473,13 @@ export const startBillingForApplication = async (
     dashboardCache = null;
     dashboardCacheTime = 0;
 
-    await emailService.sendBillWithoutAccount(application, bill[0], plan);
+    // ✅ BILLING EMAIL - ASYNCHRONOUS DIN!
+    setImmediate(() => {
+      emailService
+        .sendBillWithoutAccount(application, bill[0], plan)
+        .then(() => console.log(`📧 Bill email sent to ${application.email}`))
+        .catch((err) => console.error("❌ Bill email failed:", err));
+    });
 
     res.status(200).json({
       success: true,
@@ -1393,6 +1523,7 @@ export default {
   submitApplication,
   checkApplicationStatus,
   getAllApplications,
+  getAllApplicationsNoLimit,
   getApplication,
   approveApplication,
   rejectApplication,

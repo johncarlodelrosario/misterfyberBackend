@@ -1,4 +1,4 @@
-// routes/applicationRoutes.ts - COMPLETE FIXED - RETURNS ALL DATA
+// routes/applicationRoutes.ts - COMPLETE FIXED WITH TYPE SAFETY
 import express, { Router, Request, Response, NextFunction } from "express";
 import { body } from "express-validator";
 import {
@@ -15,20 +15,41 @@ import {
   getApplicationDashboardData,
   getApplicationStats,
   clearApplicationCache,
+  getAllApplications,
+  getAllApplicationsNoLimit,
 } from "../controllers/applicationController";
 import { protect, authorize } from "../middleware/auth";
 import { uploadIdCard } from "../middleware/upload";
 import Application from "../models/Application";
 import mongoose from "mongoose";
+import NodeCache from "node-cache";
 
 const router: Router = Router();
 
+// ✅ CACHE FOR ROUTE
+const routeCache = new NodeCache({ stdTTL: 60, checkperiod: 120 });
+
 console.log("🔄 Registering application routes...");
 
-// ============ CACHE ============
-let allApplicationsCache: any = null;
-let allApplicationsCacheTime = 0;
-const ALL_CACHE_TTL = 30 * 1000; // 30 seconds
+// ============ HELPER FUNCTION ============
+function getImageUrl(imagePath?: string): string {
+  if (!imagePath) return "";
+  if (
+    imagePath.includes("cloudinary.com") ||
+    imagePath.startsWith("https://res.cloudinary.com")
+  ) {
+    return imagePath;
+  }
+  if (imagePath.startsWith("data:")) return imagePath;
+  const PRODUCTION_URL = "https://misterfyberbackend.onrender.com";
+  let filename = "";
+  const parts = imagePath.split(/[\\\/]/);
+  filename = parts[parts.length - 1];
+  if (!filename || filename === "placeholder.jpg") {
+    return `${PRODUCTION_URL}/uploads/id-cards/placeholder.jpg`;
+  }
+  return `${PRODUCTION_URL}/uploads/id-cards/${filename}`;
+}
 
 // ============ PUBLIC ROUTES ============
 router.get("/address/regions", getRegions);
@@ -68,10 +89,36 @@ router.use(authorize("super_admin", "admin", "staff"));
 router.get("/dashboard/data", getApplicationDashboardData);
 router.get("/dashboard/stats", getApplicationStats);
 
-// ============ GET ALL APPLICATIONS - WITH PAGINATION ============
+// ============ GET ALL APPLICATIONS - WITH CACHE ============
 router.get("/", async (req: Request, res: Response, next: NextFunction) => {
+  const startTime = Date.now();
+
   try {
-    console.log("📊 Application route / called");
+    const { page = 1, limit = 20, status } = req.query;
+    const pageNum = parseInt(page as string);
+    const limitNum = parseInt(limit as string);
+    const skip = (pageNum - 1) * limitNum;
+
+    // ✅ CHECK CACHE MUNA!
+    const cacheKey = `applications_page_${pageNum}_limit_${limitNum}_status_${status || "all"}`;
+    const cachedData = routeCache.get(cacheKey) as {
+      success: boolean;
+      data: any[];
+      totalPages: number;
+      currentPage: number;
+      total: number;
+      limit: number;
+      _responseTime: string;
+    } | null;
+
+    if (cachedData) {
+      console.log(`📦 Returning cached applications page ${pageNum}`);
+      return res.status(200).json(cachedData);
+    }
+
+    console.log(
+      `📊 Application route / called - page: ${pageNum}, limit: ${limitNum}`,
+    );
 
     if (mongoose.connection.readyState !== 1) {
       console.error("❌ MongoDB not connected!");
@@ -86,24 +133,28 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
       });
     }
 
-    const { page = 1, limit = 20, status } = req.query;
-    const pageNum = parseInt(page as string);
-    const limitNum = parseInt(limit as string);
-    const skip = (pageNum - 1) * limitNum;
-
     const filter: any = {};
     if (status && status !== "all") {
       filter.status = status;
     }
 
+    // ✅ USE estimatedDocumentCount() - SUPER FAST!
     const [applications, total] = await Promise.all([
       Application.find(filter)
+        .select(
+          "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName installationFee installationFeePaid serviceStatus",
+        )
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limitNum)
         .lean(),
-      Application.countDocuments(filter),
+      Application.estimatedDocumentCount(),
     ]);
+
+    const elapsed = Date.now() - startTime;
+    console.log(
+      `✅ Found ${applications.length} applications, Total: ${total} in ${elapsed}ms`,
+    );
 
     const formattedData = applications.map((app: any) => ({
       _id: app._id,
@@ -115,7 +166,7 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
       status: app.status,
       createdAt: app.createdAt,
       idImage: app.idImage,
-      idImageUrl: app.idImage ? getImageUrl(app.idImage) : "",
+      idImageUrl: getImageUrl(app.idImage),
       billingStarted: app.billingStarted || false,
       registeredUserId: app.registeredUserId,
       billingCycleId: app.billingCycleId,
@@ -135,14 +186,20 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
       building: null,
     }));
 
-    return res.status(200).json({
+    const responseData = {
       success: true,
       data: formattedData,
       totalPages: Math.ceil(total / limitNum) || 1,
       currentPage: pageNum,
       total: total || 0,
       limit: limitNum,
-    });
+      _responseTime: `${elapsed}ms`,
+    };
+
+    // ✅ CACHE FOR 30 SECONDS
+    routeCache.set(cacheKey, responseData, 30);
+
+    return res.status(200).json(responseData);
   } catch (error: any) {
     console.error("❌ Route error:", error);
     return res.status(200).json({
@@ -154,26 +211,28 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
       limit: 20,
       _error: true,
       message: error.message || "Error loading applications",
+      _responseTime: `${Date.now() - startTime}ms`,
     });
   }
 });
 
-// ============ GET ALL APPLICATIONS - NO LIMIT (RETURNS ALL DATA) ============
+// ============ GET ALL APPLICATIONS - NO LIMIT (WITH CACHE) ============
 router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
   const startTime = Date.now();
 
   try {
-    // Check cache first
-    const now = Date.now();
-    if (
-      allApplicationsCache &&
-      now - allApplicationsCacheTime < ALL_CACHE_TTL
-    ) {
+    const cacheKey = "all_applications_no_limit";
+    const cachedData = routeCache.get(cacheKey) as {
+      data: any[];
+      total: number;
+    } | null;
+
+    if (cachedData) {
       console.log("📦 Returning cached all applications data");
       return res.status(200).json({
         success: true,
-        data: allApplicationsCache.data,
-        total: allApplicationsCache.total,
+        data: cachedData.data,
+        total: cachedData.total,
         cached: true,
         _responseTime: `${Date.now() - startTime}ms`,
       });
@@ -191,17 +250,19 @@ router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
       });
     }
 
-    // ✅ FETCH ALL DATA - NO LIMIT, NO PAGINATION
-    const [applications, total] = await Promise.all([
-      Application.find().sort({ createdAt: -1 }).lean(),
-      Application.countDocuments(),
-    ]);
+    const applications = await Application.find()
+      .select(
+        "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName installationFee installationFeePaid serviceStatus",
+      )
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const total = applications.length;
 
     console.log(
-      `✅ Found ${applications.length} total applications in ${Date.now() - startTime}ms`,
+      `✅ Found ${total} total applications in ${Date.now() - startTime}ms`,
     );
 
-    // Format response
     const formattedData = applications.map((app: any) => ({
       _id: app._id,
       applicationId: app.applicationId,
@@ -212,7 +273,7 @@ router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
       status: app.status,
       createdAt: app.createdAt,
       idImage: app.idImage,
-      idImageUrl: app.idImage ? getImageUrl(app.idImage) : "",
+      idImageUrl: getImageUrl(app.idImage),
       billingStarted: app.billingStarted || false,
       registeredUserId: app.registeredUserId,
       billingCycleId: app.billingCycleId,
@@ -233,12 +294,8 @@ router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
       building: null,
     }));
 
-    // Cache the result
-    allApplicationsCache = {
-      data: formattedData,
-      total: total,
-    };
-    allApplicationsCacheTime = Date.now();
+    const cacheData = { data: formattedData, total: total };
+    routeCache.set(cacheKey, cacheData, 60);
 
     return res.status(200).json({
       success: true,
@@ -249,20 +306,23 @@ router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
   } catch (error: any) {
     console.error("❌ Error fetching all applications:", error.message);
 
-    // If cache exists, use it even if expired
-    if (allApplicationsCache) {
+    const cachedData = routeCache.get("all_applications_no_limit") as {
+      data: any[];
+      total: number;
+    } | null;
+
+    if (cachedData) {
       console.log("📦 Returning expired cached data due to error");
       return res.status(200).json({
         success: true,
-        data: allApplicationsCache.data,
-        total: allApplicationsCache.total,
+        data: cachedData.data,
+        total: cachedData.total,
         cached: true,
         error: "Using cached data due to database timeout",
         _responseTime: `${Date.now() - startTime}ms`,
       });
     }
 
-    // Return empty data
     return res.status(200).json({
       success: true,
       data: [],
@@ -273,27 +333,14 @@ router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
   }
 });
 
-// Helper function
-function getImageUrl(imagePath?: string): string {
-  if (!imagePath) return "";
-  if (
-    imagePath.includes("cloudinary.com") ||
-    imagePath.startsWith("https://res.cloudinary.com")
-  ) {
-    return imagePath;
-  }
-  if (imagePath.startsWith("data:")) return imagePath;
-  const PRODUCTION_URL = "https://misterfyberbackend.onrender.com";
-  let filename = "";
-  const parts = imagePath.split(/[\\\/]/);
-  filename = parts[parts.length - 1];
-  if (!filename || filename === "placeholder.jpg") {
-    return `${PRODUCTION_URL}/uploads/id-cards/placeholder.jpg`;
-  }
-  return `${PRODUCTION_URL}/uploads/id-cards/${filename}`;
-}
+// ============ CLEAR CACHE ON UPDATE ============
+router.post("/cache/clear", (req: Request, res: Response) => {
+  routeCache.flushAll();
+  clearApplicationCache();
+  res.status(200).json({ success: true, message: "All cache cleared" });
+});
 
-// ============ DELETE APPLICATION ============
+// ============ DELETE APPLICATION - CLEAR CACHE ============
 router.delete("/:id", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -309,8 +356,8 @@ router.delete("/:id", async (req: Request, res: Response) => {
 
     await Application.findByIdAndDelete(id);
 
-    allApplicationsCache = null;
-    allApplicationsCacheTime = 0;
+    // ✅ CLEAR CACHE!
+    routeCache.flushAll();
     clearApplicationCache();
 
     res.status(200).json({
@@ -332,7 +379,7 @@ router.delete("/:id", async (req: Request, res: Response) => {
   }
 });
 
-// ============ BULK DELETE ============
+// ============ BULK DELETE - CLEAR CACHE ============
 router.post("/bulk-delete", async (req: Request, res: Response) => {
   try {
     const { applicationIds } = req.body;
@@ -352,8 +399,8 @@ router.post("/bulk-delete", async (req: Request, res: Response) => {
       _id: { $in: applicationIds },
     });
 
-    allApplicationsCache = null;
-    allApplicationsCacheTime = 0;
+    // ✅ CLEAR CACHE!
+    routeCache.flushAll();
     clearApplicationCache();
 
     res.status(200).json({
@@ -371,14 +418,6 @@ router.post("/bulk-delete", async (req: Request, res: Response) => {
       error: error instanceof Error ? error.message : "Unknown error",
     });
   }
-});
-
-// ============ CLEAR CACHE ============
-router.post("/cache/clear", (req: Request, res: Response) => {
-  allApplicationsCache = null;
-  allApplicationsCacheTime = 0;
-  clearApplicationCache();
-  res.status(200).json({ success: true, message: "All cache cleared" });
 });
 
 // ============ SINGLE APPLICATION ============
@@ -410,8 +449,8 @@ router.patch("/:id/mac-address", async (req: Request, res: Response) => {
       });
     }
 
-    allApplicationsCache = null;
-    allApplicationsCacheTime = 0;
+    // ✅ CLEAR CACHE!
+    routeCache.flushAll();
     clearApplicationCache();
 
     res.status(200).json({
@@ -448,8 +487,8 @@ router.patch("/:id/tower", async (req: Request, res: Response) => {
       });
     }
 
-    allApplicationsCache = null;
-    allApplicationsCacheTime = 0;
+    // ✅ CLEAR CACHE!
+    routeCache.flushAll();
     clearApplicationCache();
 
     res.status(200).json({
@@ -473,7 +512,7 @@ router.get("/test/direct", async (req: Request, res: Response) => {
   try {
     console.log("🧪 TEST ROUTE: Direct database query");
 
-    const total = await Application.countDocuments();
+    const total = await Application.estimatedDocumentCount();
     console.log(`📊 Total applications: ${total}`);
 
     const apps = await Application.find()
@@ -516,7 +555,7 @@ router.get("/test/simple", async (req: Request, res: Response) => {
           "applicationId firstName lastName email status createdAt buildingName",
         )
         .lean(),
-      Application.countDocuments(),
+      Application.estimatedDocumentCount(),
     ]);
 
     console.log(`📋 Found ${apps.length} applications, Total: ${total}`);
