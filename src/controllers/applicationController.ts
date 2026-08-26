@@ -1,4 +1,3 @@
-// controllers/applicationController.ts - FIXED (SUPER FAST!)
 import { Request, Response, NextFunction } from "express";
 import Application from "../models/Application";
 import Plan from "../models/Plan";
