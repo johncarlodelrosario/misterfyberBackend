@@ -773,7 +773,7 @@ export const getRecentActivities = async (
         title: "Payment Received",
         description: `${userName} paid ₱${payment.amount?.toLocaleString() || 0}`,
         type: "payment",
-        icon: "💰",
+        icon: "₱",
         time: getTimeAgo(payment.createdAt),
         date: payment.createdAt,
       });
