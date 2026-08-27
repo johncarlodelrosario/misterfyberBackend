@@ -2374,7 +2374,7 @@ class EmailService {
                     <p>We are pleased to confirm that your payment has been received and processed successfully.</p>
                     
                     <div class="payment-details">
-                        <h4 style="margin-top: 0; color: #28a745;">💰 Payment Details</h4>
+                        <h4 style="margin-top: 0; color: #28a745;">₱ Payment Details</h4>
                         <p><strong>Invoice Number:</strong> ${invoiceData.invoiceNumber}</p>
                         <p><strong>Amount Paid:</strong> <span style="color: #28a745; font-size: 20px; font-weight: bold;">₱${safeToFixed(amount)}</span></p>
                         <p><strong>Payment Date:</strong> ${paidAt}</p>

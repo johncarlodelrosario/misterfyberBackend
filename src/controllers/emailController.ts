@@ -7,6 +7,7 @@ import Billing from "../models/Billing";
 import BillingCycle from "../models/BillingCycle";
 import EmailSentRecord from "../models/EmailSentRecord";
 import EmailTemplate from "../models/EmailTemplate";
+import EmailSchedule from "../models/EmailSchedule";
 import emailService, {
   getLocationFromEntity,
   getCollectionEmailByLocation,
@@ -34,7 +35,7 @@ function checkAdmin(req: AuthRequest, res: Response): boolean {
   return true;
 }
 
-// Generate email preview HTML with support for multiple bills
+// Generate email preview HTML with support for multiple bills and rich text
 function generateEmailPreview(
   subject: string,
   message: string,
@@ -42,7 +43,11 @@ function generateEmailPreview(
   billingDataArray: any[] = [],
   customerData?: any,
   senderInfo?: string,
+  richTextContent?: string,
 ): string {
+  // Use rich text content if provided, otherwise use plain message
+  const content = richTextContent || message.replace(/\n/g, "<br>");
+
   const senderSection = senderInfo
     ? `
     <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
@@ -132,6 +137,9 @@ function generateEmailPreview(
         .header h1 { color: #007bff; margin: 0; font-size: 24px; }
         .content { padding: 20px; }
         .message-box { background-color: #fafafa; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #28a745; }
+        .message-box strong, .message-box b { color: #1a56db; }
+        .message-box em, .message-box i { color: #6b21a5; }
+        .message-box mark { background-color: #fef08a; padding: 2px 4px; border-radius: 3px; }
         .footer { text-align: center; padding: 20px; border-top: 1px solid #eee; font-size: 12px; color: #666; }
         .button { display: inline-block; background-color: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; }
       </style>
@@ -146,7 +154,7 @@ function generateEmailPreview(
           ${locationBadge}
           ${senderSection}
           <div class="message-box">
-            ${message.replace(/\n/g, "<br>")}
+            ${content}
           </div>
           ${billingSection}
         </div>
@@ -155,12 +163,12 @@ function generateEmailPreview(
           <p><small>Need help? Contact us at <a href="mailto:admin@misterfyber.com">admin@misterfyber.com</a></small></p>
         </div>
       </div>
+    </body>
     </html>
   `;
 }
 
 // ==================== GET CUSTOMERS FOR EMAIL SELECTION ====================
-// FIXED: Added forceRefresh parameter and no-cache headers
 export const getCustomersForEmail = async (
   req: AuthRequest,
   res: Response,
@@ -169,9 +177,9 @@ export const getCustomersForEmail = async (
   if (!checkAdmin(req, res)) return;
 
   try {
-    const { search, status, hasBilling, forceRefresh } = req.query;
+    const { search, status, hasBilling, forceRefresh, location } = req.query;
 
-    // Set no-cache headers to prevent browser caching
+    // Set no-cache headers
     res.set({
       "Cache-Control": "no-store, no-cache, must-revalidate, private",
       Pragma: "no-cache",
@@ -193,13 +201,28 @@ export const getCustomersForEmail = async (
       query.status = status;
     }
 
-    // Always get all customers, no limit - ensure new customers appear
+    // Location filter
+    if (location && location !== "all") {
+      if (location === "breeze") {
+        query.buildingName = { $regex: "breeze", $options: "i" };
+      } else if (location === "sil") {
+        query.buildingName = { $regex: /sil|silk/, $options: "i" };
+      } else if (location === "other") {
+        query.buildingName = {
+          $not: {
+            $regex: /breeze|sil|silk/,
+            $options: "i",
+          },
+        };
+      }
+    }
+
     const applications = await Application.find(query)
       .select(
         "firstName lastName email phoneNumber applicationId status buildingName buildingId",
       )
       .lean()
-      .sort({ createdAt: -1 }); // Show newest first
+      .sort({ createdAt: -1 });
 
     console.log(
       `📊 Found ${applications.length} applications for email selection`,
@@ -240,7 +263,6 @@ export const getCustomersForEmail = async (
           lastBillAmount: lastBill?.total || 0,
           lastBillStatus: lastBill?.status || null,
           location: location,
-          // Add timestamp to help with debugging
           _fetchedAt: new Date().toISOString(),
         };
       }),
@@ -262,7 +284,6 @@ export const getCustomersForEmail = async (
       data: filteredCustomers,
       total: filteredCustomers.length,
       timestamp: new Date().toISOString(),
-      // Add metadata to help identify fresh data
       _meta: {
         fetchedAt: new Date().toISOString(),
         totalApplications: applications.length,
@@ -274,7 +295,7 @@ export const getCustomersForEmail = async (
   }
 };
 
-// ==================== GET BILLS FOR CUSTOMER ====================
+// ==================== GET CUSTOMER BILLS ====================
 export const getCustomerBills = async (
   req: AuthRequest,
   res: Response,
@@ -292,7 +313,6 @@ export const getCustomerBills = async (
       });
     }
 
-    // Set no-cache headers
     res.set({
       "Cache-Control": "no-store, no-cache, must-revalidate, private",
       Pragma: "no-cache",
@@ -322,7 +342,7 @@ export const getCustomerBills = async (
   }
 };
 
-// ==================== SEND MANUAL EMAIL (SUPPORTS MULTIPLE BILLS) ====================
+// ==================== SEND MANUAL EMAIL ====================
 export const sendManualEmail = async (
   req: AuthRequest,
   res: Response,
@@ -338,6 +358,7 @@ export const sendManualEmail = async (
       applicationId,
       subject,
       message,
+      richTextContent,
       includeBilling,
       billIds,
       sendCopyToAdmin,
@@ -379,64 +400,40 @@ export const sendManualEmail = async (
       });
     }
 
-    // Get location from application
+    // Get location
     let location = "";
-    console.log(`🔍 Getting location for application: ${applicationId}`);
-    console.log(`🏢 Building name: ${application.buildingName}`);
-
     if (application.buildingName) {
       const buildingName = application.buildingName.toLowerCase().trim();
       if (buildingName.includes("breeze")) {
         location = "breeze";
-        console.log(
-          `✅ Location detected: BREEZE from buildingName: ${application.buildingName}`,
-        );
       } else if (
         buildingName.includes("sil") ||
         buildingName.includes("silk")
       ) {
         location = "sil";
-        console.log(
-          `✅ Location detected: SIL from buildingName: ${application.buildingName}`,
-        );
-      } else {
-        console.log(`⚠️ Unknown building: ${application.buildingName}`);
       }
     }
 
     if (!location && application.buildingId) {
-      console.log(`🔍 Looking up building by ID: ${application.buildingId}`);
       const Building = require("../models/Building").default;
       const building = await Building.findById(application.buildingId).lean();
       if (building) {
-        console.log(`🏢 Building found:`, building);
         if (building.name) {
           const buildingName = building.name.toLowerCase().trim();
           if (buildingName.includes("breeze")) {
             location = "breeze";
-            console.log(
-              `✅ Location detected: BREEZE from building name: ${building.name}`,
-            );
           } else if (
             buildingName.includes("sil") ||
             buildingName.includes("silk")
           ) {
             location = "sil";
-            console.log(
-              `✅ Location detected: SIL from building name: ${building.name}`,
-            );
           }
         }
         if (building.location) {
           location = building.location;
-          console.log(`📍 Location from building: ${location}`);
         }
       }
     }
-
-    console.log(
-      `📍 Final location for ${applicationId}: ${location || "NOT FOUND"}`,
-    );
 
     // Fetch multiple bills
     let billingDataArray: any[] = [];
@@ -478,7 +475,7 @@ export const sendManualEmail = async (
       senderInfo = "Sent from: Admin (admin@misterfyber.com)";
     }
 
-    // Generate email HTML with multiple bills
+    // Generate email HTML with rich text support
     const emailHtml = generateEmailPreview(
       subject,
       message,
@@ -486,42 +483,21 @@ export const sendManualEmail = async (
       billingDataArray,
       application,
       senderInfo,
+      richTextContent,
     );
 
     // Check if email service is configured
     const isConfigured = emailService.isConfigured();
-    console.log(`📧 Email service configured: ${isConfigured}`);
-    console.log(`📧 Using admin sender: ${useAdminSender ? "YES" : "NO"}`);
-    console.log(`📧 Location: ${location || "NONE"}`);
-    console.log(
-      `📧 Collection email: ${location ? getCollectionEmailByLocation(location) : "NONE"}`,
-    );
 
     let emailSent = false;
     let emailError = null;
 
     try {
       if (!isConfigured) {
-        console.warn("⚠️ Email service not configured. Check BREVO_API_KEY.");
-        console.warn(
-          `   API Key: ${(emailService as any).apiKey ? "SET" : "MISSING"}`,
-        );
-        console.warn(
-          `   API Key length: ${(emailService as any).apiKey?.length || 0}`,
-        );
-
         if (process.env.NODE_ENV === "development") {
           console.log(
             `📧 [DEV MODE] Would send email to: ${application.email}`,
           );
-          console.log(`   Subject: ${subject}`);
-          console.log(`   Message preview: ${message.substring(0, 100)}...`);
-          console.log(`   Use Admin Sender: ${useAdminSender ? "YES" : "NO"}`);
-          console.log(`   Location: ${location || "NONE"}`);
-          console.log(
-            `   Would send from: ${useAdminSender ? "admin@misterfyber.com" : location ? getCollectionEmailByLocation(location) : "admin@misterfyber.com"}`,
-          );
-          console.log(`   Bills: ${billingDataArray.length} bill(s)`);
           emailSent = true;
         } else {
           throw new Error(
@@ -529,8 +505,6 @@ export const sendManualEmail = async (
           );
         }
       } else {
-        console.log(`📧 Attempting to send email to: ${application.email}`);
-        console.log(`📧 Bills included: ${billingDataArray.length}`);
         emailSent = await emailService.sendEmail(
           application.email,
           subject,
@@ -543,17 +517,7 @@ export const sendManualEmail = async (
         );
 
         if (!emailSent) {
-          console.warn(
-            `⚠️ Email sending returned false for ${application.email}`,
-          );
           emailError = "Email service returned false - check logs for details";
-        } else {
-          console.log(`✅ Email sent successfully to ${application.email}`);
-          console.log(
-            `   Sender: ${useAdminSender ? "admin@misterfyber.com" : location ? getCollectionEmailByLocation(location) : "admin@misterfyber.com"}`,
-          );
-          console.log(`   Location: ${location || "NONE"}`);
-          console.log(`   Bills: ${billingDataArray.length}`);
         }
       }
     } catch (error: any) {
@@ -587,23 +551,9 @@ export const sendManualEmail = async (
               <p><strong>Sent By:</strong> ${req.user?.email || req.user?.username || "Admin"}</p>
               <p><strong>Sender Type:</strong> ${useAdminSender ? "Admin" : "Collection"}</p>
               <p><strong>Location:</strong> ${location || "NONE"}</p>
-              <p><strong>Collection Email:</strong> ${location ? getCollectionEmailByLocation(location) : "NONE"}</p>
-              <p><strong>Bills Included:</strong> ${billingDataArray.length}</p>
-              ${
-                billingDataArray.length > 0
-                  ? `
-                <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 10px 0;">
-                  <h4>Bills:</h4>
-                  <ul>${billsSummary}</ul>
-                  <p><strong>Total Amount:</strong> ₱${totalAmount.toLocaleString()}</p>
-                </div>
-              `
-                  : ""
-              }
-              <hr>
               <div style="background: #f8f9fa; padding: 15px; border-radius: 5px;">
                 <h3>Message Content:</h3>
-                <div>${message.replace(/\n/g, "<br>")}</div>
+                <div>${richTextContent || message.replace(/\n/g, "<br>")}</div>
               </div>
             </div>
           `;
@@ -619,13 +569,14 @@ export const sendManualEmail = async (
       }
     }
 
-    // Save sent record with bill IDs
+    // Save sent record
     const sentRecord = new EmailSentRecord({
       applicationId: application.applicationId,
       customerName: `${application.firstName} ${application.lastName}`,
       customerEmail: application.email,
       subject,
       message,
+      richTextContent: richTextContent || message,
       sentAt: new Date(),
       status: emailSent ? "sent" : "failed",
       isBulk: false,
@@ -640,6 +591,7 @@ export const sendManualEmail = async (
       senderType: useAdminSender ? "admin" : "collection",
       location: location || "unknown",
       collectionEmail: location ? getCollectionEmailByLocation(location) : null,
+      isScheduled: false,
     });
 
     await sentRecord.save({ session });
@@ -657,13 +609,7 @@ export const sendManualEmail = async (
           error: emailError,
           customerEmail: application.email,
           isEmailConfigured: emailService.isConfigured(),
-          environment: process.env.NODE_ENV,
-          apiKeyPresent: !!(emailService as any).apiKey,
-          apiKeyLength: (emailService as any).apiKey?.length || 0,
           location: location || "unknown",
-          collectionEmail: location
-            ? getCollectionEmailByLocation(location)
-            : null,
           billsIncluded: billingDataArray.length,
         },
       });
@@ -681,9 +627,6 @@ export const sendManualEmail = async (
         recordId: sentRecord._id,
         senderType: useAdminSender ? "admin" : "collection",
         location: location || "unknown",
-        collectionEmail: location
-          ? getCollectionEmailByLocation(location)
-          : null,
         billsIncluded: billingDataArray.length,
         totalAmount: billingDataArray.reduce(
           (sum, bill) => sum + (bill.total || 0),
@@ -712,10 +655,12 @@ export const sendBulkEmails = async (
       applicationIds,
       subject,
       message,
+      richTextContent,
       includeBilling,
       billType,
       sendCopyToAdmin,
       useAdminSender,
+      locationFilter,
     } = req.body;
 
     if (
@@ -740,13 +685,7 @@ export const sendBulkEmails = async (
     if (!isConfigured && process.env.NODE_ENV !== "development") {
       return res.status(500).json({
         success: false,
-        message: "Email service is not configured. Please check BREVO_API_KEY.",
-        details: {
-          isConfigured: false,
-          environment: process.env.NODE_ENV,
-          apiKeyPresent: !!(emailService as any).apiKey,
-          apiKeyLength: (emailService as any).apiKey?.length || 0,
-        },
+        message: "Email service is not configured.",
       });
     }
 
@@ -774,31 +713,19 @@ export const sendBulkEmails = async (
         }
 
         let location = "";
-        console.log(`🔍 Getting location for application: ${applicationId}`);
-        console.log(`🏢 Building name: ${application.buildingName}`);
-
         if (application.buildingName) {
           const buildingName = application.buildingName.toLowerCase().trim();
           if (buildingName.includes("breeze")) {
             location = "breeze";
-            console.log(
-              `✅ Location detected: BREEZE from buildingName: ${application.buildingName}`,
-            );
           } else if (
             buildingName.includes("sil") ||
             buildingName.includes("silk")
           ) {
             location = "sil";
-            console.log(
-              `✅ Location detected: SIL from buildingName: ${application.buildingName}`,
-            );
           }
         }
 
         if (!location && application.buildingId) {
-          console.log(
-            `🔍 Looking up building by ID: ${application.buildingId}`,
-          );
           const Building = require("../models/Building").default;
           const building = await Building.findById(
             application.buildingId,
@@ -819,9 +746,15 @@ export const sendBulkEmails = async (
           }
         }
 
-        console.log(
-          `📍 Final location for ${applicationId}: ${location || "NOT FOUND"}`,
-        );
+        // If location filter is applied, skip non-matching
+        if (locationFilter && locationFilter !== "all") {
+          if (location !== locationFilter) {
+            console.log(
+              `⏭️ Skipping ${applicationId} - location ${location} doesn't match filter ${locationFilter}`,
+            );
+            continue;
+          }
+        }
 
         let billingDataArray: any[] = [];
         let selectedBillIds: string[] = [];
@@ -879,6 +812,7 @@ export const sendBulkEmails = async (
           billingDataArray,
           application,
           senderInfo,
+          richTextContent,
         );
 
         let emailSent = false;
@@ -887,14 +821,6 @@ export const sendBulkEmails = async (
         try {
           if (isConfigured || process.env.NODE_ENV === "development") {
             if (!isConfigured && process.env.NODE_ENV === "development") {
-              console.log(
-                `📧 [DEV MODE] Would send bulk email to: ${application.email}`,
-              );
-              console.log(`   Location: ${location || "NONE"}`);
-              console.log(
-                `   Sender: ${useAdminSender ? "admin@misterfyber.com" : location ? getCollectionEmailByLocation(location) : "admin@misterfyber.com"}`,
-              );
-              console.log(`   Bills: ${billingDataArray.length}`);
               emailSent = true;
             } else {
               emailSent = await emailService.sendEmail(
@@ -922,6 +848,7 @@ export const sendBulkEmails = async (
           customerEmail: application.email,
           subject,
           message,
+          richTextContent: richTextContent || message,
           sentAt: new Date(),
           status: emailSent ? "sent" : "failed",
           isBulk: true,
@@ -939,6 +866,7 @@ export const sendBulkEmails = async (
           collectionEmail: location
             ? getCollectionEmailByLocation(location)
             : null,
+          isScheduled: false,
         });
 
         await record.save();
@@ -951,11 +879,6 @@ export const sendBulkEmails = async (
             name: `${application.firstName} ${application.lastName}`,
             success: true,
             location: location || "unknown",
-            sender: useAdminSender
-              ? "admin@misterfyber.com"
-              : location
-                ? getCollectionEmailByLocation(location)
-                : "admin@misterfyber.com",
             billsIncluded: billingDataArray.length,
           });
           sentRecords.push(record);
@@ -1007,7 +930,7 @@ export const sendBulkEmails = async (
                   .filter((r) => r.success)
                   .map(
                     (r) =>
-                      `<li>${r.name} (${r.email}) - Location: ${r.location || "unknown"} - Sender: ${r.sender} - Bills: ${r.billsIncluded || 0}</li>`,
+                      `<li>${r.name} (${r.email}) - Location: ${r.location || "unknown"} - Bills: ${r.billsIncluded || 0}</li>`,
                   )
                   .join("")}
               </ul>
@@ -1127,7 +1050,6 @@ export const getEmailTemplates = async (
   try {
     const { category, search } = req.query;
 
-    // Set no-cache headers
     res.set({
       "Cache-Control": "no-store, no-cache, must-revalidate, private",
       Pragma: "no-cache",
@@ -1270,7 +1192,7 @@ export const deleteEmailTemplate = async (
   }
 };
 
-// ==================== PREVIEW EMAIL (SUPPORTS MULTIPLE BILLS) ====================
+// ==================== PREVIEW EMAIL ====================
 export const previewEmail = async (
   req: AuthRequest,
   res: Response,
@@ -1282,6 +1204,7 @@ export const previewEmail = async (
     const {
       subject,
       message,
+      richTextContent,
       includeBilling,
       applicationId,
       billIds,
@@ -1324,9 +1247,6 @@ export const previewEmail = async (
             if (building.location) location = building.location;
           }
         }
-        console.log(
-          `📍 Preview location for ${applicationId}: ${location || "NOT FOUND"}`,
-        );
       }
     }
 
@@ -1366,6 +1286,7 @@ export const previewEmail = async (
       billingDataArray,
       customerData,
       senderInfo,
+      richTextContent,
     );
 
     res.status(200).json({
@@ -1388,7 +1309,7 @@ export const previewEmail = async (
   }
 };
 
-// ==================== SEND REMINDER TO ALL WITH UNPAID BILLS ====================
+// ==================== SEND REMINDER TO UNPAID ====================
 export const sendReminderToUnpaid = async (
   req: AuthRequest,
   res: Response,
@@ -1403,17 +1324,9 @@ export const sendReminderToUnpaid = async (
     if (!isConfigured && process.env.NODE_ENV !== "development") {
       return res.status(500).json({
         success: false,
-        message: "Email service is not configured. Please check BREVO_API_KEY.",
-        details: {
-          isConfigured: false,
-          environment: process.env.NODE_ENV,
-        },
+        message: "Email service is not configured.",
       });
     }
-
-    console.log(
-      `📧 Reminder to Unpaid - Using admin sender: ${useAdminSender ? "YES" : "NO"}`,
-    );
 
     const unpaidBills = await Billing.find({
       status: { $in: ["sent", "overdue"] },
@@ -1429,8 +1342,6 @@ export const sendReminderToUnpaid = async (
     const results = [];
     let sentCount = 0;
     let failCount = 0;
-    const sentRecords = [];
-    const failedEmails = [];
 
     for (const applicationId of uniqueApplicationIds) {
       if (!applicationId) continue;
@@ -1521,13 +1432,6 @@ export const sendReminderToUnpaid = async (
       try {
         if (isConfigured || process.env.NODE_ENV === "development") {
           if (!isConfigured && process.env.NODE_ENV === "development") {
-            console.log(
-              `📧 [DEV MODE] Would send reminder to: ${application.email}`,
-            );
-            console.log(`   Location: ${location || "NONE"}`);
-            console.log(
-              `   Sender: ${useAdminSender ? "admin@misterfyber.com" : location ? getCollectionEmailByLocation(location) : "admin@misterfyber.com"}`,
-            );
             emailSent = true;
           } else {
             emailSent = await emailService.sendEmail(
@@ -1576,6 +1480,7 @@ export const sendReminderToUnpaid = async (
         collectionEmail: location
           ? getCollectionEmailByLocation(location)
           : null,
+        isScheduled: false,
       });
 
       await record.save();
@@ -1589,21 +1494,9 @@ export const sendReminderToUnpaid = async (
           billsCount: customerBills.length,
           totalAmount,
           location: location || "unknown",
-          sender: useAdminSender
-            ? "admin@misterfyber.com"
-            : location
-              ? getCollectionEmailByLocation(location)
-              : "admin@misterfyber.com",
         });
-        sentRecords.push(record);
       } else {
         failCount++;
-        failedEmails.push({
-          applicationId,
-          email: application.email,
-          name: `${application.firstName} ${application.lastName}`,
-          error: emailError || "Failed to send reminder",
-        });
       }
 
       await new Promise((resolve) => setTimeout(resolve, 500));
@@ -1617,7 +1510,6 @@ export const sendReminderToUnpaid = async (
         failCount,
         totalCustomers: uniqueApplicationIds.length,
         results,
-        failedEmails: failCount > 0 ? failedEmails : undefined,
         senderType: useAdminSender ? "admin" : "collection",
       },
     });
@@ -1626,7 +1518,7 @@ export const sendReminderToUnpaid = async (
   }
 };
 
-// ==================== GET SENT EMAIL RECORDS ====================
+// ==================== GET SENT RECORDS ====================
 export const getSentRecords = async (
   req: AuthRequest,
   res: Response,
@@ -1635,9 +1527,8 @@ export const getSentRecords = async (
   if (!checkAdmin(req, res)) return;
 
   try {
-    const { applicationId, status, isBulk } = req.query;
+    const { applicationId, status, isBulk, scheduleId } = req.query;
 
-    // Set no-cache headers
     res.set({
       "Cache-Control": "no-store, no-cache, must-revalidate, private",
       Pragma: "no-cache",
@@ -1658,6 +1549,10 @@ export const getSentRecords = async (
       query.isBulk = isBulk === "true";
     }
 
+    if (scheduleId) {
+      query.scheduleId = scheduleId;
+    }
+
     const records = await EmailSentRecord.find(query)
       .sort({ sentAt: -1 })
       .limit(200)
@@ -1670,6 +1565,7 @@ export const getSentRecords = async (
       customerEmail: record.customerEmail,
       subject: record.subject,
       message: record.message,
+      richTextContent: record.richTextContent || record.message,
       sentAt: record.sentAt,
       status: record.status,
       isBulk: record.isBulk,
@@ -1681,6 +1577,8 @@ export const getSentRecords = async (
       senderType: (record as any).senderType || "collection",
       location: (record as any).location || "unknown",
       collectionEmail: (record as any).collectionEmail || null,
+      isScheduled: (record as any).isScheduled || false,
+      scheduleId: (record as any).scheduleId || null,
     }));
 
     res.status(200).json({
@@ -1729,6 +1627,411 @@ export const deleteSentRecord = async (
   }
 };
 
+// ==================== SCHEDULE EMAIL ====================
+export const scheduleEmail = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  try {
+    const {
+      name,
+      applicationIds,
+      subject,
+      message,
+      richTextContent,
+      includeBilling,
+      billType,
+      sendCopyToAdmin,
+      useAdminSender,
+      scheduledFor,
+      locationFilter,
+      recurring,
+    } = req.body;
+
+    // Validation
+    if (!name) {
+      return res.status(400).json({
+        success: false,
+        message: "Schedule name is required",
+      });
+    }
+
+    if (!scheduledFor) {
+      return res.status(400).json({
+        success: false,
+        message: "Scheduled date and time is required",
+      });
+    }
+
+    if (!subject || !message) {
+      return res.status(400).json({
+        success: false,
+        message: "Subject and message are required",
+      });
+    }
+
+    // Check if schedule time is in the future
+    const scheduleDate = new Date(scheduledFor);
+    if (scheduleDate <= new Date()) {
+      return res.status(400).json({
+        success: false,
+        message: "Scheduled time must be in the future",
+      });
+    }
+
+    // If no specific application IDs, use location filter to find customers
+    let targetApplicationIds = applicationIds || [];
+    if (targetApplicationIds.length === 0 && locationFilter) {
+      let query: any = {};
+      if (locationFilter === "breeze") {
+        query.buildingName = { $regex: "breeze", $options: "i" };
+      } else if (locationFilter === "sil") {
+        query.buildingName = { $regex: /sil|silk/, $options: "i" };
+      } else if (locationFilter === "other") {
+        query.buildingName = {
+          $not: {
+            $regex: /breeze|sil|silk/,
+            $options: "i",
+          },
+        };
+      }
+
+      const customers = await Application.find(query)
+        .select("applicationId")
+        .lean();
+
+      targetApplicationIds = customers.map((c) => c.applicationId);
+      console.log(
+        `📍 Found ${targetApplicationIds.length} customers for location filter: ${locationFilter}`,
+      );
+    }
+
+    if (targetApplicationIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "No customers selected for the scheduled email",
+      });
+    }
+
+    // Create schedule
+    const schedule = new EmailSchedule({
+      name,
+      applicationIds: targetApplicationIds,
+      subject,
+      message,
+      richTextContent: richTextContent || message,
+      includeBilling: includeBilling || false,
+      billType: billType || "unpaid",
+      sendCopyToAdmin: sendCopyToAdmin || false,
+      useAdminSender: useAdminSender || false,
+      scheduledFor: scheduleDate,
+      status: "pending",
+      totalRecipients: targetApplicationIds.length,
+      createdBy: req.user?.username || req.user?.email || "Admin",
+      createdByEmail: req.user?.email || "admin@misterfyber.com",
+      locationFilter: locationFilter || "all",
+      recurring: recurring || { enabled: false },
+    });
+
+    await schedule.save();
+
+    res.status(200).json({
+      success: true,
+      message: `Email scheduled successfully for ${scheduleDate.toLocaleString()}`,
+      data: {
+        scheduleId: schedule._id,
+        name: schedule.name,
+        scheduledFor: schedule.scheduledFor,
+        totalRecipients: schedule.totalRecipients,
+        status: schedule.status,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ==================== GET SCHEDULED EMAILS ====================
+export const getScheduledEmails = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  try {
+    const { status, page = 1, limit = 50 } = req.query;
+
+    const query: any = {};
+    if (status && status !== "all") {
+      query.status = status;
+    }
+
+    const pageNum = parseInt(page as string) || 1;
+    const limitNum = parseInt(limit as string) || 50;
+    const skip = (pageNum - 1) * limitNum;
+
+    const schedules = await EmailSchedule.find(query)
+      .sort({ scheduledFor: 1 })
+      .skip(skip)
+      .limit(limitNum)
+      .lean();
+
+    const total = await EmailSchedule.countDocuments(query);
+
+    const formattedSchedules = schedules.map((schedule) => ({
+      id: schedule._id.toString(),
+      name: schedule.name,
+      applicationIds: schedule.applicationIds,
+      subject: schedule.subject,
+      message: schedule.message,
+      richTextContent: schedule.richTextContent,
+      includeBilling: schedule.includeBilling,
+      billType: schedule.billType,
+      sendCopyToAdmin: schedule.sendCopyToAdmin,
+      useAdminSender: schedule.useAdminSender,
+      scheduledFor: schedule.scheduledFor,
+      status: schedule.status,
+      sentCount: schedule.sentCount,
+      failedCount: schedule.failedCount,
+      totalRecipients: schedule.totalRecipients,
+      lastRunAt: schedule.lastRunAt,
+      completedAt: schedule.completedAt,
+      error: schedule.error,
+      createdBy: schedule.createdBy,
+      locationFilter: schedule.locationFilter,
+      recurring: schedule.recurring,
+      createdAt: schedule.createdAt,
+    }));
+
+    res.status(200).json({
+      success: true,
+      data: formattedSchedules,
+      total,
+      page: pageNum,
+      limit: limitNum,
+      totalPages: Math.ceil(total / limitNum),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ==================== UPDATE SCHEDULED EMAIL ====================
+export const updateScheduledEmail = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  try {
+    const { scheduleId } = req.params;
+    const updates = req.body;
+
+    const schedule = await EmailSchedule.findById(scheduleId);
+    if (!schedule) {
+      return res.status(404).json({
+        success: false,
+        message: "Scheduled email not found",
+      });
+    }
+
+    // Don't allow updates to cancelled or completed schedules
+    if (schedule.status === "cancelled" || schedule.status === "sent") {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot update a ${schedule.status} schedule`,
+      });
+    }
+
+    // Update fields
+    const allowedFields = [
+      "name",
+      "subject",
+      "message",
+      "richTextContent",
+      "includeBilling",
+      "billType",
+      "sendCopyToAdmin",
+      "useAdminSender",
+      "scheduledFor",
+      "locationFilter",
+      "recurring",
+    ];
+
+    for (const field of allowedFields) {
+      if (updates[field] !== undefined) {
+        (schedule as any)[field] = updates[field];
+      }
+    }
+
+    // If scheduledFor is updated, ensure it's in the future
+    if (updates.scheduledFor) {
+      const newDate = new Date(updates.scheduledFor);
+      if (newDate <= new Date()) {
+        return res.status(400).json({
+          success: false,
+          message: "Scheduled time must be in the future",
+        });
+      }
+      schedule.scheduledFor = newDate;
+    }
+
+    await schedule.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Schedule updated successfully",
+      data: schedule,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ==================== DELETE SCHEDULED EMAIL ====================
+export const deleteScheduledEmail = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  try {
+    const { scheduleId } = req.params;
+
+    const schedule = await EmailSchedule.findById(scheduleId);
+    if (!schedule) {
+      return res.status(404).json({
+        success: false,
+        message: "Scheduled email not found",
+      });
+    }
+
+    // Only allow deletion of pending schedules
+    if (schedule.status === "processing") {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot delete a processing schedule",
+      });
+    }
+
+    // Update status to cancelled instead of deleting
+    schedule.status = "cancelled";
+    await schedule.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Scheduled email cancelled successfully",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ==================== CANCEL SCHEDULED EMAIL ====================
+export const cancelScheduledEmail = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  try {
+    const { scheduleId } = req.params;
+
+    const schedule = await EmailSchedule.findById(scheduleId);
+    if (!schedule) {
+      return res.status(404).json({
+        success: false,
+        message: "Scheduled email not found",
+      });
+    }
+
+    if (schedule.status === "processing" || schedule.status === "sent") {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot cancel a ${schedule.status} schedule`,
+      });
+    }
+
+    schedule.status = "cancelled";
+    await schedule.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Scheduled email cancelled successfully",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ==================== GET SCHEDULE STATS ====================
+export const getScheduleStats = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  try {
+    const pending = await EmailSchedule.countDocuments({ status: "pending" });
+    const processing = await EmailSchedule.countDocuments({
+      status: "processing",
+    });
+    const sent = await EmailSchedule.countDocuments({ status: "sent" });
+    const failed = await EmailSchedule.countDocuments({ status: "failed" });
+    const cancelled = await EmailSchedule.countDocuments({
+      status: "cancelled",
+    });
+
+    // Get total scheduled recipients
+    const schedules = await EmailSchedule.find({
+      status: { $in: ["pending", "processing", "sent"] },
+    }).lean();
+
+    let totalRecipients = 0;
+    for (const schedule of schedules) {
+      totalRecipients += schedule.totalRecipients || 0;
+    }
+
+    // Get upcoming schedules
+    const upcoming = await EmailSchedule.find({
+      status: "pending",
+      scheduledFor: { $gte: new Date() },
+    })
+      .sort({ scheduledFor: 1 })
+      .limit(5)
+      .lean();
+
+    res.status(200).json({
+      success: true,
+      data: {
+        pending,
+        processing,
+        sent,
+        failed,
+        cancelled,
+        totalRecipients,
+        upcoming: upcoming.map((s) => ({
+          id: s._id,
+          name: s.name,
+          scheduledFor: s.scheduledFor,
+          totalRecipients: s.totalRecipients,
+        })),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ==================== EXPORT ====================
 export default {
   getCustomersForEmail,
   getCustomerBills,
@@ -1742,4 +2045,10 @@ export default {
   sendReminderToUnpaid,
   getSentRecords,
   deleteSentRecord,
+  scheduleEmail,
+  getScheduledEmails,
+  updateScheduledEmail,
+  deleteScheduledEmail,
+  cancelScheduledEmail,
+  getScheduleStats,
 };

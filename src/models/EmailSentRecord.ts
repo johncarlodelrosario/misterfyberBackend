@@ -8,13 +8,13 @@ export interface IEmailSentRecord extends Document {
   customerEmail: string;
   subject: string;
   message: string;
+  richTextContent?: string;
   sentAt: Date;
   status: "sent" | "failed" | "pending";
   isBulk: boolean;
   recipientCount?: number;
   includeBilling: boolean;
   billType?: string;
-  // CHANGED: support multiple bill IDs
   billIds?: string[];
   billCount?: number;
   error?: string;
@@ -24,6 +24,8 @@ export interface IEmailSentRecord extends Document {
   senderType?: "admin" | "collection";
   location?: string;
   collectionEmail?: string;
+  scheduleId?: string;
+  isScheduled: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -51,6 +53,10 @@ const EmailSentRecordSchema = new Schema<IEmailSentRecord>(
       type: String,
       required: true,
     },
+    richTextContent: {
+      type: String,
+      default: "",
+    },
     sentAt: {
       type: Date,
       default: Date.now,
@@ -76,7 +82,6 @@ const EmailSentRecordSchema = new Schema<IEmailSentRecord>(
       type: String,
       enum: ["unpaid", "latest", "installation"],
     },
-    // CHANGED: support multiple bill IDs
     billIds: {
       type: [String],
       default: [],
@@ -112,6 +117,14 @@ const EmailSentRecordSchema = new Schema<IEmailSentRecord>(
     collectionEmail: {
       type: String,
     },
+    scheduleId: {
+      type: String,
+      index: true,
+    },
+    isScheduled: {
+      type: Boolean,
+      default: false,
+    },
   },
   {
     timestamps: true,
@@ -124,6 +137,7 @@ EmailSentRecordSchema.index({ isBulk: 1 });
 EmailSentRecordSchema.index({ sentAt: -1 });
 EmailSentRecordSchema.index({ senderType: 1 });
 EmailSentRecordSchema.index({ location: 1 });
+EmailSentRecordSchema.index({ scheduleId: 1 });
 
 export default mongoose.model<IEmailSentRecord>(
   "EmailSentRecord",

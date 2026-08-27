@@ -1,5 +1,6 @@
-// routes/manualEmailRoutes.ts
-import express from "express";
+// backend/src/routes/manualEmailRoutes.ts
+
+import { Router } from "express";
 import {
   getCustomersForEmail,
   getCustomerBills,
@@ -13,35 +14,48 @@ import {
   sendReminderToUnpaid,
   getSentRecords,
   deleteSentRecord,
+  scheduleEmail,
+  getScheduledEmails,
+  updateScheduledEmail,
+  deleteScheduledEmail,
+  cancelScheduledEmail,
+  getScheduleStats,
 } from "../controllers/emailController";
-import { protect, adminMiddleware } from "../middleware/auth";
+import { authMiddleware } from "../middleware/auth";
 
-const router = express.Router();
+const router = Router();
 
 // All routes require authentication and admin access
-router.use(protect);
-router.use(adminMiddleware);
+router.use(authMiddleware);
 
-// Customer management
+// Customer routes
 router.get("/customers", getCustomersForEmail);
 router.get("/customers/:applicationId/bills", getCustomerBills);
 
-// Email sending
+// Send email routes
 router.post("/send", sendManualEmail);
 router.post("/send-bulk", sendBulkEmails);
 router.post("/send-reminder-unpaid", sendReminderToUnpaid);
 
-// Template management
+// Template routes
 router.get("/templates", getEmailTemplates);
 router.post("/templates", saveEmailTemplate);
 router.put("/templates/:templateId", updateEmailTemplate);
 router.delete("/templates/:templateId", deleteEmailTemplate);
 
-// Sent records
+// Preview route
+router.post("/preview", previewEmail);
+
+// Sent records routes
 router.get("/sent-records", getSentRecords);
 router.delete("/sent-records/:recordId", deleteSentRecord);
 
-// Preview
-router.post("/preview", previewEmail);
+// Scheduling routes
+router.post("/schedule", scheduleEmail);
+router.get("/schedules", getScheduledEmails);
+router.put("/schedules/:scheduleId", updateScheduledEmail);
+router.delete("/schedules/:scheduleId", deleteScheduledEmail);
+router.post("/schedules/:scheduleId/cancel", cancelScheduledEmail);
+router.get("/schedule-stats", getScheduleStats);
 
 export default router;
