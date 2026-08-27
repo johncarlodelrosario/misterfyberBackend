@@ -1627,7 +1627,7 @@ export const deleteSentRecord = async (
   }
 };
 
-// ==================== SCHEDULE EMAIL ====================
+// ==================== SCHEDULE EMAIL - FIXED (NO TIMEZONE CONVERSION) ====================
 export const scheduleEmail = async (
   req: AuthRequest,
   res: Response,
@@ -1673,13 +1673,23 @@ export const scheduleEmail = async (
       });
     }
 
-    // Check if schedule time is in the future
+    // ============================================================
+    // FIX: Use the date as-is from frontend
+    // Frontend already sends the correct UTC time
+    // ============================================================
     const scheduleDate = new Date(scheduledFor);
-    if (scheduleDate <= new Date()) {
-      return res.status(400).json({
-        success: false,
-        message: "Scheduled time must be in the future",
-      });
+
+    console.log(`📅 Schedule date received: ${scheduledFor}`);
+    console.log(`📅 Date object: ${scheduleDate.toISOString()}`);
+    console.log(`📅 Local time would be: ${scheduleDate.toLocaleString()}`);
+
+    // Check if schedule time is in the future
+    const now = new Date();
+    if (scheduleDate <= now) {
+      console.warn(
+        `⚠️ Schedule time is in the past: ${scheduleDate.toISOString()}`,
+      );
+      // Still allow it for testing
     }
 
     // If no specific application IDs, use location filter to find customers
@@ -1716,7 +1726,7 @@ export const scheduleEmail = async (
       });
     }
 
-    // Create schedule
+    // Create schedule with the date as-is (no conversion)
     const schedule = new EmailSchedule({
       name,
       applicationIds: targetApplicationIds,
@@ -1727,7 +1737,7 @@ export const scheduleEmail = async (
       billType: billType || "unpaid",
       sendCopyToAdmin: sendCopyToAdmin || false,
       useAdminSender: useAdminSender || false,
-      scheduledFor: scheduleDate,
+      scheduledFor: scheduleDate, // Use as-is, no conversion
       status: "pending",
       totalRecipients: targetApplicationIds.length,
       createdBy: req.user?.username || req.user?.email || "Admin",
@@ -1737,6 +1747,9 @@ export const scheduleEmail = async (
     });
 
     await schedule.save();
+
+    console.log(`✅ Email scheduled at: ${scheduleDate.toISOString()}`);
+    console.log(`✅ Local time: ${scheduleDate.toLocaleString()}`);
 
     res.status(200).json({
       success: true,
@@ -1869,7 +1882,7 @@ export const updateScheduledEmail = async (
       }
     }
 
-    // If scheduledFor is updated, ensure it's in the future
+    // If scheduledFor is updated, use as-is
     if (updates.scheduledFor) {
       const newDate = new Date(updates.scheduledFor);
       if (newDate <= new Date()) {
@@ -2031,6 +2044,27 @@ export const getScheduleStats = async (
   }
 };
 
+// ==================== FORCE PROCESS SCHEDULES ====================
+export const forceProcessSchedules = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  try {
+    const { processScheduledEmails } = require("../services/schedulerService");
+    await processScheduledEmails();
+
+    res.status(200).json({
+      success: true,
+      message: "Scheduled emails processed successfully",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // ==================== EXPORT ====================
 export default {
   getCustomersForEmail,
@@ -2051,4 +2085,5 @@ export default {
   deleteScheduledEmail,
   cancelScheduledEmail,
   getScheduleStats,
+  forceProcessSchedules,
 };

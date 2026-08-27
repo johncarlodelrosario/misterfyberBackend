@@ -1,4 +1,5 @@
-// backend/src/app.ts - COMPLETE FIXED VERSION
+// backend/src/app.ts - COMPLETE FIXED VERSION WITH EMAIL SCHEDULER
+
 import express, { Application, Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import cors from "cors";
@@ -32,9 +33,10 @@ import {
 import BillingSettings from "./models/BillingSettings";
 
 // ============================================================
-// IMPORT DATABASE - FIXED
+// IMPORT DATABASE AND SCHEDULER - FIXED!
 // ============================================================
 import Database from "./config/database";
+import { startScheduler } from "./services/schedulerService"; // <-- ADD THIS!
 
 // Load environment variables
 dotenv.config({ path: path.join(__dirname, "../.env") });
@@ -48,7 +50,7 @@ console.log(
   process.env.FRONTEND_URL || "http://localhost:3000",
 );
 
-// Allowed origins - includes all possible frontend URLs
+// Allowed origins
 const allowedOrigins = [
   "http://localhost:3000",
   "http://localhost:3001",
@@ -72,7 +74,7 @@ const app: Application = express();
 const server = createServer(app);
 
 // ============================================================
-// WEBSOCKET WITH PROPER PATH
+// WEBSOCKET
 // ============================================================
 const io = new Server(server, {
   cors: {
@@ -96,7 +98,6 @@ app.use(
   }),
 );
 
-// Enhanced CORS configuration
 app.use(
   cors({
     origin: function (origin, callback) {
@@ -285,14 +286,10 @@ const initializeDatabase = async () => {
       throw new Error("MONGODB_URI is not defined in environment variables");
     }
 
-    // ============================================================
-    // USE Database class for connection
-    // ============================================================
     await Database.connect();
 
     console.log("✅ MongoDB connected successfully");
 
-    // Set up event listeners
     mongoose.connection.on("error", (err) => {
       console.error("❌ MongoDB connection error:", err);
     });
@@ -367,6 +364,17 @@ const start = async () => {
   await initializeDatabase();
   initializeScheduledJobs();
 
+  // ============================================================
+  // START THE EMAIL SCHEDULER - FIXED!
+  // ============================================================
+  console.log("\n📧 Starting email scheduler...");
+  try {
+    startScheduler();
+    console.log("✅ Email scheduler started successfully!");
+  } catch (error) {
+    console.error("❌ Failed to start email scheduler:", error);
+  }
+
   const PORT = process.env.PORT || 5000;
   server.listen(PORT, () => {
     console.log(`\n🚀 Server running on port ${PORT}`);
@@ -380,6 +388,7 @@ const start = async () => {
     console.log(`📧 Manual email routes available at: /api/manual-email`);
     console.log(`📄 Invoice routes available at: /api/invoices`);
     console.log(`📁 Uploads directory: ${uploadsPath}`);
+    console.log(`⏰ Email scheduler is running (checks every minute)`);
     console.log(`\n✅ All systems ready!\n`);
   });
 };

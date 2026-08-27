@@ -132,6 +132,7 @@ function generateEmailPreview(
           <p><small>Need help? Contact us at <a href="mailto:admin@misterfyber.com">admin@misterfyber.com</a></small></p>
         </div>
       </div>
+    </body>
     </html>
   `;
 }
@@ -330,6 +331,7 @@ async function processScheduledEmail(schedule: any): Promise<void> {
  */
 export async function processScheduledEmails(): Promise<void> {
   console.log("🔄 Checking for scheduled emails to process...");
+  console.log(`🕐 Current server time: ${new Date().toISOString()}`);
 
   try {
     const now = new Date();
@@ -340,14 +342,18 @@ export async function processScheduledEmails(): Promise<void> {
       scheduledFor: { $lte: now },
     }).sort({ scheduledFor: 1 });
 
+    console.log(`📧 Found ${schedules.length} pending schedules to process`);
+
     if (schedules.length === 0) {
       console.log("📭 No pending scheduled emails to process");
       return;
     }
 
-    console.log(`📧 Found ${schedules.length} scheduled emails to process`);
-
     for (const schedule of schedules) {
+      console.log(`📧 Processing: ${schedule.name} (${schedule._id})`);
+      console.log(`   Scheduled for: ${schedule.scheduledFor}`);
+      console.log(`   Recipients: ${schedule.totalRecipients}`);
+
       try {
         await processScheduledEmail(schedule);
 
@@ -403,7 +409,7 @@ export async function processScheduledEmails(): Promise<void> {
 
           await newSchedule.save();
           console.log(
-            `📅 Created recurring schedule: ${newSchedule._id} for ${nextDate.toLocaleString()}`,
+            `📅 Created recurring schedule: ${newSchedule._id} for ${nextDate.toISOString()}`,
           );
         }
       } catch (error) {
@@ -418,7 +424,9 @@ export async function processScheduledEmails(): Promise<void> {
   }
 }
 
-// Set up the cron job to run every minute
+/**
+ * Start the email scheduler
+ */
 export function startScheduler(): void {
   console.log("🚀 Starting email scheduler...");
 
@@ -426,7 +434,10 @@ export function startScheduler(): void {
   processScheduledEmails();
 
   // Then run every minute
-  setInterval(processScheduledEmails, 60000);
+  const interval = setInterval(processScheduledEmails, 60000);
 
   console.log("✅ Email scheduler started, running every minute");
+
+  // Return the interval so it can be cleared if needed
+  return interval as any;
 }

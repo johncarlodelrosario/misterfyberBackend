@@ -921,8 +921,19 @@ export const startBilling = async (
     let billingStatus = "active";
 
     if (!isAfterCutoff) {
-      const proRatedAmount =
-        Math.round(dailyRate * actualBillableDays * 100) / 100;
+      // FIX: If installation is on the 1st day of a month with 31 days,
+      // the pro-rated amount should equal the full monthly rate
+      let proRatedAmount: number;
+      if (installationDay === 1 && currentMonthEnd.getDate() === 31) {
+        // Month has 31 days and customer starts on the 1st
+        proRatedAmount = monthlyRate;
+        console.log(
+          `📅 Month has 31 days, start on 1st. Using full monthly rate: ₱${monthlyRate}`,
+        );
+      } else {
+        proRatedAmount = Math.round(dailyRate * actualBillableDays * 100) / 100;
+      }
+
       const finalProRatedAmount = customAmount ? customAmount : proRatedAmount;
 
       const proRatedStartDate = installationDate;
@@ -1024,8 +1035,17 @@ export const startBilling = async (
         },
       });
     } else {
-      const proRatedAmount =
-        Math.round(dailyRate * actualBillableDays * 100) / 100;
+      // FIX: For after cutoff scenarios, also handle the 31-day month case for pro-rated
+      let proRatedAmount: number;
+      if (installationDay === 1 && currentMonthEnd.getDate() === 31) {
+        proRatedAmount = monthlyRate;
+        console.log(
+          `📅 Month has 31 days, start on 1st. Using full monthly rate: ₱${monthlyRate}`,
+        );
+      } else {
+        proRatedAmount = Math.round(dailyRate * actualBillableDays * 100) / 100;
+      }
+
       const finalProRatedAmount = customAmount ? customAmount : proRatedAmount;
 
       const proRatedStartDate = installationDate;
@@ -1347,7 +1367,15 @@ export const initializeBackdatedBilling = async (
       ).getDate();
       const daysUsed = daysInMonth - startDate.getDate() + 1;
       const dailyRate = (actualMonthlyRate * 12) / 365;
-      const proRatedAmount = Math.round(dailyRate * daysUsed * 100) / 100;
+
+      let proRatedAmount: number;
+      // FIX: If start date is the 1st of a 31-day month
+      if (startDate.getDate() === 1 && daysInMonth === 31) {
+        proRatedAmount = actualMonthlyRate;
+      } else {
+        proRatedAmount = Math.round(dailyRate * daysUsed * 100) / 100;
+      }
+
       const monthEnd = getEndOfMonth(startDate);
 
       let dueDate: Date;

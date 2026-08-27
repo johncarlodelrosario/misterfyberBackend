@@ -20,6 +20,7 @@ import {
   deleteScheduledEmail,
   cancelScheduledEmail,
   getScheduleStats,
+  forceProcessSchedules,
 } from "../controllers/emailController";
 import { authMiddleware } from "../middleware/auth";
 
@@ -57,5 +58,6 @@ router.put("/schedules/:scheduleId", updateScheduledEmail);
 router.delete("/schedules/:scheduleId", deleteScheduledEmail);
 router.post("/schedules/:scheduleId/cancel", cancelScheduledEmail);
 router.get("/schedule-stats", getScheduleStats);
+router.post("/schedules/process", forceProcessSchedules);
 
 export default router;
