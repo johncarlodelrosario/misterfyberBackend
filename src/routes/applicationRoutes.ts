@@ -1,4 +1,4 @@
-// routes/applicationRoutes.ts - ULTIMATE SPEED FIXED (WITH PLAN POPULATION!)
+// routes/applicationRoutes.ts - COMPLETE FIXED WITH PATCH
 import express, { Router, Request, Response, NextFunction } from "express";
 import { body } from "express-validator";
 import {
@@ -7,6 +7,10 @@ import {
   getApplication,
   approveApplication,
   rejectApplication,
+  deleteApplication,
+  bulkDeleteApplications,
+  updateApplication,
+  patchApplication,
   getRegions,
   getProvincesByRegion,
   getCitiesByProvince,
@@ -19,18 +23,14 @@ import {
 import { protect, authorize } from "../middleware/auth";
 import { uploadIdCard } from "../middleware/upload";
 import Application from "../models/Application";
-import Plan from "../models/Plan";
 import mongoose from "mongoose";
 import NodeCache from "node-cache";
 
 const router: Router = Router();
-
-// ✅ IISANG CACHE LANG - GLOBAL!
 const cache = new NodeCache({ stdTTL: 60, checkperiod: 120 });
 
 console.log("🔥 ULTIMATE SPEED MODE - Application Routes");
 
-// ============ HELPER FUNCTION ============
 function getImageUrl(imagePath?: string): string {
   if (!imagePath) return "";
   if (
@@ -49,6 +49,13 @@ function getImageUrl(imagePath?: string): string {
   }
   return `${PRODUCTION_URL}/uploads/id-cards/${filename}`;
 }
+
+const getStringQuery = (param: any): string => {
+  if (!param) return "";
+  if (typeof param === "string") return param;
+  if (Array.isArray(param)) return param[0] || "";
+  return String(param);
+};
 
 // ============ PUBLIC ROUTES ============
 router.get("/address/regions", getRegions);
@@ -89,26 +96,37 @@ router.get("/dashboard/data", getApplicationDashboardData);
 router.get("/dashboard/stats", getApplicationStats);
 
 // ============================================================
-// ✅ MAIN GET - SUPER FAST (100ms FIRST LOAD!)
+// ✅ MAIN GET - WITH SEARCH & BUILDING FILTERS
 // ============================================================
 router.get("/", async (req: Request, res: Response, next: NextFunction) => {
   const startTime = Date.now();
 
   try {
-    const { page = 1, limit = 20, status } = req.query;
-    const pageNum = parseInt(page as string);
-    const limitNum = parseInt(limit as string);
+    const page = getStringQuery(req.query.page) || "1";
+    const limit = getStringQuery(req.query.limit) || "20";
+    const status = getStringQuery(req.query.status);
+    const search = getStringQuery(req.query.search);
+    const buildingId = getStringQuery(req.query.buildingId);
+    const forceRefresh = getStringQuery(req.query.forceRefresh);
+
+    const pageNum = parseInt(page) || 1;
+    const limitNum = parseInt(limit) || 20;
     const skip = (pageNum - 1) * limitNum;
 
-    const cacheKey = `apps_${pageNum}_${limitNum}_${status || "all"}`;
-    const cachedData = cache.get(cacheKey);
+    const cacheKey = `apps_${pageNum}_${limitNum}_${status || "all"}_${search || ""}_${buildingId || ""}`;
 
-    if (cachedData) {
-      console.log(`⚡ CACHE HIT! ${cacheKey} - ${Date.now() - startTime}ms`);
-      return res.status(200).json(cachedData);
+    if (forceRefresh !== "true") {
+      const cachedData = cache.get(cacheKey);
+      if (cachedData) {
+        console.log(`⚡ CACHE HIT! ${cacheKey} - ${Date.now() - startTime}ms`);
+        return res.status(200).json(cachedData);
+      }
     }
 
     console.log(`📊 DB QUERY: ${cacheKey}`);
+    console.log(
+      `🔍 Filters: status=${status}, search=${search}, buildingId=${buildingId}`,
+    );
 
     if (mongoose.connection.readyState !== 1) {
       return res.status(503).json({
@@ -123,28 +141,45 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
     }
 
     const filter: any = {};
-    if (status && status !== "all") {
+
+    if (status && status !== "all" && status !== "") {
       filter.status = status;
     }
 
-    // ✅ SUPER FAST QUERY - WITH PLAN POPULATION!
+    if (buildingId && buildingId !== "" && buildingId !== "all") {
+      filter.buildingId = buildingId;
+    }
+
+    if (search && search.trim() !== "") {
+      const searchTerm = search.trim();
+      filter.$or = [
+        { firstName: { $regex: searchTerm, $options: "i" } },
+        { lastName: { $regex: searchTerm, $options: "i" } },
+        { email: { $regex: searchTerm, $options: "i" } },
+        { applicationId: { $regex: searchTerm, $options: "i" } },
+        { phoneNumber: { $regex: searchTerm, $options: "i" } },
+        { idNumber: { $regex: searchTerm, $options: "i" } },
+      ];
+    }
+
+    console.log(`🔍 Final filter:`, JSON.stringify(filter, null, 2));
+
     const applications = await Application.find(filter)
       .select(
-        "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName installationFee installationFeePaid serviceStatus planId",
+        "applicationId firstName lastName middleName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName installationFee installationFeePaid serviceStatus planId birthDate gender notes",
       )
-      .populate("planId", "name price speed") // ✅ POPULATE PLAN DATA!
+      .populate("planId", "name price speed")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limitNum)
       .lean()
       .maxTimeMS(3000);
 
-    // ✅ GET TOTAL COUNT
-    const totalCacheKey = `total_${status || "all"}`;
+    const totalCacheKey = `total_${status || "all"}_${search || ""}_${buildingId || ""}`;
     let total = cache.get(totalCacheKey) as number | undefined;
 
-    if (total === undefined) {
-      console.log(`📊 Counting total for status: ${status || "all"}`);
+    if (total === undefined || forceRefresh === "true") {
+      console.log(`📊 Counting total with filters...`);
       total = await Application.countDocuments(filter).maxTimeMS(3000);
       cache.set(totalCacheKey, total, 60);
       console.log(`✅ Total count: ${total} - CACHED`);
@@ -162,6 +197,7 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
       applicationId: app.applicationId,
       firstName: app.firstName,
       lastName: app.lastName,
+      middleName: app.middleName || "",
       email: app.email,
       phoneNumber: app.phoneNumber,
       status: app.status,
@@ -183,9 +219,12 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
       installationFee: app.installationFee || 0,
       installationFeePaid: app.installationFeePaid || false,
       serviceStatus: app.serviceStatus || "pending",
-      planId: app.planId, // ✅ NOW POPULATED!
-      plan: app.planId, // ✅ PLAN DATA IS HERE!
+      planId: app.planId,
+      plan: app.planId,
       building: null,
+      birthDate: app.birthDate,
+      gender: app.gender,
+      notes: app.notes || "",
     }));
 
     const responseData = {
@@ -197,6 +236,7 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
       limit: limitNum,
       _responseTime: `${elapsed}ms`,
       _cached: false,
+      _filters: { status, search, buildingId },
     };
 
     cache.set(cacheKey, responseData, 30);
@@ -207,7 +247,12 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
   } catch (error: any) {
     console.error("❌ Route error:", error);
 
-    const cacheKey = `apps_${req.query.page || 1}_${req.query.limit || 20}_${req.query.status || "all"}`;
+    const page = getStringQuery(req.query.page) || "1";
+    const limit = getStringQuery(req.query.limit) || "20";
+    const status = getStringQuery(req.query.status);
+    const search = getStringQuery(req.query.search);
+    const buildingId = getStringQuery(req.query.buildingId);
+    const cacheKey = `apps_${page}_${limit}_${status || "all"}_${search || ""}_${buildingId || ""}`;
     const cachedData = cache.get(cacheKey);
     if (cachedData) {
       console.log("📦 Returning cached data due to error");
@@ -229,7 +274,7 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
 });
 
 // ============================================================
-// ✅ GET ALL - NO LIMIT - WITH PLAN POPULATION! (FIXED!)
+// ✅ GET ALL - NO LIMIT
 // ============================================================
 router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
   const startTime = Date.now();
@@ -260,12 +305,11 @@ router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
       });
     }
 
-    // ✅ FIXED: POPULATE PLAN DATA!
     const applications = await Application.find()
       .select(
-        "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName installationFee installationFeePaid serviceStatus planId",
+        "applicationId firstName lastName middleName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName installationFee installationFeePaid serviceStatus planId birthDate gender notes",
       )
-      .populate("planId", "name price speed") // ✅ POPULATE PLAN!
+      .populate("planId", "name price speed")
       .sort({ createdAt: -1 })
       .lean()
       .maxTimeMS(3000);
@@ -277,6 +321,7 @@ router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
       applicationId: app.applicationId,
       firstName: app.firstName,
       lastName: app.lastName,
+      middleName: app.middleName || "",
       email: app.email,
       phoneNumber: app.phoneNumber,
       status: app.status,
@@ -298,9 +343,12 @@ router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
       installationFee: app.installationFee || 0,
       installationFeePaid: app.installationFeePaid || false,
       serviceStatus: app.serviceStatus || "pending",
-      planId: app.planId, // ✅ POPULATED PLAN DATA!
-      plan: app.planId, // ✅ PLAN DATA!
+      planId: app.planId,
+      plan: app.planId,
       building: null,
+      birthDate: app.birthDate,
+      gender: app.gender,
+      notes: app.notes || "",
     }));
 
     const responseData = { data: formattedData, total: total };
@@ -343,7 +391,7 @@ router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
 });
 
 // ============================================================
-// ✅ GET CACHE STATUS
+// ✅ CACHE ROUTES
 // ============================================================
 router.get("/cache/status", (req: Request, res: Response) => {
   const stats = cache.getStats();
@@ -358,9 +406,6 @@ router.get("/cache/status", (req: Request, res: Response) => {
   });
 });
 
-// ============================================================
-// ✅ CLEAR CACHE
-// ============================================================
 router.post("/cache/clear", (req: Request, res: Response) => {
   cache.flushAll();
   clearApplicationCache();
@@ -369,84 +414,80 @@ router.post("/cache/clear", (req: Request, res: Response) => {
 });
 
 // ============================================================
-// ✅ DELETE - CLEAR CACHE
+// ✅ DELETE - SINGLE APPLICATION
 // ============================================================
-router.delete("/:id", async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
-    const application = await Application.findById(id);
-
-    if (!application) {
-      return res.status(404).json({
+router.delete(
+  "/:id",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      await deleteApplication(req as any, res, next);
+    } catch (error) {
+      console.error("Error deleting application:", error);
+      res.status(500).json({
         success: false,
-        message: "Application not found",
+        message: "Error deleting application",
+        error: error instanceof Error ? error.message : "Unknown error",
       });
     }
+  },
+);
 
-    await Application.findByIdAndDelete(id);
-    cache.flushAll();
-    clearApplicationCache();
+// ============================================================
+// ✅ BULK DELETE
+// ============================================================
+router.post(
+  "/bulk-delete",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      await bulkDeleteApplications(req as any, res, next);
+    } catch (error) {
+      console.error("Error bulk deleting:", error);
+      res.status(500).json({
+        success: false,
+        message: "Error deleting applications",
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  },
+);
 
-    res.status(200).json({
-      success: true,
-      message: `Application ${application.applicationId} deleted`,
-      data: {
-        applicationId: application.applicationId,
-        firstName: application.firstName,
-        lastName: application.lastName,
-      },
-    });
+// ============================================================
+// ✅ UPDATE APPLICATION - PUT (FULL UPDATE)
+// ============================================================
+router.put("/:id", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    await updateApplication(req as any, res, next);
   } catch (error) {
-    console.error("Error deleting:", error);
+    console.error("Error updating application:", error);
     res.status(500).json({
       success: false,
-      message: "Error deleting application",
+      message: "Error updating application",
       error: error instanceof Error ? error.message : "Unknown error",
     });
   }
 });
 
 // ============================================================
-// ✅ BULK DELETE - CLEAR CACHE
+// ✅ PATCH APPLICATION - PARTIAL UPDATE (FIXED!)
 // ============================================================
-router.post("/bulk-delete", async (req: Request, res: Response) => {
-  try {
-    const { applicationIds } = req.body;
-
-    if (
-      !applicationIds ||
-      !Array.isArray(applicationIds) ||
-      applicationIds.length === 0
-    ) {
-      return res.status(400).json({
+router.patch(
+  "/:id",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      await patchApplication(req as any, res, next);
+    } catch (error) {
+      console.error("Error patching application:", error);
+      res.status(500).json({
         success: false,
-        message: "applicationIds array is required",
+        message: "Error updating application",
+        error: error instanceof Error ? error.message : "Unknown error",
       });
     }
-
-    const deleted = await Application.deleteMany({
-      _id: { $in: applicationIds },
-    });
-    cache.flushAll();
-    clearApplicationCache();
-
-    res.status(200).json({
-      success: true,
-      message: `${deleted.deletedCount} applications deleted`,
-      data: { deletedCount: deleted.deletedCount },
-    });
-  } catch (error) {
-    console.error("Error bulk deleting:", error);
-    res.status(500).json({
-      success: false,
-      message: "Error deleting applications",
-      error: error instanceof Error ? error.message : "Unknown error",
-    });
-  }
-});
+  },
+);
 
 // ============================================================
-// ✅ SINGLE APPLICATION - WITH PLAN POPULATION!
+// ✅ SINGLE APPLICATION
 // ============================================================
 router.get("/:id", async (req: Request, res: Response) => {
   try {
@@ -487,7 +528,7 @@ router.put("/:id/reject", rejectApplication);
 router.post("/:applicationId/start-billing", startBillingForApplication);
 
 // ============================================================
-// ✅ UPDATE MAC ADDRESS - CLEAR CACHE
+// ✅ UPDATE MAC ADDRESS
 // ============================================================
 router.patch("/:id/mac-address", async (req: Request, res: Response) => {
   try {
@@ -527,7 +568,7 @@ router.patch("/:id/mac-address", async (req: Request, res: Response) => {
 });
 
 // ============================================================
-// ✅ UPDATE TOWER - CLEAR CACHE
+// ✅ UPDATE TOWER
 // ============================================================
 router.patch("/:id/tower", async (req: Request, res: Response) => {
   try {
@@ -567,7 +608,7 @@ router.patch("/:id/tower", async (req: Request, res: Response) => {
 });
 
 // ============================================================
-// ✅ UPDATE STATUS - CLEAR CACHE
+// ✅ UPDATE STATUS
 // ============================================================
 router.patch("/:id/status", async (req: Request, res: Response) => {
   try {

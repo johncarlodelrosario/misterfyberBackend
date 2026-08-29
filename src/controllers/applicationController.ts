@@ -1,3 +1,4 @@
+// controllers/applicationController.ts - COMPLETE FIXED WITH PATCH
 import { Request, Response, NextFunction } from "express";
 import Application from "../models/Application";
 import Plan from "../models/Plan";
@@ -34,6 +35,14 @@ interface AuthRequest extends Request {
   params: any;
   query: any;
 }
+
+// ============ HELPER: Get string from query param ============
+const getStringQuery = (param: any): string => {
+  if (!param) return "";
+  if (typeof param === "string") return param;
+  if (Array.isArray(param)) return param[0] || "";
+  return String(param);
+};
 
 // ============ GET IMAGE URL ============
 export const getImageUrl = (imagePath?: string): string => {
@@ -165,7 +174,7 @@ export const getBarangaysByCity = async (
 };
 
 // ============================================================
-// ✅ FIXED: GET ALL APPLICATIONS - SUPER FAST!
+// ✅ GET ALL APPLICATIONS - WITH SEARCH & BUILDING FILTERS
 // ============================================================
 export const getAllApplications = async (
   req: Request,
@@ -175,34 +184,56 @@ export const getAllApplications = async (
   const startTime = Date.now();
 
   try {
-    const { page = 1, limit = 20, status } = req.query;
-    const pageNum = parseInt(page as string);
-    const limitNum = parseInt(limit as string);
+    const page = getStringQuery(req.query.page) || "1";
+    const limit = getStringQuery(req.query.limit) || "20";
+    const status = getStringQuery(req.query.status);
+    const search = getStringQuery(req.query.search);
+    const buildingId = getStringQuery(req.query.buildingId);
+
+    const pageNum = parseInt(page) || 1;
+    const limitNum = parseInt(limit) || 20;
     const skip = (pageNum - 1) * limitNum;
 
     console.log(
-      `🔄 getAllApplications - page: ${pageNum}, limit: ${limitNum}, status: ${status || "all"}`,
+      `🔄 getAllApplications - page: ${pageNum}, limit: ${limitNum}, status: ${status || "all"}, search: ${search || "none"}, buildingId: ${buildingId || "none"}`,
     );
 
     const filter: any = {};
-    if (status && status !== "all") {
+
+    if (status && status !== "all" && status !== "") {
       filter.status = status;
     }
 
-    // ✅ SUPER FAST - GAMIT ANG INDEXES!
-    // ✅ estimatedDocumentCount() - 10x FASTER!
+    if (buildingId && buildingId !== "" && buildingId !== "all") {
+      filter.buildingId = buildingId;
+    }
+
+    if (search && search.trim() !== "") {
+      const searchTerm = search.trim();
+      filter.$or = [
+        { firstName: { $regex: searchTerm, $options: "i" } },
+        { lastName: { $regex: searchTerm, $options: "i" } },
+        { email: { $regex: searchTerm, $options: "i" } },
+        { applicationId: { $regex: searchTerm, $options: "i" } },
+        { phoneNumber: { $regex: searchTerm, $options: "i" } },
+        { idNumber: { $regex: searchTerm, $options: "i" } },
+      ];
+    }
+
+    console.log("🔍 Final filter:", JSON.stringify(filter, null, 2));
+
     const [applications, total] = await Promise.all([
       Application.find(filter)
         .select(
-          "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName installationFee installationFeePaid serviceStatus",
+          "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName installationFee installationFeePaid serviceStatus planId middleName birthDate gender notes",
         )
+        .populate("planId", "name price speed")
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limitNum)
         .lean()
-        .maxTimeMS(2000),
-      // ✅ estimatedDocumentCount() - SOBRANG BILIS!
-      Application.estimatedDocumentCount(),
+        .maxTimeMS(3000),
+      Application.countDocuments(filter),
     ]);
 
     const elapsed = Date.now() - startTime;
@@ -215,6 +246,7 @@ export const getAllApplications = async (
       applicationId: app.applicationId,
       firstName: app.firstName,
       lastName: app.lastName,
+      middleName: app.middleName || "",
       email: app.email,
       phoneNumber: app.phoneNumber,
       status: app.status,
@@ -236,8 +268,12 @@ export const getAllApplications = async (
       installationFee: app.installationFee || 0,
       installationFeePaid: app.installationFeePaid || false,
       serviceStatus: app.serviceStatus || "pending",
-      plan: null,
+      planId: app.planId,
+      plan: app.planId,
       building: null,
+      birthDate: app.birthDate,
+      gender: app.gender,
+      notes: app.notes || "",
     }));
 
     const responseData = {
@@ -249,6 +285,7 @@ export const getAllApplications = async (
       limit: limitNum,
       _responseTime: `${elapsed}ms`,
       _cached: false,
+      _filters: { status, search, buildingId },
     };
 
     console.log(`✅ Response sent in ${Date.now() - startTime}ms`);
@@ -271,7 +308,7 @@ export const getAllApplications = async (
 };
 
 // ============================================================
-// ✅ FIXED: GET ALL APPLICATIONS - NO LIMIT
+// ✅ GET ALL APPLICATIONS - NO LIMIT
 // ============================================================
 export const getAllApplicationsNoLimit = async (
   req: Request,
@@ -295,11 +332,12 @@ export const getAllApplicationsNoLimit = async (
 
     const applications = await Application.find()
       .select(
-        "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName installationFee installationFeePaid serviceStatus",
+        "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName installationFee installationFeePaid serviceStatus planId middleName birthDate gender notes",
       )
+      .populate("planId", "name price speed")
       .sort({ createdAt: -1 })
       .lean()
-      .maxTimeMS(2000);
+      .maxTimeMS(3000);
 
     const total = applications.length;
 
@@ -312,6 +350,7 @@ export const getAllApplicationsNoLimit = async (
       applicationId: app.applicationId,
       firstName: app.firstName,
       lastName: app.lastName,
+      middleName: app.middleName || "",
       email: app.email,
       phoneNumber: app.phoneNumber,
       status: app.status,
@@ -334,8 +373,11 @@ export const getAllApplicationsNoLimit = async (
       installationFeePaid: app.installationFeePaid || false,
       serviceStatus: app.serviceStatus || "pending",
       planId: app.planId,
-      plan: null,
+      plan: app.planId,
       building: null,
+      birthDate: app.birthDate,
+      gender: app.gender,
+      notes: app.notes || "",
     }));
 
     return res.status(200).json({
@@ -564,6 +606,7 @@ export const submitApplication = async (
     let {
       firstName,
       lastName,
+      middleName,
       email,
       phoneNumber,
       buildingId,
@@ -575,6 +618,8 @@ export const submitApplication = async (
       idType,
       idNumber,
       macAddress,
+      birthDate,
+      gender,
     } = req.body;
 
     if (!tower || tower === "undefined" || tower === "null") {
@@ -728,6 +773,7 @@ export const submitApplication = async (
     const applicationData = {
       firstName: firstName?.trim(),
       lastName: lastName?.trim(),
+      middleName: middleName?.trim() || "",
       email: normalizedEmail,
       phoneNumber: normalizedPhoneNumber,
       buildingId: building._id,
@@ -742,6 +788,8 @@ export const submitApplication = async (
       idImage: idImagePath,
       macAddress: macAddress?.trim() || "",
       status: "pending",
+      birthDate: birthDate ? new Date(birthDate) : undefined,
+      gender: gender || "",
     };
 
     console.log("📝 Creating application with auto-generated ID...");
@@ -760,7 +808,6 @@ export const submitApplication = async (
     await session.commitTransaction();
     session.endSession();
 
-    // ✅ CLEAR CACHES
     appCache.flushAll();
     dashboardCache = null;
     dashboardCacheTime = 0;
@@ -768,7 +815,6 @@ export const submitApplication = async (
     const fullImageUrl = getImageUrl(application.idImage);
     const populatedPlan = populatedApplication?.planId as any;
 
-    // ✅ ASYNCHRONOUS EMAIL
     setImmediate(() => {
       emailService
         .sendApplicationReceived(application, populatedPlan)
@@ -840,7 +886,7 @@ export const checkApplicationStatus = async (
     const { applicationId } = req.params;
     const application = await Application.findOne({ applicationId })
       .select(
-        "applicationId status idImage tower floor unitNumber notes createdAt adminNotes billingStarted billingCycleId registeredUserId firstName lastName email phoneNumber idType idNumber macAddress buildingId buildingName",
+        "applicationId status idImage tower floor unitNumber notes createdAt adminNotes billingStarted billingCycleId registeredUserId firstName lastName middleName email phoneNumber idType idNumber macAddress buildingId buildingName birthDate gender",
       )
       .populate("planId", "name price speed")
       .populate(
@@ -864,6 +910,7 @@ export const checkApplicationStatus = async (
         idImageUrl: idImageUrl,
         firstName: application.firstName,
         lastName: application.lastName,
+        middleName: application.middleName || "",
         email: application.email,
         phoneNumber: application.phoneNumber,
         idType: application.idType,
@@ -880,6 +927,8 @@ export const checkApplicationStatus = async (
         adminNotes: application.adminNotes,
         billingStarted: application.billingStarted || false,
         hasAccount: !!application.registeredUserId,
+        birthDate: application.birthDate,
+        gender: application.gender,
       },
     });
   } catch (error) {
@@ -920,6 +969,7 @@ export const getApplication = async (
         idImageUrl,
         macAddress: application.macAddress || "",
         tower: application.tower || "",
+        middleName: application.middleName || "",
         building: application.buildingId,
       },
     });
@@ -930,7 +980,7 @@ export const getApplication = async (
 };
 
 // ============================================================
-// ✅ APPROVE APPLICATION - ASYNCHRONOUS EMAIL
+// ✅ APPROVE APPLICATION
 // ============================================================
 export const approveApplication = async (
   req: AuthRequest,
@@ -983,12 +1033,10 @@ export const approveApplication = async (
     await session.commitTransaction();
     session.endSession();
 
-    // ✅ CLEAR CACHES
     appCache.flushAll();
     dashboardCache = null;
     dashboardCacheTime = 0;
 
-    // ✅ EMAIL - FIRE AND FORGET!
     const plan = application.planId;
     setImmediate(() => {
       emailService
@@ -1018,7 +1066,7 @@ export const approveApplication = async (
 };
 
 // ============================================================
-// ✅ REJECT APPLICATION - ASYNCHRONOUS EMAIL
+// ✅ REJECT APPLICATION
 // ============================================================
 export const rejectApplication = async (
   req: AuthRequest,
@@ -1069,12 +1117,10 @@ export const rejectApplication = async (
     await session.commitTransaction();
     session.endSession();
 
-    // ✅ CLEAR CACHES
     appCache.flushAll();
     dashboardCache = null;
     dashboardCacheTime = 0;
 
-    // ✅ EMAIL - FIRE AND FORGET!
     setImmediate(() => {
       emailService
         .sendApplicationRejected(
@@ -1105,7 +1151,741 @@ export const rejectApplication = async (
   }
 };
 
-// ============ START BILLING ============
+// ============================================================
+// ✅ DELETE APPLICATION
+// ============================================================
+export const deleteApplication = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { id } = req.params;
+
+    const application = await Application.findById(id).session(session);
+
+    if (!application) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({
+        success: false,
+        message: "Application not found",
+      });
+    }
+
+    const hasBillingCycle = await BillingCycle.findOne({
+      applicationId: application.applicationId,
+    }).session(session);
+
+    const hasBilling = await Billing.findOne({
+      applicationId: application.applicationId,
+    }).session(session);
+
+    if (hasBillingCycle) {
+      await BillingCycle.deleteMany({
+        applicationId: application.applicationId,
+      }).session(session);
+      console.log(`🗑️ Deleted billing cycles for ${application.applicationId}`);
+    }
+
+    if (hasBilling) {
+      await Billing.deleteMany({
+        applicationId: application.applicationId,
+      }).session(session);
+      console.log(`🗑️ Deleted bills for ${application.applicationId}`);
+    }
+
+    if (application.registeredUserId) {
+      await User.updateOne(
+        { _id: application.registeredUserId },
+        { $unset: { applicationId: "" } },
+      ).session(session);
+      console.log(`🗑️ Removed application reference from user`);
+    }
+
+    await Application.findByIdAndDelete(id).session(session);
+
+    await session.commitTransaction();
+    session.endSession();
+
+    appCache.flushAll();
+    dashboardCache = null;
+    dashboardCacheTime = 0;
+
+    console.log(`✅ Application deleted: ${application.applicationId}`);
+
+    res.status(200).json({
+      success: true,
+      message: `Application ${application.applicationId} deleted successfully`,
+      data: {
+        applicationId: application.applicationId,
+        firstName: application.firstName,
+        lastName: application.lastName,
+        email: application.email,
+      },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error("❌ Error in deleteApplication:", error);
+    next(error);
+  }
+};
+
+// ============================================================
+// ✅ BULK DELETE APPLICATIONS
+// ============================================================
+export const bulkDeleteApplications = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { applicationIds } = req.body;
+
+    if (
+      !applicationIds ||
+      !Array.isArray(applicationIds) ||
+      applicationIds.length === 0
+    ) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({
+        success: false,
+        message: "applicationIds array is required",
+      });
+    }
+
+    const applications = await Application.find({
+      _id: { $in: applicationIds },
+    }).session(session);
+
+    if (applications.length === 0) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({
+        success: false,
+        message: "No applications found to delete",
+      });
+    }
+
+    const applicationIdsList = applications.map((app) => app.applicationId);
+    const deletedIds = applications.map((app) => app.applicationId);
+
+    await BillingCycle.deleteMany({
+      applicationId: { $in: applicationIdsList },
+    }).session(session);
+
+    await Billing.deleteMany({
+      applicationId: { $in: applicationIdsList },
+    }).session(session);
+
+    const userIds = applications
+      .filter((app) => app.registeredUserId)
+      .map((app) => app.registeredUserId);
+
+    if (userIds.length > 0) {
+      await User.updateMany(
+        { _id: { $in: userIds } },
+        { $unset: { applicationId: "" } },
+      ).session(session);
+    }
+
+    const result = await Application.deleteMany({
+      _id: { $in: applicationIds },
+    }).session(session);
+
+    await session.commitTransaction();
+    session.endSession();
+
+    appCache.flushAll();
+    dashboardCache = null;
+    dashboardCacheTime = 0;
+
+    console.log(`🗑️ Bulk deleted ${result.deletedCount} applications`);
+
+    res.status(200).json({
+      success: true,
+      message: `${result.deletedCount} applications deleted successfully`,
+      data: {
+        deletedCount: result.deletedCount,
+        deletedIds: deletedIds,
+      },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error("❌ Error in bulkDeleteApplications:", error);
+    next(error);
+  }
+};
+
+// ============================================================
+// ✅ UPDATE APPLICATION - FULL UPDATE (PUT)
+// ============================================================
+export const updateApplication = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+
+    const existingApplication = await Application.findById(id).session(session);
+
+    if (!existingApplication) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({
+        success: false,
+        message: "Application not found",
+      });
+    }
+
+    const updateFields: any = {};
+
+    // Personal Information
+    if (updateData.firstName !== undefined) {
+      updateFields.firstName = updateData.firstName?.trim();
+    }
+    if (updateData.lastName !== undefined) {
+      updateFields.lastName = updateData.lastName?.trim();
+    }
+    if (updateData.middleName !== undefined) {
+      updateFields.middleName = updateData.middleName?.trim() || "";
+    }
+    if (updateData.email !== undefined) {
+      updateFields.email = updateData.email?.trim().toLowerCase();
+    }
+    if (updateData.phoneNumber !== undefined) {
+      updateFields.phoneNumber = updateData.phoneNumber?.trim();
+    }
+    if (updateData.birthDate !== undefined) {
+      updateFields.birthDate = updateData.birthDate
+        ? new Date(updateData.birthDate)
+        : undefined;
+    }
+
+    // ✅ FIX: Handle gender properly
+    if (updateData.gender !== undefined) {
+      if (updateData.gender === "" || updateData.gender === null) {
+        // Remove gender field - don't update it
+        // We'll keep the existing value
+      } else {
+        const validGenders = ["male", "female", "other"];
+        const normalizedGender = updateData.gender.toLowerCase().trim();
+        if (validGenders.includes(normalizedGender)) {
+          updateFields.gender = normalizedGender;
+        } else {
+          console.log(
+            `⚠️ Invalid gender value: "${updateData.gender}" - skipping`,
+          );
+        }
+      }
+    }
+
+    // Address & Unit Information
+    if (updateData.buildingId !== undefined) {
+      const building = await Building.findById(updateData.buildingId)
+        .session(session)
+        .lean();
+      if (building) {
+        updateFields.buildingId = updateData.buildingId;
+        updateFields.buildingName = building.buildingName;
+      } else {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(404).json({
+          success: false,
+          message: "Building not found",
+        });
+      }
+    }
+    if (updateData.tower !== undefined) {
+      updateFields.tower = updateData.tower?.trim() || "";
+    }
+    if (updateData.floor !== undefined) {
+      updateFields.floor = updateData.floor?.toString().trim();
+    }
+    if (updateData.unitNumber !== undefined) {
+      updateFields.unitNumber = updateData.unitNumber?.toString().trim();
+    }
+
+    // Plan Information
+    if (updateData.planId !== undefined) {
+      const plan = await Plan.findById(updateData.planId)
+        .session(session)
+        .lean();
+      if (!plan) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(404).json({
+          success: false,
+          message: "Plan not found",
+        });
+      }
+      updateFields.planId = updateData.planId;
+    }
+
+    // ID Information
+    if (updateData.idType !== undefined) {
+      updateFields.idType = updateData.idType?.trim() || "Not Provided";
+    }
+    if (updateData.idNumber !== undefined) {
+      updateFields.idNumber = updateData.idNumber?.trim() || "Not Provided";
+    }
+    if (updateData.macAddress !== undefined) {
+      updateFields.macAddress = updateData.macAddress?.trim() || "";
+    }
+
+    // Status
+    if (updateData.status !== undefined) {
+      const validStatuses = ["pending", "approved", "rejected", "suspended"];
+      if (!validStatuses.includes(updateData.status)) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          success: false,
+          message:
+            "Invalid status. Must be: pending, approved, rejected, suspended",
+        });
+      }
+      updateFields.status = updateData.status;
+    }
+
+    // Service Status
+    if (updateData.serviceStatus !== undefined) {
+      const validServiceStatuses = [
+        "pending",
+        "active",
+        "suspended",
+        "disconnected",
+      ];
+      if (!validServiceStatuses.includes(updateData.serviceStatus)) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          success: false,
+          message:
+            "Invalid service status. Must be: pending, active, suspended, disconnected",
+        });
+      }
+      updateFields.serviceStatus = updateData.serviceStatus;
+    }
+
+    // Installation Fee
+    if (updateData.installationFee !== undefined) {
+      updateFields.installationFee =
+        parseFloat(updateData.installationFee) || 0;
+    }
+    if (updateData.installationFeePaid !== undefined) {
+      updateFields.installationFeePaid = Boolean(
+        updateData.installationFeePaid,
+      );
+    }
+
+    // Notes
+    if (updateData.notes !== undefined) {
+      updateFields.notes = updateData.notes || "";
+    }
+    if (updateData.adminNotes !== undefined) {
+      updateFields.adminNotes = updateData.adminNotes || "";
+    }
+    if (updateData.billingStarted !== undefined) {
+      updateFields.billingStarted = Boolean(updateData.billingStarted);
+    }
+
+    // Remove undefined values
+    Object.keys(updateFields).forEach((key) => {
+      if (updateFields[key] === undefined) {
+        delete updateFields[key];
+      }
+    });
+
+    if (Object.keys(updateFields).length === 0) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({
+        success: false,
+        message: "No fields to update",
+      });
+    }
+
+    // Check for duplicate email
+    if (
+      updateFields.email &&
+      updateFields.email !== existingApplication.email
+    ) {
+      const existingEmail = await Application.findOne({
+        email: updateFields.email,
+        _id: { $ne: id },
+      }).session(session);
+
+      if (existingEmail) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          success: false,
+          message: "Email is already in use by another application",
+        });
+      }
+    }
+
+    // Check for duplicate phone
+    if (
+      updateFields.phoneNumber &&
+      updateFields.phoneNumber !== existingApplication.phoneNumber
+    ) {
+      const existingPhone = await Application.findOne({
+        phoneNumber: updateFields.phoneNumber,
+        _id: { $ne: id },
+      }).session(session);
+
+      if (existingPhone) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          success: false,
+          message: "Phone number is already in use by another application",
+        });
+      }
+    }
+
+    const updatedApplication = await Application.findByIdAndUpdate(
+      id,
+      { $set: updateFields },
+      { new: true, runValidators: true, session },
+    )
+      .populate("planId", "name price speed")
+      .populate("buildingId", "buildingName streetAddress city barangay")
+      .lean();
+
+    await session.commitTransaction();
+    session.endSession();
+
+    appCache.flushAll();
+    dashboardCache = null;
+    dashboardCacheTime = 0;
+
+    console.log(`✅ Application updated: ${updatedApplication?.applicationId}`);
+
+    res.status(200).json({
+      success: true,
+      message: "Application updated successfully",
+      data: updatedApplication,
+    });
+  } catch (error: any) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error("❌ Error in updateApplication:", error);
+
+    if (error.name === "ValidationError") {
+      return res.status(400).json({
+        success: false,
+        message: error.message,
+        errors: Object.values(error.errors).map((err: any) => err.message),
+      });
+    }
+
+    next(error);
+  }
+};
+
+// ============================================================
+// ✅ PATCH APPLICATION - PARTIAL UPDATE (FIXED!)
+// ============================================================
+export const patchApplication = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+
+    console.log("📝 PATCH Application - ID:", id);
+    console.log("📝 PATCH Data received:", JSON.stringify(updateData, null, 2));
+
+    const existingApplication = await Application.findById(id).session(session);
+
+    if (!existingApplication) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({
+        success: false,
+        message: "Application not found",
+      });
+    }
+
+    const updateFields: any = {};
+
+    // Personal Information
+    if (updateData.firstName !== undefined) {
+      updateFields.firstName = updateData.firstName?.trim();
+    }
+    if (updateData.lastName !== undefined) {
+      updateFields.lastName = updateData.lastName?.trim();
+    }
+    if (updateData.middleName !== undefined) {
+      updateFields.middleName = updateData.middleName?.trim() || "";
+    }
+    if (updateData.email !== undefined) {
+      updateFields.email = updateData.email?.trim().toLowerCase();
+    }
+    if (updateData.phoneNumber !== undefined) {
+      updateFields.phoneNumber = updateData.phoneNumber?.trim();
+    }
+    if (updateData.birthDate !== undefined) {
+      updateFields.birthDate = updateData.birthDate
+        ? new Date(updateData.birthDate)
+        : undefined;
+    }
+
+    // ✅ FIX: Handle gender properly - only set if valid
+    if (updateData.gender !== undefined) {
+      if (updateData.gender === "" || updateData.gender === null) {
+        // Don't update gender - keep existing
+        // Do nothing
+      } else {
+        const validGenders = ["male", "female", "other"];
+        const normalizedGender = updateData.gender.toLowerCase().trim();
+        if (validGenders.includes(normalizedGender)) {
+          updateFields.gender = normalizedGender;
+        } else {
+          console.log(
+            `⚠️ Invalid gender value: "${updateData.gender}" - skipping`,
+          );
+          // Don't add to updateFields
+        }
+      }
+    }
+
+    // Address & Unit Information
+    if (updateData.buildingId !== undefined) {
+      const building = await Building.findById(updateData.buildingId)
+        .session(session)
+        .lean();
+      if (building) {
+        updateFields.buildingId = updateData.buildingId;
+        updateFields.buildingName = building.buildingName;
+      } else {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(404).json({
+          success: false,
+          message: "Building not found",
+        });
+      }
+    }
+    if (updateData.tower !== undefined) {
+      updateFields.tower = updateData.tower?.trim() || "";
+    }
+    if (updateData.floor !== undefined) {
+      updateFields.floor = updateData.floor?.toString().trim();
+    }
+    if (updateData.unitNumber !== undefined) {
+      updateFields.unitNumber = updateData.unitNumber?.toString().trim();
+    }
+
+    // Plan Information
+    if (updateData.planId !== undefined) {
+      const plan = await Plan.findById(updateData.planId)
+        .session(session)
+        .lean();
+      if (!plan) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(404).json({
+          success: false,
+          message: "Plan not found",
+        });
+      }
+      updateFields.planId = updateData.planId;
+    }
+
+    // ID Information
+    if (updateData.idType !== undefined) {
+      updateFields.idType = updateData.idType?.trim() || "Not Provided";
+    }
+    if (updateData.idNumber !== undefined) {
+      updateFields.idNumber = updateData.idNumber?.trim() || "Not Provided";
+    }
+    if (updateData.macAddress !== undefined) {
+      updateFields.macAddress = updateData.macAddress?.trim() || "";
+    }
+
+    // Status
+    if (updateData.status !== undefined) {
+      const validStatuses = ["pending", "approved", "rejected", "suspended"];
+      if (!validStatuses.includes(updateData.status)) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          success: false,
+          message:
+            "Invalid status. Must be: pending, approved, rejected, suspended",
+        });
+      }
+      updateFields.status = updateData.status;
+    }
+
+    // Service Status
+    if (updateData.serviceStatus !== undefined) {
+      const validServiceStatuses = [
+        "pending",
+        "active",
+        "suspended",
+        "disconnected",
+      ];
+      if (!validServiceStatuses.includes(updateData.serviceStatus)) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          success: false,
+          message:
+            "Invalid service status. Must be: pending, active, suspended, disconnected",
+        });
+      }
+      updateFields.serviceStatus = updateData.serviceStatus;
+    }
+
+    // Installation Fee
+    if (updateData.installationFee !== undefined) {
+      updateFields.installationFee =
+        parseFloat(updateData.installationFee) || 0;
+    }
+    if (updateData.installationFeePaid !== undefined) {
+      updateFields.installationFeePaid = Boolean(
+        updateData.installationFeePaid,
+      );
+    }
+
+    // Notes
+    if (updateData.notes !== undefined) {
+      updateFields.notes = updateData.notes || "";
+    }
+    if (updateData.adminNotes !== undefined) {
+      updateFields.adminNotes = updateData.adminNotes || "";
+    }
+
+    // Remove undefined values
+    Object.keys(updateFields).forEach((key) => {
+      if (updateFields[key] === undefined) {
+        delete updateFields[key];
+      }
+    });
+
+    if (Object.keys(updateFields).length === 0) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({
+        success: false,
+        message: "No fields to update",
+      });
+    }
+
+    console.log(
+      "📝 Final update fields:",
+      JSON.stringify(updateFields, null, 2),
+    );
+
+    // Check for duplicate email
+    if (
+      updateFields.email &&
+      updateFields.email !== existingApplication.email
+    ) {
+      const existingEmail = await Application.findOne({
+        email: updateFields.email,
+        _id: { $ne: id },
+      }).session(session);
+
+      if (existingEmail) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          success: false,
+          message: "Email is already in use by another application",
+        });
+      }
+    }
+
+    // Check for duplicate phone
+    if (
+      updateFields.phoneNumber &&
+      updateFields.phoneNumber !== existingApplication.phoneNumber
+    ) {
+      const existingPhone = await Application.findOne({
+        phoneNumber: updateFields.phoneNumber,
+        _id: { $ne: id },
+      }).session(session);
+
+      if (existingPhone) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          success: false,
+          message: "Phone number is already in use by another application",
+        });
+      }
+    }
+
+    const updatedApplication = await Application.findByIdAndUpdate(
+      id,
+      { $set: updateFields },
+      { new: true, runValidators: true, session },
+    )
+      .populate("planId", "name price speed")
+      .populate("buildingId", "buildingName streetAddress city barangay")
+      .lean();
+
+    await session.commitTransaction();
+    session.endSession();
+
+    appCache.flushAll();
+    dashboardCache = null;
+    dashboardCacheTime = 0;
+
+    console.log(`✅ Application patched: ${updatedApplication?.applicationId}`);
+    console.log("📝 Updated fields:", Object.keys(updateFields));
+
+    res.status(200).json({
+      success: true,
+      message: "Application updated successfully",
+      data: updatedApplication,
+    });
+  } catch (error: any) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error("❌ Error in patchApplication:", error);
+
+    if (error.name === "ValidationError") {
+      return res.status(400).json({
+        success: false,
+        message: error.message,
+        errors: Object.values(error.errors).map((err: any) => err.message),
+      });
+    }
+
+    next(error);
+  }
+};
+
+// ============================================================
+// ✅ START BILLING
+// ============================================================
 export const startBillingForApplication = async (
   req: AuthRequest,
   res: Response,
@@ -1412,7 +2192,6 @@ export const startBillingForApplication = async (
     dashboardCache = null;
     dashboardCacheTime = 0;
 
-    // ✅ BILLING EMAIL - ASYNCHRONOUS!
     setImmediate(() => {
       emailService
         .sendBillWithoutAccount(application, bill[0], plan)
@@ -1466,6 +2245,10 @@ export default {
   getApplication,
   approveApplication,
   rejectApplication,
+  deleteApplication,
+  bulkDeleteApplications,
+  updateApplication,
+  patchApplication,
   startBillingForApplication,
   getApplicationDashboardData,
   getApplicationStats,
