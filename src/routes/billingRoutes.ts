@@ -91,6 +91,11 @@ router.post("/disconnect", adminMiddleware, disconnectClient);
 router.post("/reconnect", adminMiddleware, reconnectClient);
 router.delete("/delete-cycle", adminMiddleware, deleteBillingCycle);
 router.post("/auto-generate", adminMiddleware, autoGenerateMonthlyBills);
+router.post(
+  "/auto-generate-early-bills",
+  adminMiddleware,
+  autoGenerateMonthlyBills,
+);
 router.post("/auto-suspend", adminMiddleware, autoSuspendOverdue);
 router.post("/recover-missing-bills", adminMiddleware, recoverMissingBills);
 router.post(
