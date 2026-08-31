@@ -1,4 +1,4 @@
-// models/application.model.ts - COMPLETE WITH INDEXES
+// models/application.model.ts - COMPLETE WITH INDEXES - REMOVED birthDate AND gender
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IApplication extends Document {
@@ -8,8 +8,6 @@ export interface IApplication extends Document {
   middleName?: string;
   email: string;
   phoneNumber: string;
-  birthDate?: Date;
-  gender?: string;
   idType: string;
   idNumber: string;
   idImage?: string;
@@ -117,13 +115,6 @@ const ApplicationSchema: Schema = new Schema(
     phoneNumber: {
       type: String,
       required: true,
-    },
-    birthDate: {
-      type: Date,
-    },
-    gender: {
-      type: String,
-      enum: ["male", "female", "other"],
     },
     idType: {
       type: String,

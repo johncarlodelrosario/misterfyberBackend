@@ -1,4 +1,4 @@
-// routes/applicationRoutes.ts - COMPLETE FIXED WITH PROPER 409 HANDLING
+// routes/applicationRoutes.ts - COMPLETE FIXED WITH PROPER 409 HANDLING - REMOVED birthDate AND gender
 import express, { Router, Request, Response, NextFunction } from "express";
 import { body } from "express-validator";
 import {
@@ -67,7 +67,7 @@ router.get("/address/provinces/:regionCode", getProvincesByRegion);
 router.get("/address/cities/:provinceCode", getCitiesByProvince);
 router.get("/address/barangays/:cityCode", getBarangaysByCity);
 
-// ✅ SUBMIT APPLICATION - WITH PROPER VALIDATION
+// ✅ SUBMIT APPLICATION - WITH PROPER VALIDATION - REMOVED birthDate AND gender
 router.post(
   "/",
   uploadIdCard.single("idImage"),
@@ -133,14 +133,6 @@ router.post(
       .optional({ nullable: true, checkFalsy: true })
       .isString()
       .withMessage("MAC address must be a string"),
-    body("gender")
-      .optional({ nullable: true, checkFalsy: true })
-      .isIn(["male", "female", "other"])
-      .withMessage("Gender must be male, female, or other"),
-    body("birthDate")
-      .optional({ nullable: true, checkFalsy: true })
-      .isISO8601()
-      .withMessage("Invalid date format"),
   ],
   submitApplication,
 );
@@ -231,7 +223,7 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
 
     const applications = await Application.find(filter)
       .select(
-        "applicationId firstName lastName middleName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName installationFee installationFeePaid serviceStatus planId birthDate gender notes",
+        "applicationId firstName lastName middleName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName installationFee installationFeePaid serviceStatus planId notes",
       )
       .populate("planId", "name price speed")
       .sort({ createdAt: -1 })
@@ -287,8 +279,6 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
       planId: app.planId,
       plan: app.planId,
       building: null,
-      birthDate: app.birthDate,
-      gender: app.gender,
       notes: app.notes || "",
     }));
 
@@ -372,7 +362,7 @@ router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
 
     const applications = await Application.find()
       .select(
-        "applicationId firstName lastName middleName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName installationFee installationFeePaid serviceStatus planId birthDate gender notes",
+        "applicationId firstName lastName middleName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName installationFee installationFeePaid serviceStatus planId notes",
       )
       .populate("planId", "name price speed")
       .sort({ createdAt: -1 })
@@ -411,8 +401,6 @@ router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
       planId: app.planId,
       plan: app.planId,
       building: null,
-      birthDate: app.birthDate,
-      gender: app.gender,
       notes: app.notes || "",
     }));
 

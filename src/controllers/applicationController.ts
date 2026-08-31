@@ -225,7 +225,7 @@ export const getAllApplications = async (
     const [applications, total] = await Promise.all([
       Application.find(filter)
         .select(
-          "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName installationFee installationFeePaid serviceStatus planId middleName birthDate gender notes",
+          "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName installationFee installationFeePaid serviceStatus planId middleName notes",
         )
         .populate("planId", "name price speed")
         .sort({ createdAt: -1 })
@@ -271,8 +271,6 @@ export const getAllApplications = async (
       planId: app.planId,
       plan: app.planId,
       building: null,
-      birthDate: app.birthDate,
-      gender: app.gender,
       notes: app.notes || "",
     }));
 
@@ -332,7 +330,7 @@ export const getAllApplicationsNoLimit = async (
 
     const applications = await Application.find()
       .select(
-        "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName installationFee installationFeePaid serviceStatus planId middleName birthDate gender notes",
+        "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName installationFee installationFeePaid serviceStatus planId middleName notes",
       )
       .populate("planId", "name price speed")
       .sort({ createdAt: -1 })
@@ -375,8 +373,6 @@ export const getAllApplicationsNoLimit = async (
       planId: app.planId,
       plan: app.planId,
       building: null,
-      birthDate: app.birthDate,
-      gender: app.gender,
       notes: app.notes || "",
     }));
 
@@ -620,8 +616,6 @@ export const submitApplication = async (
       idType,
       idNumber,
       macAddress,
-      birthDate,
-      gender,
     } = req.body;
 
     // Clean up tower
@@ -825,8 +819,6 @@ export const submitApplication = async (
       idImage: idImagePath,
       macAddress: macAddress?.trim() || "",
       status: "pending",
-      birthDate: birthDate ? new Date(birthDate) : undefined,
-      gender: gender || "",
     };
 
     console.log("📝 Creating application...");
@@ -928,7 +920,7 @@ export const checkApplicationStatus = async (
     const { applicationId } = req.params;
     const application = await Application.findOne({ applicationId })
       .select(
-        "applicationId status idImage tower floor unitNumber notes createdAt adminNotes billingStarted billingCycleId registeredUserId firstName lastName middleName email phoneNumber idType idNumber macAddress buildingId buildingName birthDate gender",
+        "applicationId status idImage tower floor unitNumber notes createdAt adminNotes billingStarted billingCycleId registeredUserId firstName lastName middleName email phoneNumber idType idNumber macAddress buildingId buildingName",
       )
       .populate("planId", "name price speed")
       .populate(
@@ -969,8 +961,6 @@ export const checkApplicationStatus = async (
         adminNotes: application.adminNotes,
         billingStarted: application.billingStarted || false,
         hasAccount: !!application.registeredUserId,
-        birthDate: application.birthDate,
-        gender: application.gender,
       },
     });
   } catch (error) {
@@ -1412,28 +1402,6 @@ export const updateApplication = async (
     if (updateData.phoneNumber !== undefined) {
       updateFields.phoneNumber = updateData.phoneNumber?.trim();
     }
-    if (updateData.birthDate !== undefined) {
-      updateFields.birthDate = updateData.birthDate
-        ? new Date(updateData.birthDate)
-        : undefined;
-    }
-
-    // Handle gender properly
-    if (updateData.gender !== undefined) {
-      if (updateData.gender === "" || updateData.gender === null) {
-        // Keep existing value
-      } else {
-        const validGenders = ["male", "female", "other"];
-        const normalizedGender = updateData.gender.toLowerCase().trim();
-        if (validGenders.includes(normalizedGender)) {
-          updateFields.gender = normalizedGender;
-        } else {
-          console.log(
-            `⚠️ Invalid gender value: "${updateData.gender}" - skipping`,
-          );
-        }
-      }
-    }
 
     // Address & Unit Information
     if (updateData.buildingId !== undefined) {
@@ -1688,28 +1656,6 @@ export const patchApplication = async (
     }
     if (updateData.phoneNumber !== undefined) {
       updateFields.phoneNumber = updateData.phoneNumber?.trim();
-    }
-    if (updateData.birthDate !== undefined) {
-      updateFields.birthDate = updateData.birthDate
-        ? new Date(updateData.birthDate)
-        : undefined;
-    }
-
-    // Handle gender properly - only set if valid
-    if (updateData.gender !== undefined) {
-      if (updateData.gender === "" || updateData.gender === null) {
-        // Don't update gender - keep existing
-      } else {
-        const validGenders = ["male", "female", "other"];
-        const normalizedGender = updateData.gender.toLowerCase().trim();
-        if (validGenders.includes(normalizedGender)) {
-          updateFields.gender = normalizedGender;
-        } else {
-          console.log(
-            `⚠️ Invalid gender value: "${updateData.gender}" - skipping`,
-          );
-        }
-      }
     }
 
     // Address & Unit Information
