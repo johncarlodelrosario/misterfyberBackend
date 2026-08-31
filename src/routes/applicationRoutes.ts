@@ -1,4 +1,4 @@
-// routes/applicationRoutes.ts - COMPLETE FIXED WITH PATCH
+// routes/applicationRoutes.ts - COMPLETE FIXED WITH PROPER 409 HANDLING
 import express, { Router, Request, Response, NextFunction } from "express";
 import { body } from "express-validator";
 import {
@@ -57,41 +57,106 @@ const getStringQuery = (param: any): string => {
   return String(param);
 };
 
-// ============ PUBLIC ROUTES ============
+// ============================================================
+// ✅ PUBLIC ROUTES
+// ============================================================
+
+// Address Data Routes
 router.get("/address/regions", getRegions);
 router.get("/address/provinces/:regionCode", getProvincesByRegion);
 router.get("/address/cities/:provinceCode", getCitiesByProvince);
 router.get("/address/barangays/:cityCode", getBarangaysByCity);
 
+// ✅ SUBMIT APPLICATION - WITH PROPER VALIDATION
 router.post(
   "/",
   uploadIdCard.single("idImage"),
   [
-    body("firstName").notEmpty().withMessage("First name is required"),
-    body("lastName").notEmpty().withMessage("Last name is required"),
-    body("email").isEmail().withMessage("Please provide a valid email"),
-    body("phoneNumber").notEmpty().withMessage("Phone number is required"),
-    body("buildingId").notEmpty().withMessage("Please select a building"),
+    body("firstName")
+      .notEmpty()
+      .withMessage("First name is required")
+      .isString()
+      .withMessage("First name must be a string")
+      .isLength({ min: 1, max: 50 })
+      .withMessage("First name must be between 1 and 50 characters"),
+    body("lastName")
+      .notEmpty()
+      .withMessage("Last name is required")
+      .isString()
+      .withMessage("Last name must be a string")
+      .isLength({ min: 1, max: 50 })
+      .withMessage("Last name must be between 1 and 50 characters"),
+    body("email")
+      .isEmail()
+      .withMessage("Please provide a valid email")
+      .normalizeEmail(),
+    body("phoneNumber")
+      .notEmpty()
+      .withMessage("Phone number is required")
+      .isString()
+      .withMessage("Phone number must be a string"),
+    body("buildingId")
+      .notEmpty()
+      .withMessage("Please select a building")
+      .isMongoId()
+      .withMessage("Invalid building ID"),
     body("tower")
       .optional({ nullable: true, checkFalsy: true })
       .isString()
       .withMessage("Tower must be a string"),
-    body("floor").notEmpty().withMessage("Floor is required"),
-    body("unitNumber").notEmpty().withMessage("Unit number is required"),
-    body("planId").notEmpty().withMessage("Plan is required"),
-    body("idType").notEmpty().withMessage("ID type is required"),
-    body("idNumber").notEmpty().withMessage("ID number is required"),
+    body("floor")
+      .notEmpty()
+      .withMessage("Floor is required")
+      .isString()
+      .withMessage("Floor must be a string"),
+    body("unitNumber")
+      .notEmpty()
+      .withMessage("Unit number is required")
+      .isString()
+      .withMessage("Unit number must be a string"),
+    body("planId")
+      .notEmpty()
+      .withMessage("Plan is required")
+      .isMongoId()
+      .withMessage("Invalid plan ID"),
+    body("idType")
+      .notEmpty()
+      .withMessage("ID type is required")
+      .isString()
+      .withMessage("ID type must be a string"),
+    body("idNumber")
+      .notEmpty()
+      .withMessage("ID number is required")
+      .isString()
+      .withMessage("ID number must be a string"),
+    body("macAddress")
+      .optional({ nullable: true, checkFalsy: true })
+      .isString()
+      .withMessage("MAC address must be a string"),
+    body("gender")
+      .optional({ nullable: true, checkFalsy: true })
+      .isIn(["male", "female", "other"])
+      .withMessage("Gender must be male, female, or other"),
+    body("birthDate")
+      .optional({ nullable: true, checkFalsy: true })
+      .isISO8601()
+      .withMessage("Invalid date format"),
   ],
   submitApplication,
 );
 
+// Check Application Status (Public)
 router.get("/status/:applicationId", checkApplicationStatus);
 
-// ============ PROTECTED ROUTES ============
+// ============================================================
+// ✅ PROTECTED ROUTES - Authentication Required
+// ============================================================
 router.use(protect);
 router.use(authorize("super_admin", "admin", "staff"));
 
-// ============ DASHBOARD ENDPOINTS ============
+// ============================================================
+// ✅ DASHBOARD ENDPOINTS
+// ============================================================
 router.get("/dashboard/data", getApplicationDashboardData);
 router.get("/dashboard/stats", getApplicationStats);
 
@@ -468,7 +533,7 @@ router.put("/:id", async (req: Request, res: Response, next: NextFunction) => {
 });
 
 // ============================================================
-// ✅ PATCH APPLICATION - PARTIAL UPDATE (FIXED!)
+// ✅ PATCH APPLICATION - PARTIAL UPDATE
 // ============================================================
 router.patch(
   "/:id",
@@ -487,7 +552,7 @@ router.patch(
 );
 
 // ============================================================
-// ✅ SINGLE APPLICATION
+// ✅ SINGLE APPLICATION - GET BY ID
 // ============================================================
 router.get("/:id", async (req: Request, res: Response) => {
   try {

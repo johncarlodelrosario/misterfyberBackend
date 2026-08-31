@@ -1,4 +1,4 @@
-// controllers/applicationController.ts - COMPLETE FIXED WITH PATCH
+// controllers/applicationController.ts - COMPLETE FIXED WITH PROPER 409 HANDLING
 import { Request, Response, NextFunction } from "express";
 import Application from "../models/Application";
 import Plan from "../models/Plan";
@@ -568,7 +568,9 @@ export const getApplicationStats = async (
   }
 };
 
-// ============ SUBMIT APPLICATION ============
+// ============================================================
+// ✅ SUBMIT APPLICATION - COMPLETE FIXED WITH PROPER 409
+// ============================================================
 export const submitApplication = async (
   req: AuthRequest,
   res: Response,
@@ -622,6 +624,7 @@ export const submitApplication = async (
       gender,
     } = req.body;
 
+    // Clean up tower
     if (!tower || tower === "undefined" || tower === "null") {
       tower = "";
     }
@@ -629,49 +632,56 @@ export const submitApplication = async (
     const normalizedEmail = email?.trim().toLowerCase();
     const normalizedPhoneNumber = phoneNumber?.trim();
 
-    const [
-      existingUser,
-      existingApplicationByEmail,
-      existingApplicationByPhone,
-    ] = await Promise.all([
-      User.findOne({ email: normalizedEmail }).lean(),
-      Application.findOne({ email: normalizedEmail }).lean(),
-      Application.findOne({ phoneNumber: normalizedPhoneNumber }).lean(),
-    ]);
+    // ============================================================
+    // ✅ CHECK FOR DUPLICATES - WITH PROPER 409 STATUS CODES
+    // ============================================================
+
+    // 1. Check if email is already registered as a user
+    const existingUser = await User.findOne({
+      email: normalizedEmail,
+    })
+      .session(session)
+      .lean();
 
     if (existingUser) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({
+      return res.status(409).json({
         success: false,
-        message: "This email address is already registered as a user.",
+        message:
+          "This email address is already registered as a user. Please login or use a different email.",
         alreadyRegistered: true,
         email: normalizedEmail,
       });
     }
 
+    // 2. Check if email already has an application
+    const existingApplicationByEmail = await Application.findOne({
+      email: normalizedEmail,
+    })
+      .session(session)
+      .lean();
+
     if (existingApplicationByEmail) {
       let message = "";
-      let statusCode = 400;
+      const status = existingApplicationByEmail.status;
 
-      switch (existingApplicationByEmail.status) {
+      switch (status) {
         case "pending":
           message =
-            "You already have a pending application. Please wait for approval.";
+            "You already have a pending application. Please wait for approval before submitting another application.";
           break;
         case "approved":
           message =
             "You already have an approved application. Please create your account using your Application ID.";
-          statusCode = 409;
           break;
         case "rejected":
           message =
             "Your previous application was rejected. Please contact support for assistance.";
-          statusCode = 403;
           break;
         case "suspended":
-          message = "Your account is suspended. Please contact support.";
-          statusCode = 403;
+          message =
+            "Your account is suspended. Please contact support for assistance.";
           break;
         default:
           message =
@@ -680,7 +690,7 @@ export const submitApplication = async (
 
       await session.abortTransaction();
       session.endSession();
-      return res.status(statusCode).json({
+      return res.status(409).json({
         success: false,
         message: message,
         applicationId: existingApplicationByEmail.applicationId,
@@ -688,18 +698,26 @@ export const submitApplication = async (
       });
     }
 
+    // 3. Check if phone number already has an application
+    const existingApplicationByPhone = await Application.findOne({
+      phoneNumber: normalizedPhoneNumber,
+    })
+      .session(session)
+      .lean();
+
     if (existingApplicationByPhone) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({
+      return res.status(409).json({
         success: false,
         message:
-          "This phone number is already associated with an existing application.",
+          "This phone number is already associated with an existing application. Please use a different phone number.",
         applicationId: existingApplicationByPhone.applicationId,
         status: existingApplicationByPhone.status,
       });
     }
 
+    // 4. Check if unit is already occupied
     const existingActiveServiceQuery: any = {
       buildingId: new mongoose.Types.ObjectId(buildingId),
       floor: floor?.toString().trim(),
@@ -713,7 +731,9 @@ export const submitApplication = async (
 
     const existingActiveService = await Application.findOne(
       existingActiveServiceQuery,
-    ).lean();
+    )
+      .session(session)
+      .lean();
 
     if (existingActiveService) {
       const towerMsg = tower ? `Tower ${tower} - ` : "";
@@ -722,8 +742,14 @@ export const submitApplication = async (
       return res.status(409).json({
         success: false,
         message: `Unit ${towerMsg}${floor}-${unitNumber} already has an active or pending application.`,
+        existingApplicationId: existingActiveService.applicationId,
+        existingStatus: existingActiveService.status,
       });
     }
+
+    // ============================================================
+    // ✅ VALIDATE BUILDING AND PLAN
+    // ============================================================
 
     const [building, plan] = await Promise.all([
       Building.findById(buildingId)
@@ -737,10 +763,12 @@ export const submitApplication = async (
     if (!building) {
       await session.abortTransaction();
       session.endSession();
-      return res
-        .status(404)
-        .json({ success: false, message: "Building not found" });
+      return res.status(404).json({
+        success: false,
+        message: "Building not found",
+      });
     }
+
     if (!building.isActive) {
       await session.abortTransaction();
       session.endSession();
@@ -753,10 +781,15 @@ export const submitApplication = async (
     if (!plan) {
       await session.abortTransaction();
       session.endSession();
-      return res
-        .status(404)
-        .json({ success: false, message: "Plan not found" });
+      return res.status(404).json({
+        success: false,
+        message: "Plan not found",
+      });
     }
+
+    // ============================================================
+    // ✅ HANDLE ID IMAGE UPLOAD
+    // ============================================================
 
     let idImagePath = "uploads/id-cards/placeholder.jpg";
     if (req.file) {
@@ -769,6 +802,10 @@ export const submitApplication = async (
         )}`;
       }
     }
+
+    // ============================================================
+    // ✅ CREATE APPLICATION
+    // ============================================================
 
     const applicationData = {
       firstName: firstName?.trim(),
@@ -792,13 +829,13 @@ export const submitApplication = async (
       gender: gender || "",
     };
 
-    console.log("📝 Creating application with auto-generated ID...");
+    console.log("📝 Creating application...");
     const application = new Application(applicationData);
-
     await application.save({ session });
 
     console.log(`✅ Application created with ID: ${application.applicationId}`);
 
+    // Populate for response
     const populatedApplication = await Application.findById(application._id)
       .populate("planId")
       .populate("buildingId")
@@ -808,10 +845,12 @@ export const submitApplication = async (
     await session.commitTransaction();
     session.endSession();
 
+    // Clear cache
     appCache.flushAll();
     dashboardCache = null;
     dashboardCacheTime = 0;
 
+    // Send emails asynchronously
     const fullImageUrl = getImageUrl(application.idImage);
     const populatedPlan = populatedApplication?.planId as any;
 
@@ -831,6 +870,7 @@ export const submitApplication = async (
         .catch((err) => console.error("❌ Admin email failed:", err));
     });
 
+    // Response
     const planPrice = populatedPlan?.price;
     const safePrice =
       planPrice !== undefined && planPrice !== null ? planPrice : 0;
@@ -865,13 +905,15 @@ export const submitApplication = async (
         errors: Object.values(error.errors).map((err: any) => err.message),
       });
     }
+
     if (error.code === 11000) {
-      return res.status(400).json({
+      return res.status(409).json({
         success: false,
         message:
           "Duplicate application detected. This email or application ID already exists.",
       });
     }
+
     next(error);
   }
 };
@@ -1376,11 +1418,10 @@ export const updateApplication = async (
         : undefined;
     }
 
-    // ✅ FIX: Handle gender properly
+    // Handle gender properly
     if (updateData.gender !== undefined) {
       if (updateData.gender === "" || updateData.gender === null) {
-        // Remove gender field - don't update it
-        // We'll keep the existing value
+        // Keep existing value
       } else {
         const validGenders = ["male", "female", "other"];
         const normalizedGender = updateData.gender.toLowerCase().trim();
@@ -1602,7 +1643,7 @@ export const updateApplication = async (
 };
 
 // ============================================================
-// ✅ PATCH APPLICATION - PARTIAL UPDATE (FIXED!)
+// ✅ PATCH APPLICATION - PARTIAL UPDATE
 // ============================================================
 export const patchApplication = async (
   req: AuthRequest,
@@ -1654,11 +1695,10 @@ export const patchApplication = async (
         : undefined;
     }
 
-    // ✅ FIX: Handle gender properly - only set if valid
+    // Handle gender properly - only set if valid
     if (updateData.gender !== undefined) {
       if (updateData.gender === "" || updateData.gender === null) {
         // Don't update gender - keep existing
-        // Do nothing
       } else {
         const validGenders = ["male", "female", "other"];
         const normalizedGender = updateData.gender.toLowerCase().trim();
@@ -1668,7 +1708,6 @@ export const patchApplication = async (
           console.log(
             `⚠️ Invalid gender value: "${updateData.gender}" - skipping`,
           );
-          // Don't add to updateFields
         }
       }
     }

@@ -1,4 +1,4 @@
-// backend/src/controllers/billingController.ts - COMPLETE FIXED VERSION
+// backend/src/controllers/billingController.ts - COMPLETE FIXED VERSION WITH EARLY BILL FIX
 
 import { Request, Response, NextFunction } from "express";
 import Billing from "../models/Billing";
@@ -921,11 +921,8 @@ export const startBilling = async (
     let billingStatus = "active";
 
     if (!isAfterCutoff) {
-      // FIX: If installation is on the 1st day of a month with 31 days,
-      // the pro-rated amount should equal the full monthly rate
       let proRatedAmount: number;
       if (installationDay === 1 && currentMonthEnd.getDate() === 31) {
-        // Month has 31 days and customer starts on the 1st
         proRatedAmount = monthlyRate;
         console.log(
           `📅 Month has 31 days, start on 1st. Using full monthly rate: ₱${monthlyRate}`,
@@ -1035,7 +1032,6 @@ export const startBilling = async (
         },
       });
     } else {
-      // FIX: For after cutoff scenarios, also handle the 31-day month case for pro-rated
       let proRatedAmount: number;
       if (installationDay === 1 && currentMonthEnd.getDate() === 31) {
         proRatedAmount = monthlyRate;
@@ -1369,7 +1365,6 @@ export const initializeBackdatedBilling = async (
       const dailyRate = (actualMonthlyRate * 12) / 365;
 
       let proRatedAmount: number;
-      // FIX: If start date is the 1st of a 31-day month
       if (startDate.getDate() === 1 && daysInMonth === 31) {
         proRatedAmount = actualMonthlyRate;
       } else {
@@ -2073,7 +2068,6 @@ export const markInstallationBillAsPaid = async (
 
     const payment = await Payment.create([paymentData], { session });
 
-    // CRITICAL FIX: Update bill status to "paid"
     await Billing.updateOne(
       { _id: installationBill._id },
       {
@@ -3320,7 +3314,7 @@ export const autoGenerateMonthlyBills = async (
   }
 };
 
-// ==================== MANUALLY GENERATE EARLY BILL ====================
+// ==================== FIXED: MANUALLY GENERATE EARLY BILL ====================
 export const manuallyGenerateEarlyBill = async (
   req: AuthRequest,
   res: Response,
@@ -3329,7 +3323,7 @@ export const manuallyGenerateEarlyBill = async (
   if (!checkAdmin(req, res)) return;
 
   try {
-    const { applicationId } = req.body;
+    const { applicationId, monthOffset } = req.body;
 
     if (!applicationId) {
       return res.status(400).json({
@@ -3342,15 +3336,33 @@ export const manuallyGenerateEarlyBill = async (
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const nextMonthStart = getStartOfNextMonth(today);
-    const nextMonthEnd = getEndOfMonth(nextMonthStart);
-    const dueDate = getDueDateForMonthly(nextMonthStart, settings);
+    // Default to 1 (next month)
+    const offset = monthOffset || 1;
 
-    console.log(
-      `📅 Manually generating bill for ${formatDateForDisplay(nextMonthStart)} (Next month)`,
-    );
+    // FIX: Calculate the target month properly
+    // Get the first day of the current month
+    const currentMonthStart = getFirstDayOfMonth(today);
+
+    // Add offset months to get the target month
+    const targetMonth = new Date(currentMonthStart);
+    targetMonth.setMonth(currentMonthStart.getMonth() + offset);
+    targetMonth.setDate(1);
+    targetMonth.setHours(0, 0, 0, 0);
+
+    const targetMonthStart = getFirstDayOfMonth(targetMonth);
+    const targetMonthEnd = getEndOfMonth(targetMonth);
+    const dueDate = getDueDateForMonthly(targetMonthStart, settings);
+
     console.log(`📅 Today is ${formatDateForDisplay(today)}`);
+    console.log(
+      `📅 Current month start: ${formatDateForDisplay(currentMonthStart)}`,
+    );
+    console.log(
+      `📅 Target month (offset ${offset}): ${formatDateForDisplay(targetMonthStart)}`,
+    );
+    console.log(`📅 Due date: ${formatDateForDisplay(dueDate)}`);
 
+    // Get application with plan
     const application = await Application.findOne({ applicationId })
       .populate("planId")
       .lean();
@@ -3362,6 +3374,7 @@ export const manuallyGenerateEarlyBill = async (
       });
     }
 
+    // Get active billing cycle
     const billingCycle = await BillingCycle.findOne({
       applicationId: application.applicationId,
       status: "active",
@@ -3385,8 +3398,9 @@ export const manuallyGenerateEarlyBill = async (
       });
     }
 
-    const nextMonthYear = nextMonthStart.getFullYear();
-    const nextMonthMonth = nextMonthStart.getMonth();
+    // Check if bill already exists for this month
+    const targetYear = targetMonthStart.getFullYear();
+    const targetMonthNum = targetMonthStart.getMonth();
 
     const existingBill = await Billing.findOne({
       applicationId: application.applicationId,
@@ -3395,8 +3409,8 @@ export const manuallyGenerateEarlyBill = async (
       isInstallationBill: false,
       $expr: {
         $and: [
-          { $eq: [{ $year: "$billingPeriod.start" }, nextMonthYear] },
-          { $eq: [{ $month: "$billingPeriod.start" }, nextMonthMonth + 1] },
+          { $eq: [{ $year: "$billingPeriod.start" }, targetYear] },
+          { $eq: [{ $month: "$billingPeriod.start" }, targetMonthNum + 1] },
         ],
       },
     }).lean();
@@ -3404,7 +3418,7 @@ export const manuallyGenerateEarlyBill = async (
     if (existingBill) {
       return res.status(400).json({
         success: false,
-        message: `Bill already exists for ${formatDateForDisplay(nextMonthStart)}`,
+        message: `Bill already exists for ${formatDateForDisplay(targetMonthStart)}`,
         data: {
           existingBill,
           invoiceNumber: existingBill.invoiceNumber,
@@ -3412,28 +3426,45 @@ export const manuallyGenerateEarlyBill = async (
       });
     }
 
+    // Generate the bill
     const newBill = await createMonthlyBill(
       application,
       billingCycle._id,
-      nextMonthStart,
-      nextMonthEnd,
+      targetMonthStart,
+      targetMonthEnd,
       plan.price,
       settings,
     );
+
+    // Update billing cycle's next billing date if this is for a future month
+    if (offset > 1) {
+      const nextBilling = getFirstDayOfMonth(
+        new Date(
+          targetMonthStart.getFullYear(),
+          targetMonthStart.getMonth() + 1,
+          1,
+        ),
+      );
+      await BillingCycle.updateOne(
+        { _id: billingCycle._id },
+        { $set: { nextBillingDate: nextBilling } },
+      );
+    }
 
     clearAllCache();
 
     res.status(200).json({
       success: true,
-      message: `✅ Early bill generated for ${application.firstName} ${application.lastName} for ${formatDateForDisplay(nextMonthStart)} (Due on ${formatDateForDisplay(dueDate)})`,
+      message: `✅ Early bill generated for ${application.firstName} ${application.lastName} for ${formatDateForDisplay(targetMonthStart)} (Due on ${formatDateForDisplay(dueDate)})`,
       data: {
         bill: newBill,
-        billingMonth: formatDateForDisplay(nextMonthStart),
+        billingMonth: formatDateForDisplay(targetMonthStart),
         dueDate: formatDateForDisplay(dueDate),
         applicationName: `${application.firstName} ${application.lastName}`,
         applicationId: application.applicationId,
         invoiceNumber: newBill.invoiceNumber,
         amount: plan.price,
+        monthOffset: offset,
       },
     });
   } catch (error) {
@@ -3449,7 +3480,6 @@ export const checkForNewCustomers = async (
   next: NextFunction,
 ) => {
   try {
-    // Find applications that are approved but don't have billing started
     const newCustomers = await Application.find({
       status: "approved",
       billingStarted: { $ne: true },
