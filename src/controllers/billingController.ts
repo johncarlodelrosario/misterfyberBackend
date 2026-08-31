@@ -1,4 +1,4 @@
-// backend/src/controllers/billingController.ts - COMPLETE FIXED VERSION WITH EARLY BILL FIX
+// backend/src/controllers/billingController.ts - COMPLETE FIXED VERSION WITH NEXT MONTH BILL
 
 import { Request, Response, NextFunction } from "express";
 import Billing from "../models/Billing";
@@ -1207,7 +1207,7 @@ export const startBilling = async (
   }
 };
 
-// ==================== INITIALIZE BACKDATED BILLING ====================
+// ==================== INITIALIZE BACKDATED BILLING WITH NEXT MONTH BILL ====================
 export const initializeBackdatedBilling = async (
   req: AuthRequest,
   res: Response,
@@ -1355,6 +1355,9 @@ export const initializeBackdatedBilling = async (
     let totalMonthlyAmount = 0;
     const unpaidMonths = [];
 
+    // ============================================================
+    // STEP 1: Generate pro-rated bill for the first month
+    // ============================================================
     if (startDate.getDate() > 1) {
       const daysInMonth = new Date(
         startDate.getFullYear(),
@@ -1432,6 +1435,9 @@ export const initializeBackdatedBilling = async (
       }
     }
 
+    // ============================================================
+    // STEP 2: Generate regular monthly bills from start date to today
+    // ============================================================
     let currentBillDate = getStartOfNextMonth(startDate);
 
     while (currentBillDate <= today) {
@@ -1529,6 +1535,93 @@ export const initializeBackdatedBilling = async (
       currentBillDate.setMonth(currentBillDate.getMonth() + 1);
     }
 
+    // ============================================================
+    // STEP 3: GENERATE NEXT MONTH'S BILL (NEXT MONTH FROM TODAY)
+    // ============================================================
+    const nextMonthFromToday = getStartOfNextMonth(today);
+    const nextMonthEnd = getEndOfMonth(nextMonthFromToday);
+    const nextMonthDueDate = getDueDateForMonthly(nextMonthFromToday, settings);
+
+    // Check if next month bill already exists
+    const nextMonthYear = nextMonthFromToday.getFullYear();
+    const nextMonthMonth = nextMonthFromToday.getMonth();
+
+    const existingNextMonthBill = await Billing.findOne({
+      applicationId: application.applicationId,
+      billingCycleId: billingCycle[0]._id,
+      isProRated: false,
+      isInstallationBill: false,
+      $expr: {
+        $and: [
+          { $eq: [{ $year: "$billingPeriod.start" }, nextMonthYear] },
+          { $eq: [{ $month: "$billingPeriod.start" }, nextMonthMonth + 1] },
+        ],
+      },
+    }).session(session);
+
+    if (!existingNextMonthBill) {
+      console.log(
+        `📅 Generating next month's bill for ${formatDateForDisplay(nextMonthFromToday)}`,
+      );
+
+      const nextMonthBillData: any = {
+        billingCycleId: billingCycle[0]._id,
+        invoiceNumber: generateInvoiceNumber(),
+        billingPeriod: { start: nextMonthFromToday, end: nextMonthEnd },
+        dueDate: nextMonthDueDate,
+        items: [
+          {
+            description: `Monthly Subscription - ${formatDateForDisplay(nextMonthFromToday)} to ${formatDateForDisplay(nextMonthEnd)} (PREPAID) - Generated on ${formatDateForDisplay(new Date())}`,
+            quantity: 1,
+            rate: actualMonthlyRate,
+            amount: actualMonthlyRate,
+          },
+        ],
+        subtotal: actualMonthlyRate,
+        total: actualMonthlyRate,
+        status: "sent",
+        isProRated: false,
+        proRatedDays: 0,
+        isInstallationBill: false,
+        installationFee: 0,
+        installationFeePaid: false,
+        applicationId: application.applicationId,
+        notes: `Next month's bill generated from backdated billing. Period: ${formatDateForDisplay(nextMonthFromToday)} to ${formatDateForDisplay(nextMonthEnd)}. PREPAID: Due on ${formatDateForDisplay(nextMonthDueDate)}.`,
+      };
+
+      const nextMonthBill = await Billing.create([nextMonthBillData], {
+        session,
+      });
+      generatedBills.push(nextMonthBill[0]);
+      totalMonthlyAmount += actualMonthlyRate;
+
+      const nextMonthInvoice = await createInvoiceFromBilling(
+        nextMonthBill[0],
+        application,
+        settings,
+      );
+      if (nextMonthInvoice) {
+        await sendInvoiceWithPDFAttachment(nextMonthInvoice, application);
+      } else {
+        try {
+          await sendInvoiceToApplication(application, nextMonthBill[0]);
+        } catch (emailError) {
+          console.error("Failed to send next month invoice email:", emailError);
+        }
+      }
+
+      console.log(
+        `✅ Next month bill generated: ${nextMonthBill[0].invoiceNumber}`,
+      );
+    } else {
+      console.log(
+        `⏭️ Next month bill already exists: ${existingNextMonthBill.invoiceNumber}`,
+      );
+    }
+
+    // ============================================================
+    // STEP 4: Update billing cycle next billing date
+    // ============================================================
     const lastGeneratedMonth = new Date(currentBillDate);
     lastGeneratedMonth.setMonth(lastGeneratedMonth.getMonth() - 1);
     lastGeneratedMonth.setDate(1);
@@ -1543,6 +1636,9 @@ export const initializeBackdatedBilling = async (
       { session },
     );
 
+    // ============================================================
+    // STEP 5: Generate installation fee bill if applicable
+    // ============================================================
     let installationBill = null;
     if (installationFee > 0) {
       installationBill = await createInstallationBill(
@@ -1554,6 +1650,9 @@ export const initializeBackdatedBilling = async (
       );
     }
 
+    // ============================================================
+    // STEP 6: Update application
+    // ============================================================
     await Application.updateOne(
       { applicationId: application.applicationId },
       {
@@ -1586,6 +1685,9 @@ export const initializeBackdatedBilling = async (
       message += ` Warning: ${unpaidMonths.length} unpaid monthly bill(s) detected from previous periods.`;
     }
 
+    // Add note about next month bill
+    message += ` ✅ Next month's bill (${formatDateForDisplay(nextMonthFromToday)}) has been generated.`;
+
     res.status(200).json({
       success: true,
       message: message,
@@ -1604,6 +1706,12 @@ export const initializeBackdatedBilling = async (
         installationFee: installationFee,
         installationFeeSeparate: installationBill !== null,
         buildingInstallationFee: installationFee,
+        nextMonthBillGenerated: true,
+        nextMonthPeriod: {
+          start: nextMonthFromToday,
+          end: nextMonthEnd,
+          dueDate: nextMonthDueDate,
+        },
       },
     });
   } catch (error) {
@@ -3336,14 +3444,10 @@ export const manuallyGenerateEarlyBill = async (
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // Default to 1 (next month)
     const offset = monthOffset || 1;
 
-    // FIX: Calculate the target month properly
-    // Get the first day of the current month
     const currentMonthStart = getFirstDayOfMonth(today);
 
-    // Add offset months to get the target month
     const targetMonth = new Date(currentMonthStart);
     targetMonth.setMonth(currentMonthStart.getMonth() + offset);
     targetMonth.setDate(1);
@@ -3362,7 +3466,6 @@ export const manuallyGenerateEarlyBill = async (
     );
     console.log(`📅 Due date: ${formatDateForDisplay(dueDate)}`);
 
-    // Get application with plan
     const application = await Application.findOne({ applicationId })
       .populate("planId")
       .lean();
@@ -3374,7 +3477,6 @@ export const manuallyGenerateEarlyBill = async (
       });
     }
 
-    // Get active billing cycle
     const billingCycle = await BillingCycle.findOne({
       applicationId: application.applicationId,
       status: "active",
@@ -3398,7 +3500,6 @@ export const manuallyGenerateEarlyBill = async (
       });
     }
 
-    // Check if bill already exists for this month
     const targetYear = targetMonthStart.getFullYear();
     const targetMonthNum = targetMonthStart.getMonth();
 
@@ -3426,7 +3527,6 @@ export const manuallyGenerateEarlyBill = async (
       });
     }
 
-    // Generate the bill
     const newBill = await createMonthlyBill(
       application,
       billingCycle._id,
@@ -3436,7 +3536,6 @@ export const manuallyGenerateEarlyBill = async (
       settings,
     );
 
-    // Update billing cycle's next billing date if this is for a future month
     if (offset > 1) {
       const nextBilling = getFirstDayOfMonth(
         new Date(
