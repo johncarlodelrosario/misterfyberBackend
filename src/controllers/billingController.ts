@@ -1,4 +1,4 @@
-// backend/src/controllers/billingController.ts - COMPLETE FIXED VERSION WITH NEXT MONTH BILL
+// backend/src/controllers/billingController.ts - COMPLETE FIXED VERSION WITH EMAIL ALERT TOGGLE
 
 import { Request, Response, NextFunction } from "express";
 import Billing from "../models/Billing";
@@ -10,6 +10,7 @@ import Payment from "../models/Payment";
 import Application from "../models/Application";
 import Invoice from "../models/Invoice";
 import Building from "../models/Building";
+import Admin from "../models/Admin";
 import emailService, {
   getCollectionEmailByLocation,
   getLocationFromEntity,
@@ -37,6 +38,10 @@ const LIST_CACHE_TTL = 30 * 1000;
 let dashboardDataCache: any = null;
 let dashboardDataCacheTime = 0;
 const DASHBOARD_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+// ==================== EMAIL ALERTS CACHE ====================
+let adminEmailAlertsCache: Map<string, boolean> = new Map();
+const ADMIN_EMAIL_ALERTS_CACHE_TTL = 60 * 1000; // 1 minute
 
 function generateInvoiceNumber(): string {
   const date = new Date();
@@ -71,7 +76,63 @@ function clearAllCache(): void {
   summaryCache = null;
   dashboardDataCache = null;
   dashboardDataCacheTime = 0;
+  adminEmailAlertsCache.clear();
   console.log("🗑️ Billing cache cleared");
+}
+
+// ==================== CHECK IF EMAIL ALERTS ARE ENABLED ====================
+async function areCustomerEmailAlertsEnabled(
+  adminId?: string,
+): Promise<boolean> {
+  try {
+    if (!adminId) {
+      // If no admin ID provided, check cache for default or return true (safe default)
+      const cached = adminEmailAlertsCache.get("_default_");
+      if (cached !== undefined) {
+        return cached;
+      }
+
+      // Check if any admin exists and use their setting
+      const admin = await Admin.findOne({ status: "active" })
+        .select("customerEmailAlertsEnabled")
+        .lean();
+      const enabled = admin?.customerEmailAlertsEnabled !== false; // undefined or true = enabled, explicit false = disabled
+      adminEmailAlertsCache.set("_default_", enabled);
+      setTimeout(
+        () => adminEmailAlertsCache.delete("_default_"),
+        ADMIN_EMAIL_ALERTS_CACHE_TTL,
+      );
+      return enabled;
+    }
+
+    // Check cache first
+    const cacheKey = `admin_${adminId}`;
+    const cached = adminEmailAlertsCache.get(cacheKey);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    // Fetch from database
+    const admin = await Admin.findById(adminId)
+      .select("customerEmailAlertsEnabled")
+      .lean();
+    // CRITICAL: customerEmailAlertsEnabled must be explicitly true to send emails
+    // If undefined, null, or false -> NO EMAILS
+    const enabled = admin?.customerEmailAlertsEnabled === true;
+
+    // Cache the result
+    adminEmailAlertsCache.set(cacheKey, enabled);
+    setTimeout(
+      () => adminEmailAlertsCache.delete(cacheKey),
+      ADMIN_EMAIL_ALERTS_CACHE_TTL,
+    );
+
+    return enabled;
+  } catch (error) {
+    console.error("Error checking customer email alerts enabled:", error);
+    // On error, default to false (safer to not send emails)
+    return false;
+  }
 }
 
 // ==================== HELPER FUNCTIONS ====================
@@ -232,10 +293,22 @@ function checkAdmin(req: AuthRequest, res: Response): boolean {
   return true;
 }
 
+// ==================== SEND INVOICE WITH EMAIL CHECK ====================
 async function sendInvoiceToApplication(
   application: any,
   bill: any,
+  adminId?: string,
 ): Promise<void> {
+  // Check if email alerts are enabled before sending
+  const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(adminId);
+
+  if (!emailAlertsEnabled) {
+    console.log(
+      `🔕 Email alerts disabled - skipping invoice email to ${application?.email}`,
+    );
+    return;
+  }
+
   if (application && application.email) {
     const tempUser = {
       _id: application.applicationId || application._id,
@@ -427,11 +500,22 @@ async function createInvoiceFromBilling(
   }
 }
 
-// ==================== SEND INVOICE WITH PDF ====================
+// ==================== SEND INVOICE WITH PDF ATTACHMENT (WITH EMAIL CHECK) ====================
 async function sendInvoiceWithPDFAttachment(
   invoice: any,
   application: any,
+  adminId?: string,
 ): Promise<boolean> {
+  // Check if email alerts are enabled before sending
+  const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(adminId);
+
+  if (!emailAlertsEnabled) {
+    console.log(
+      `🔕 Email alerts disabled - skipping PDF invoice email to ${application?.email}`,
+    );
+    return false;
+  }
+
   try {
     const location = await getLocationFromEntity(application);
 
@@ -477,6 +561,7 @@ async function createInstallationBill(
   installationFee: number,
   settings: any,
   session: mongoose.ClientSession,
+  adminId?: string,
 ): Promise<any> {
   if (!installationFee || installationFee <= 0) {
     return null;
@@ -536,10 +621,10 @@ async function createInstallationBill(
   );
 
   if (invoice) {
-    await sendInvoiceWithPDFAttachment(invoice, application);
+    await sendInvoiceWithPDFAttachment(invoice, application, adminId);
   } else {
     try {
-      await sendInvoiceToApplication(application, installationBill[0]);
+      await sendInvoiceToApplication(application, installationBill[0], adminId);
       console.log(`📧 Sent installation fee invoice to ${application.email}`);
     } catch (emailError) {
       console.error(
@@ -561,6 +646,7 @@ async function createMonthlyBill(
   monthlyRate: number,
   settings: any,
   session?: mongoose.ClientSession,
+  adminId?: string,
 ): Promise<any> {
   const dueDate = getDueDateForMonthly(billingStart, settings);
 
@@ -607,10 +693,10 @@ async function createMonthlyBill(
   );
 
   if (invoice) {
-    await sendInvoiceWithPDFAttachment(invoice, application);
+    await sendInvoiceWithPDFAttachment(invoice, application, adminId);
   } else {
     try {
-      await sendInvoiceToApplication(application, createdBill);
+      await sendInvoiceToApplication(application, createdBill, adminId);
       console.log(
         `📧 Sent monthly invoice ${createdBill.invoiceNumber} to ${application.email}`,
       );
@@ -634,6 +720,7 @@ async function createProRatedBill(
   settings: any,
   isAfterCutoff: boolean,
   session?: mongoose.ClientSession,
+  adminId?: string,
 ): Promise<any> {
   let dueDate: Date;
   let description: string;
@@ -694,10 +781,10 @@ async function createProRatedBill(
   );
 
   if (invoice) {
-    await sendInvoiceWithPDFAttachment(invoice, application);
+    await sendInvoiceWithPDFAttachment(invoice, application, adminId);
   } else {
     try {
-      await sendInvoiceToApplication(application, createdBill);
+      await sendInvoiceToApplication(application, createdBill, adminId);
     } catch (emailError) {
       console.error("Failed to send invoice email:", emailError);
     }
@@ -920,6 +1007,8 @@ export const startBilling = async (
     let createdMonthlyBill: any = null;
     let billingStatus = "active";
 
+    const adminId = req.user?._id?.toString();
+
     if (!isAfterCutoff) {
       let proRatedAmount: number;
       if (installationDay === 1 && currentMonthEnd.getDate() === 31) {
@@ -973,6 +1062,7 @@ export const startBilling = async (
         settings,
         false,
         session,
+        adminId,
       );
 
       if (installationFee > 0) {
@@ -982,6 +1072,7 @@ export const startBilling = async (
           installationFee,
           settings,
           session,
+          adminId,
         );
       }
 
@@ -1089,6 +1180,7 @@ export const startBilling = async (
         settings,
         true,
         session,
+        adminId,
       );
 
       const monthlyBillData = {
@@ -1129,10 +1221,18 @@ export const startBilling = async (
         settings,
       );
       if (monthlyInvoice) {
-        await sendInvoiceWithPDFAttachment(monthlyInvoice, application);
+        await sendInvoiceWithPDFAttachment(
+          monthlyInvoice,
+          application,
+          adminId,
+        );
       } else {
         try {
-          await sendInvoiceToApplication(application, createdMonthlyBill);
+          await sendInvoiceToApplication(
+            application,
+            createdMonthlyBill,
+            adminId,
+          );
         } catch (emailError) {
           console.error("Failed to send invoice email:", emailError);
         }
@@ -1145,6 +1245,7 @@ export const startBilling = async (
           installationFee,
           settings,
           session,
+          adminId,
         );
       }
 
@@ -1327,6 +1428,8 @@ export const initializeBackdatedBilling = async (
     const nextFullMonthEnd = getEndOfMonth(nextFullMonthStart);
     const nextBillingDate = getFirstDayOfMonth(nextFullMonthStart);
 
+    const adminId = req.user?._id?.toString();
+
     const billingCycle = await BillingCycle.create(
       [
         {
@@ -1425,10 +1528,10 @@ export const initializeBackdatedBilling = async (
         settings,
       );
       if (invoice) {
-        await sendInvoiceWithPDFAttachment(invoice, application);
+        await sendInvoiceWithPDFAttachment(invoice, application, adminId);
       } else {
         try {
-          await sendInvoiceToApplication(application, newBill[0]);
+          await sendInvoiceToApplication(application, newBill[0], adminId);
         } catch (emailError) {
           console.error("Failed to send invoice email:", emailError);
         }
@@ -1442,6 +1545,9 @@ export const initializeBackdatedBilling = async (
 
     while (currentBillDate <= today) {
       const billingStart = new Date(currentBillDate);
+      billingStart.setDate(1);
+      billingStart.setHours(0, 0, 0, 0);
+
       const billingEnd = getEndOfMonth(billingStart);
       const dueDate = getDueDateForMonthly(billingStart, settings);
 
@@ -1450,7 +1556,6 @@ export const initializeBackdatedBilling = async (
         billingCycleId: billingCycle[0]._id,
         "billingPeriod.start": billingStart,
         isInstallationBill: false,
-        isProRated: false,
       }).session(session);
 
       if (!existingBill) {
@@ -1511,10 +1616,10 @@ export const initializeBackdatedBilling = async (
           settings,
         );
         if (invoice) {
-          await sendInvoiceWithPDFAttachment(invoice, application);
+          await sendInvoiceWithPDFAttachment(invoice, application, adminId);
         } else {
           try {
-            await sendInvoiceToApplication(application, newBill[0]);
+            await sendInvoiceToApplication(application, newBill[0], adminId);
           } catch (emailError) {
             console.error("Failed to send invoice email:", emailError);
           }
@@ -1601,10 +1706,18 @@ export const initializeBackdatedBilling = async (
         settings,
       );
       if (nextMonthInvoice) {
-        await sendInvoiceWithPDFAttachment(nextMonthInvoice, application);
+        await sendInvoiceWithPDFAttachment(
+          nextMonthInvoice,
+          application,
+          adminId,
+        );
       } else {
         try {
-          await sendInvoiceToApplication(application, nextMonthBill[0]);
+          await sendInvoiceToApplication(
+            application,
+            nextMonthBill[0],
+            adminId,
+          );
         } catch (emailError) {
           console.error("Failed to send next month invoice email:", emailError);
         }
@@ -1647,6 +1760,7 @@ export const initializeBackdatedBilling = async (
         installationFee,
         settings,
         session,
+        adminId,
       );
     }
 
@@ -2235,32 +2349,43 @@ export const markInstallationBillAsPaid = async (
 
     clearAllCache();
 
-    const location = await getLocationFromEntity(application);
-    try {
-      if (application && application.email) {
-        const collectionEmail = getCollectionEmailByLocation(location);
-        const htmlContent = emailService.generatePaymentConfirmationHTML(
-          installationBill,
-          payment[0],
-          installationBill.total,
-          new Date().toLocaleString(),
-          location,
-          collectionEmail,
-          true,
-        );
+    // Check if email alerts are enabled before sending confirmation
+    const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(
+      adminId?.toString(),
+    );
 
-        await emailService.sendEmail(
-          application.email,
-          `Installation Fee Payment Confirmation - ${installationBill.invoiceNumber}`,
-          htmlContent,
-          true,
-          location,
+    if (emailAlertsEnabled) {
+      const location = await getLocationFromEntity(application);
+      try {
+        if (application && application.email) {
+          const collectionEmail = getCollectionEmailByLocation(location);
+          const htmlContent = emailService.generatePaymentConfirmationHTML(
+            installationBill,
+            payment[0],
+            installationBill.total,
+            new Date().toLocaleString(),
+            location,
+            collectionEmail,
+            true,
+          );
+
+          await emailService.sendEmail(
+            application.email,
+            `Installation Fee Payment Confirmation - ${installationBill.invoiceNumber}`,
+            htmlContent,
+            true,
+            location,
+          );
+        }
+      } catch (emailError) {
+        console.error(
+          "Failed to send installation fee payment confirmation email:",
+          emailError,
         );
       }
-    } catch (emailError) {
-      console.error(
-        "Failed to send installation fee payment confirmation email:",
-        emailError,
+    } else {
+      console.log(
+        `🔕 Email alerts disabled - skipping payment confirmation email for installation bill ${installationBill.invoiceNumber}`,
       );
     }
 
@@ -2402,31 +2527,42 @@ export const markBillAsPaid = async (
 
     await session.commitTransaction();
 
-    const location = await getLocationFromEntity(application);
+    // Check if email alerts are enabled before sending confirmation
+    const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(
+      adminId?.toString(),
+    );
 
-    try {
-      if (application && application.email) {
-        const collectionEmail = getCollectionEmailByLocation(location);
-        const htmlContent = emailService.generatePaymentConfirmationHTML(
-          existingBill,
-          payment[0],
-          existingBill.total,
-          new Date().toLocaleString(),
-          location,
-          collectionEmail,
-          false,
-        );
+    if (emailAlertsEnabled) {
+      const location = await getLocationFromEntity(application);
 
-        await emailService.sendEmail(
-          application.email,
-          `Payment Confirmation - ${existingBill.invoiceNumber}`,
-          htmlContent,
-          true,
-          location,
-        );
+      try {
+        if (application && application.email) {
+          const collectionEmail = getCollectionEmailByLocation(location);
+          const htmlContent = emailService.generatePaymentConfirmationHTML(
+            existingBill,
+            payment[0],
+            existingBill.total,
+            new Date().toLocaleString(),
+            location,
+            collectionEmail,
+            false,
+          );
+
+          await emailService.sendEmail(
+            application.email,
+            `Payment Confirmation - ${existingBill.invoiceNumber}`,
+            htmlContent,
+            true,
+            location,
+          );
+        }
+      } catch (emailError) {
+        console.error("Failed to send payment confirmation email:", emailError);
       }
-    } catch (emailError) {
-      console.error("Failed to send payment confirmation email:", emailError);
+    } else {
+      console.log(
+        `🔕 Email alerts disabled - skipping payment confirmation email for bill ${existingBill.invoiceNumber}`,
+      );
     }
 
     clearAllCache();
@@ -2588,6 +2724,7 @@ export const confirmProRatedPayment = async (
 
   try {
     const { applicationId, paymentDetails } = req.body;
+    const adminId = req.user?._id;
 
     if (!applicationId) {
       return res
@@ -2685,34 +2822,45 @@ export const confirmProRatedPayment = async (
 
     await session.commitTransaction();
 
-    const location = await getLocationFromEntity(application);
+    // Check if email alerts are enabled before sending confirmation
+    const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(
+      adminId?.toString(),
+    );
 
-    if (application.email) {
-      try {
-        const collectionEmail = getCollectionEmailByLocation(location);
-        const htmlContent = emailService.generatePaymentConfirmationHTML(
-          proRatedBill,
-          payment[0],
-          proRatedBill.total,
-          new Date().toLocaleString(),
-          location,
-          collectionEmail,
-          false,
-        );
+    if (emailAlertsEnabled) {
+      const location = await getLocationFromEntity(application);
 
-        await emailService.sendEmail(
-          application.email,
-          "Pro-rated Payment Confirmed",
-          htmlContent,
-          true,
-          location,
-        );
-      } catch (emailError) {
-        console.error(
-          "Failed to send pro-rated payment confirmation email:",
-          emailError,
-        );
+      if (application.email) {
+        try {
+          const collectionEmail = getCollectionEmailByLocation(location);
+          const htmlContent = emailService.generatePaymentConfirmationHTML(
+            proRatedBill,
+            payment[0],
+            proRatedBill.total,
+            new Date().toLocaleString(),
+            location,
+            collectionEmail,
+            false,
+          );
+
+          await emailService.sendEmail(
+            application.email,
+            "Pro-rated Payment Confirmed",
+            htmlContent,
+            true,
+            location,
+          );
+        } catch (emailError) {
+          console.error(
+            "Failed to send pro-rated payment confirmation email:",
+            emailError,
+          );
+        }
       }
+    } else {
+      console.log(
+        `🔕 Email alerts disabled - skipping pro-rated payment confirmation email`,
+      );
     }
 
     clearAllCache();
@@ -2740,6 +2888,7 @@ export const startMonthlyBilling = async (
 
   try {
     const { applicationId } = req.body;
+    const adminId = req.user?._id?.toString();
 
     if (!applicationId) {
       return res
@@ -2792,6 +2941,7 @@ export const startMonthlyBilling = async (
       monthlyRate,
       settings,
       session,
+      adminId,
     );
 
     const nextDate = getFirstDayOfMonth(getStartOfNextMonth(billingStart));
@@ -2838,6 +2988,7 @@ export const stopBilling = async (
 
   try {
     const { applicationId, reason } = req.body;
+    const adminId = req.user?._id?.toString();
 
     if (!applicationId) {
       return res
@@ -2886,6 +3037,33 @@ export const stopBilling = async (
     await session.commitTransaction();
     clearAllCache();
 
+    // Check if email alerts are enabled before sending notification
+    const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(adminId);
+
+    if (emailAlertsEnabled) {
+      const location = await getLocationFromEntity(application);
+      try {
+        await emailService.sendEmail(
+          application.email,
+          "Your Service Has Been Stopped - Mister Fyber",
+          emailService.generateServiceStatusHTML(
+            application.firstName,
+            application.lastName,
+            "stopped",
+            `Your internet service has been stopped. Reason: ${reason || "Service terminated"}.`,
+          ),
+          true,
+          location,
+        );
+      } catch (emailError) {
+        console.error("Failed to send stop notification email:", emailError);
+      }
+    } else {
+      console.log(
+        `🔕 Email alerts disabled - skipping stop notification email`,
+      );
+    }
+
     res.status(200).json({
       success: true,
       message: `Billing stopped for ${application.firstName} ${application.lastName}`,
@@ -2911,6 +3089,7 @@ export const pauseBilling = async (
 
   try {
     const { applicationId, reason, pauseUntilDate } = req.body;
+    const adminId = req.user?._id?.toString();
 
     if (!applicationId) {
       return res
@@ -2980,23 +3159,32 @@ export const pauseBilling = async (
 
     await session.commitTransaction();
 
-    const location = await getLocationFromEntity(application);
+    // Check if email alerts are enabled before sending notification
+    const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(adminId);
 
-    try {
-      await emailService.sendEmail(
-        application.email,
-        "Your Service Has Been Paused - Mister Fyber",
-        emailService.generateServiceStatusHTML(
-          application.firstName,
-          application.lastName,
-          "paused",
-          `Your internet service has been paused. Reason: ${reason || "Customer requested pause"}.`,
-        ),
-        true,
-        location,
+    if (emailAlertsEnabled) {
+      const location = await getLocationFromEntity(application);
+
+      try {
+        await emailService.sendEmail(
+          application.email,
+          "Your Service Has Been Paused - Mister Fyber",
+          emailService.generateServiceStatusHTML(
+            application.firstName,
+            application.lastName,
+            "paused",
+            `Your internet service has been paused. Reason: ${reason || "Customer requested pause"}.`,
+          ),
+          true,
+          location,
+        );
+      } catch (emailError) {
+        console.error("Failed to send pause notification email:", emailError);
+      }
+    } else {
+      console.log(
+        `🔕 Email alerts disabled - skipping pause notification email`,
       );
-    } catch (emailError) {
-      console.error("Failed to send pause notification email:", emailError);
     }
 
     clearAllCache();
@@ -3031,6 +3219,7 @@ export const resumeBilling = async (
 
   try {
     const { applicationId } = req.body;
+    const adminId = req.user?._id?.toString();
 
     if (!applicationId) {
       return res
@@ -3106,23 +3295,32 @@ export const resumeBilling = async (
 
     await session.commitTransaction();
 
-    const location = await getLocationFromEntity(application);
+    // Check if email alerts are enabled before sending notification
+    const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(adminId);
 
-    try {
-      await emailService.sendEmail(
-        application.email,
-        "Your Service Has Been Resumed - Mister Fyber",
-        emailService.generateServiceStatusHTML(
-          application.firstName,
-          application.lastName,
-          "resumed",
-          "Your internet service has been resumed.",
-        ),
-        true,
-        location,
+    if (emailAlertsEnabled) {
+      const location = await getLocationFromEntity(application);
+
+      try {
+        await emailService.sendEmail(
+          application.email,
+          "Your Service Has Been Resumed - Mister Fyber",
+          emailService.generateServiceStatusHTML(
+            application.firstName,
+            application.lastName,
+            "resumed",
+            "Your internet service has been resumed.",
+          ),
+          true,
+          location,
+        );
+      } catch (emailError) {
+        console.error("Failed to send resume notification email:", emailError);
+      }
+    } else {
+      console.log(
+        `🔕 Email alerts disabled - skipping resume notification email`,
       );
-    } catch (emailError) {
-      console.error("Failed to send resume notification email:", emailError);
     }
 
     clearAllCache();
@@ -3158,6 +3356,7 @@ export const disconnectClient = async (
 
   try {
     const { applicationId } = req.body;
+    const adminId = req.user?._id?.toString();
 
     if (!applicationId) {
       return res
@@ -3182,6 +3381,36 @@ export const disconnectClient = async (
     await session.commitTransaction();
     clearAllCache();
 
+    // Check if email alerts are enabled before sending notification
+    const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(adminId);
+
+    if (emailAlertsEnabled) {
+      const location = await getLocationFromEntity(application);
+      try {
+        await emailService.sendEmail(
+          application.email,
+          "Your Service Has Been Disconnected - Mister Fyber",
+          emailService.generateServiceStatusHTML(
+            application.firstName,
+            application.lastName,
+            "disconnected",
+            "Your internet service has been disconnected.",
+          ),
+          true,
+          location,
+        );
+      } catch (emailError) {
+        console.error(
+          "Failed to send disconnect notification email:",
+          emailError,
+        );
+      }
+    } else {
+      console.log(
+        `🔕 Email alerts disabled - skipping disconnect notification email`,
+      );
+    }
+
     res.status(200).json({ success: true, message: "Service disconnected" });
   } catch (error) {
     await session.abortTransaction();
@@ -3204,6 +3433,7 @@ export const reconnectClient = async (
 
   try {
     const { applicationId } = req.body;
+    const adminId = req.user?._id?.toString();
 
     if (!applicationId) {
       return res
@@ -3227,6 +3457,36 @@ export const reconnectClient = async (
 
     await session.commitTransaction();
     clearAllCache();
+
+    // Check if email alerts are enabled before sending notification
+    const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(adminId);
+
+    if (emailAlertsEnabled) {
+      const location = await getLocationFromEntity(application);
+      try {
+        await emailService.sendEmail(
+          application.email,
+          "Your Service Has Been Reconnected - Mister Fyber",
+          emailService.generateServiceStatusHTML(
+            application.firstName,
+            application.lastName,
+            "reconnected",
+            "Your internet service has been reconnected.",
+          ),
+          true,
+          location,
+        );
+      } catch (emailError) {
+        console.error(
+          "Failed to send reconnect notification email:",
+          emailError,
+        );
+      }
+    } else {
+      console.log(
+        `🔕 Email alerts disabled - skipping reconnect notification email`,
+      );
+    }
 
     res.status(200).json({ success: true, message: "Service reconnected" });
   } catch (error) {
@@ -3378,6 +3638,8 @@ export const autoGenerateMonthlyBills = async (
           nextMonthEnd,
           plan.price,
           settings,
+          undefined,
+          undefined,
         );
         generatedCount++;
         console.log(
@@ -3432,6 +3694,7 @@ export const manuallyGenerateEarlyBill = async (
 
   try {
     const { applicationId, monthOffset } = req.body;
+    const adminId = req.user?._id?.toString();
 
     if (!applicationId) {
       return res.status(400).json({
@@ -3534,6 +3797,8 @@ export const manuallyGenerateEarlyBill = async (
       targetMonthEnd,
       plan.price,
       settings,
+      undefined,
+      adminId,
     );
 
     if (offset > 1) {
@@ -4023,6 +4288,7 @@ export const recoverMissingBills = async (
 
   try {
     const { applicationId, startFromDate } = req.body;
+    const adminId = req.user?._id?.toString();
 
     if (!applicationId) {
       return res
@@ -4101,6 +4367,8 @@ export const recoverMissingBills = async (
           billingEnd,
           monthlyRate,
           settings,
+          undefined,
+          adminId,
         );
         missingBills.push(monthlyBill);
       }
@@ -4262,6 +4530,7 @@ export const manuallyGenerateBillsForMonth = async (
 
   try {
     const { year, month, applicationId } = req.body;
+    const adminId = req.user?._id?.toString();
 
     const targetDate = new Date();
     if (year && month) {
@@ -4334,6 +4603,8 @@ export const manuallyGenerateBillsForMonth = async (
           targetMonthEnd,
           plan.price,
           settings,
+          undefined,
+          adminId,
         );
         generatedCount++;
         generatedBills.push(newBill);
