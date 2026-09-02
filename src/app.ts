@@ -1,4 +1,4 @@
-// backend/src/app.ts - COMPLETE FIXED VERSION WITH EMAIL SCHEDULER
+// backend/src/app.ts - COMPLETE FIXED VERSION WITH WEBSOCKET & EMAIL SCHEDULER
 
 import express, { Application, Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
@@ -33,10 +33,15 @@ import {
 import BillingSettings from "./models/BillingSettings";
 
 // ============================================================
-// IMPORT DATABASE AND SCHEDULER - FIXED!
+// IMPORT DATABASE AND SCHEDULER
 // ============================================================
 import Database from "./config/database";
-import { startScheduler } from "./services/schedulerService"; // <-- ADD THIS!
+import { startScheduler } from "./services/schedulerService";
+
+// ============================================================
+// IMPORT WEBSOCKET SERVICE
+// ============================================================
+import { webSocketService } from "./services/websocketService";
 
 // Load environment variables
 dotenv.config({ path: path.join(__dirname, "../.env") });
@@ -74,21 +79,17 @@ const app: Application = express();
 const server = createServer(app);
 
 // ============================================================
-// WEBSOCKET
+// WEBSOCKET - Using webSocketService
 // ============================================================
-const io = new Server(server, {
-  cors: {
-    origin: allowedOrigins,
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-    allowedHeaders: ["Content-Type", "Authorization", "Cookie"],
-  },
-  path: "/billing-events",
-  transports: ["websocket", "polling"],
-  allowEIO3: true,
-});
+// Initialize WebSocket service with the server
+webSocketService.initialize(server);
 
-// ==================== MIDDLEWARES ====================
+// Also keep the raw io reference for backward compatibility
+const io = webSocketService.getIO();
+
+// ============================================================
+// MIDDLEWARES
+// ============================================================
 app.use(compression());
 
 app.use(
@@ -198,7 +199,9 @@ const ensureUploadDirectories = () => {
 };
 ensureUploadDirectories();
 
-// ==================== ROUTES ====================
+// ============================================================
+// ROUTES
+// ============================================================
 app.get("/", (req: Request, res: Response) => {
   res.status(200).json({
     success: true,
@@ -225,10 +228,16 @@ app.get("/health", (req: Request, res: Response) => {
     environment: process.env.NODE_ENV,
     uptime: process.uptime(),
     memory: process.memoryUsage(),
+    websocket: {
+      connected: webSocketService ? true : false,
+      clients: webSocketService ? webSocketService.getClientsCount() : 0,
+    },
   });
 });
 
-// ==================== API ROUTES ====================
+// ============================================================
+// API ROUTES
+// ============================================================
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/plans", planRoutes);
@@ -241,7 +250,33 @@ app.use("/api/buildings", buildingRoutes);
 app.use("/api/manual-email", manualEmailRoutes);
 app.use("/api/invoices", invoiceRoutes);
 
-// ==================== ERROR HANDLING ====================
+// ============================================================
+// WEBSOCKET STATUS ENDPOINT
+// ============================================================
+app.get("/api/websocket/status", (req: Request, res: Response) => {
+  try {
+    const clientsCount = webSocketService
+      ? webSocketService.getClientsCount()
+      : 0;
+    res.status(200).json({
+      success: true,
+      data: {
+        connected: true,
+        clients: clientsCount,
+        timestamp: new Date().toISOString(),
+      },
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      message: error.message || "Failed to get WebSocket status",
+    });
+  }
+});
+
+// ============================================================
+// ERROR HANDLING
+// ============================================================
 app.use((req: Request, res: Response) => {
   res.status(404).json({
     success: false,
@@ -260,26 +295,9 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   });
 });
 
-// ==================== SOCKET.IO ====================
-io.on("connection", (socket) => {
-  console.log("🔌 New client connected:", socket.id);
-
-  socket.on("subscribe", (event) => {
-    console.log(`📡 Client ${socket.id} subscribed to:`, event);
-    socket.join(event);
-  });
-
-  socket.on("unsubscribe", (event) => {
-    console.log(`📡 Client ${socket.id} unsubscribed from:`, event);
-    socket.leave(event);
-  });
-
-  socket.on("disconnect", () => {
-    console.log("🔌 Client disconnected:", socket.id);
-  });
-});
-
-// ==================== DATABASE CONNECTION ====================
+// ============================================================
+// DATABASE CONNECTION
+// ============================================================
 const initializeDatabase = async () => {
   try {
     if (!process.env.MONGODB_URI) {
@@ -322,6 +340,7 @@ const initializeDatabase = async () => {
         requireAdminActivation: false,
         installationFee: 1500,
         installationFeeDueDays: 7,
+        earlyBillGenerationDays: 15,
       });
       console.log("✅ Default billing settings initialized");
     }
@@ -332,10 +351,13 @@ const initializeDatabase = async () => {
   }
 };
 
-// ==================== SCHEDULED JOBS ====================
+// ============================================================
+// SCHEDULED JOBS
+// ============================================================
 const initializeScheduledJobs = () => {
   console.log("🔄 Initializing scheduled billing jobs...");
 
+  // Daily bill generation at 1:00 AM
   cron.schedule("0 1 * * *", async () => {
     try {
       console.log("🔄 Running auto-generate monthly bills job...");
@@ -346,6 +368,7 @@ const initializeScheduledJobs = () => {
     }
   });
 
+  // Daily auto-suspend at 2:00 AM
   cron.schedule("0 2 * * *", async () => {
     try {
       console.log("🔄 Running auto-suspend overdue job...");
@@ -359,13 +382,15 @@ const initializeScheduledJobs = () => {
   console.log("✅ Scheduled billing jobs initialized");
 };
 
-// ==================== START SERVER ====================
+// ============================================================
+// START SERVER
+// ============================================================
 const start = async () => {
   await initializeDatabase();
   initializeScheduledJobs();
 
   // ============================================================
-  // START THE EMAIL SCHEDULER - FIXED!
+  // START THE EMAIL SCHEDULER
   // ============================================================
   console.log("\n📧 Starting email scheduler...");
   try {
@@ -389,6 +414,10 @@ const start = async () => {
     console.log(`📄 Invoice routes available at: /api/invoices`);
     console.log(`📁 Uploads directory: ${uploadsPath}`);
     console.log(`⏰ Email scheduler is running (checks every minute)`);
+    console.log(`🔌 WebSocket server is running on path: /socket.io`);
+    console.log(
+      `📡 WebSocket status: http://localhost:${PORT}/api/websocket/status`,
+    );
     console.log(`\n✅ All systems ready!\n`);
   });
 };

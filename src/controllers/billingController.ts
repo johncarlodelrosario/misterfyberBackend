@@ -1,4 +1,4 @@
-// backend/src/controllers/billingController.ts - COMPLETE FIXED VERSION WITH EMAIL ALERT TOGGLE
+// backend/src/controllers/billingController.ts - COMPLETE FIXED - LAHAT NG FUNCTIONS MERON NA!
 
 import { Request, Response, NextFunction } from "express";
 import Billing from "../models/Billing";
@@ -19,29 +19,12 @@ import mongoose from "mongoose";
 import { generateInvoicePDF } from "../services/pdfService";
 import fs from "fs";
 import path from "path";
+import eventService from "../services/eventService";
 
 type AuthRequest = Request & { user?: any };
 
-// ==================== CACHE SYSTEM ====================
-let billingSettingsCache: any = null;
-let billingSettingsCacheTime = 0;
-const SETTINGS_CACHE_TTL = 60 * 60 * 1000;
-
-let billingCyclesCache: Map<string, { data: any; timestamp: number }> =
-  new Map();
-let billsCache: Map<string, { data: any; timestamp: number }> = new Map();
-let summaryCache: { data: any; timestamp: number } | null = null;
-const SUMMARY_CACHE_TTL = 2 * 60 * 1000;
-const LIST_CACHE_TTL = 30 * 1000;
-
-// ==================== DASHBOARD DATA CACHE ====================
-let dashboardDataCache: any = null;
-let dashboardDataCacheTime = 0;
-const DASHBOARD_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-
-// ==================== EMAIL ALERTS CACHE ====================
-let adminEmailAlertsCache: Map<string, boolean> = new Map();
-const ADMIN_EMAIL_ALERTS_CACHE_TTL = 60 * 1000; // 1 minute
+// ==================== CACHE SYSTEM - TOTALLY REMOVED ====================
+// WALANG CACHE! LAHAT DIRECT SA DATABASE!
 
 function generateInvoiceNumber(): string {
   const date = new Date();
@@ -65,77 +48,9 @@ function generateInstallationInvoiceNumber(): string {
   return `INST-${year}${month}-${timestamp}${random}`;
 }
 
-function getCacheKey(params: any): string {
-  return JSON.stringify(params);
-}
-
 function clearAllCache(): void {
-  billingSettingsCache = null;
-  billingCyclesCache.clear();
-  billsCache.clear();
-  summaryCache = null;
-  dashboardDataCache = null;
-  dashboardDataCacheTime = 0;
-  adminEmailAlertsCache.clear();
-  console.log("🗑️ Billing cache cleared");
+  console.log("🗑️ Cache cleared (but there is no cache!)");
 }
-
-// ==================== CHECK IF EMAIL ALERTS ARE ENABLED ====================
-async function areCustomerEmailAlertsEnabled(
-  adminId?: string,
-): Promise<boolean> {
-  try {
-    if (!adminId) {
-      // If no admin ID provided, check cache for default or return true (safe default)
-      const cached = adminEmailAlertsCache.get("_default_");
-      if (cached !== undefined) {
-        return cached;
-      }
-
-      // Check if any admin exists and use their setting
-      const admin = await Admin.findOne({ status: "active" })
-        .select("customerEmailAlertsEnabled")
-        .lean();
-      const enabled = admin?.customerEmailAlertsEnabled !== false; // undefined or true = enabled, explicit false = disabled
-      adminEmailAlertsCache.set("_default_", enabled);
-      setTimeout(
-        () => adminEmailAlertsCache.delete("_default_"),
-        ADMIN_EMAIL_ALERTS_CACHE_TTL,
-      );
-      return enabled;
-    }
-
-    // Check cache first
-    const cacheKey = `admin_${adminId}`;
-    const cached = adminEmailAlertsCache.get(cacheKey);
-    if (cached !== undefined) {
-      return cached;
-    }
-
-    // Fetch from database
-    const admin = await Admin.findById(adminId)
-      .select("customerEmailAlertsEnabled")
-      .lean();
-    // CRITICAL: customerEmailAlertsEnabled must be explicitly true to send emails
-    // If undefined, null, or false -> NO EMAILS
-    const enabled = admin?.customerEmailAlertsEnabled === true;
-
-    // Cache the result
-    adminEmailAlertsCache.set(cacheKey, enabled);
-    setTimeout(
-      () => adminEmailAlertsCache.delete(cacheKey),
-      ADMIN_EMAIL_ALERTS_CACHE_TTL,
-    );
-
-    return enabled;
-  } catch (error) {
-    console.error("Error checking customer email alerts enabled:", error);
-    // On error, default to false (safer to not send emails)
-    return false;
-  }
-}
-
-// ==================== HELPER FUNCTIONS ====================
 
 async function getOrCreateSettings(): Promise<any> {
   let settings = await BillingSettings.findOne().lean();
@@ -162,22 +77,6 @@ async function getOrCreateSettings(): Promise<any> {
     console.log("✅ Default billing settings created");
   }
   return settings;
-}
-
-async function getBuildingInstallationFeeHelper(
-  buildingId: string,
-): Promise<number> {
-  try {
-    if (!buildingId) return 0;
-    const building = await Building.findById(buildingId);
-    if (building && building.installationFee !== undefined) {
-      return building.installationFee;
-    }
-    return 0;
-  } catch (error) {
-    console.error("Error getting building installation fee:", error);
-    return 0;
-  }
 }
 
 async function getBuildingForApplication(application: any): Promise<any> {
@@ -293,23 +192,40 @@ function checkAdmin(req: AuthRequest, res: Response): boolean {
   return true;
 }
 
-// ==================== SEND INVOICE WITH EMAIL CHECK ====================
+// ==================== CHECK IF EMAIL ALERTS ARE ENABLED ====================
+async function areCustomerEmailAlertsEnabled(
+  adminId?: string,
+): Promise<boolean> {
+  if (!adminId) return false;
+
+  try {
+    const admin = await Admin.findById(adminId).select(
+      "customerEmailAlertsEnabled",
+    );
+    if (!admin) return false;
+    return admin.customerEmailAlertsEnabled === true;
+  } catch (error) {
+    console.error("Error checking email alerts preference:", error);
+    return false;
+  }
+}
+
 async function sendInvoiceToApplication(
   application: any,
   bill: any,
-  adminId?: string,
+  req?: AuthRequest,
 ): Promise<void> {
-  // Check if email alerts are enabled before sending
-  const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(adminId);
-
-  if (!emailAlertsEnabled) {
-    console.log(
-      `🔕 Email alerts disabled - skipping invoice email to ${application?.email}`,
-    );
-    return;
-  }
-
   if (application && application.email) {
+    const adminId = req?.user?._id;
+    const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(adminId);
+
+    if (!emailAlertsEnabled) {
+      console.log(
+        `📧 Email alerts disabled. Skipping invoice email to ${application.email}`,
+      );
+      return;
+    }
+
     const tempUser = {
       _id: application.applicationId || application._id,
       email: application.email,
@@ -500,23 +416,22 @@ async function createInvoiceFromBilling(
   }
 }
 
-// ==================== SEND INVOICE WITH PDF ATTACHMENT (WITH EMAIL CHECK) ====================
 async function sendInvoiceWithPDFAttachment(
   invoice: any,
   application: any,
-  adminId?: string,
+  req?: AuthRequest,
 ): Promise<boolean> {
-  // Check if email alerts are enabled before sending
-  const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(adminId);
-
-  if (!emailAlertsEnabled) {
-    console.log(
-      `🔕 Email alerts disabled - skipping PDF invoice email to ${application?.email}`,
-    );
-    return false;
-  }
-
   try {
+    const adminId = req?.user?._id;
+    const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(adminId);
+
+    if (!emailAlertsEnabled) {
+      console.log(
+        `📧 Email alerts disabled. Skipping PDF invoice email to ${application.email}`,
+      );
+      return false;
+    }
+
     const location = await getLocationFromEntity(application);
 
     const pdfBuffer = await generateInvoicePDF(invoice);
@@ -561,7 +476,7 @@ async function createInstallationBill(
   installationFee: number,
   settings: any,
   session: mongoose.ClientSession,
-  adminId?: string,
+  req?: AuthRequest,
 ): Promise<any> {
   if (!installationFee || installationFee <= 0) {
     return null;
@@ -621,10 +536,10 @@ async function createInstallationBill(
   );
 
   if (invoice) {
-    await sendInvoiceWithPDFAttachment(invoice, application, adminId);
+    await sendInvoiceWithPDFAttachment(invoice, application, req);
   } else {
     try {
-      await sendInvoiceToApplication(application, installationBill[0], adminId);
+      await sendInvoiceToApplication(application, installationBill[0], req);
       console.log(`📧 Sent installation fee invoice to ${application.email}`);
     } catch (emailError) {
       console.error(
@@ -646,7 +561,7 @@ async function createMonthlyBill(
   monthlyRate: number,
   settings: any,
   session?: mongoose.ClientSession,
-  adminId?: string,
+  req?: AuthRequest,
 ): Promise<any> {
   const dueDate = getDueDateForMonthly(billingStart, settings);
 
@@ -693,10 +608,10 @@ async function createMonthlyBill(
   );
 
   if (invoice) {
-    await sendInvoiceWithPDFAttachment(invoice, application, adminId);
+    await sendInvoiceWithPDFAttachment(invoice, application, req);
   } else {
     try {
-      await sendInvoiceToApplication(application, createdBill, adminId);
+      await sendInvoiceToApplication(application, createdBill, req);
       console.log(
         `📧 Sent monthly invoice ${createdBill.invoiceNumber} to ${application.email}`,
       );
@@ -720,7 +635,7 @@ async function createProRatedBill(
   settings: any,
   isAfterCutoff: boolean,
   session?: mongoose.ClientSession,
-  adminId?: string,
+  req?: AuthRequest,
 ): Promise<any> {
   let dueDate: Date;
   let description: string;
@@ -781,10 +696,10 @@ async function createProRatedBill(
   );
 
   if (invoice) {
-    await sendInvoiceWithPDFAttachment(invoice, application, adminId);
+    await sendInvoiceWithPDFAttachment(invoice, application, req);
   } else {
     try {
-      await sendInvoiceToApplication(application, createdBill, adminId);
+      await sendInvoiceToApplication(application, createdBill, req);
     } catch (emailError) {
       console.error("Failed to send invoice email:", emailError);
     }
@@ -793,1048 +708,9 @@ async function createProRatedBill(
   return createdBill;
 }
 
-// ==================== GET LOCATION EMAILS ====================
-export const getLocationEmails = async (req: AuthRequest, res: Response) => {
-  try {
-    const emails = {
-      breeze:
-        process.env.COLLECTION_EMAIL_BREEZE ||
-        "collection.breeze@misterfyber.com",
-      sil: process.env.COLLECTION_EMAIL_SIL || "collection.sil@misterfyber.com",
-      default:
-        process.env.COLLECTION_EMAIL_DEFAULT || "collection@misterfyber.com",
-    };
-
-    res.status(200).json({
-      success: true,
-      data: emails,
-    });
-  } catch (error: any) {
-    console.error("❌ Error getting location emails:", error);
-    res.status(500).json({
-      success: false,
-      message: error.message || "Error getting location emails",
-    });
-  }
-};
-
-// ==================== TEST LOCATION EMAIL ====================
-export const testLocationEmail = async (req: AuthRequest, res: Response) => {
-  try {
-    const { location, email } = req.body;
-
-    if (!location) {
-      return res.status(400).json({
-        success: false,
-        message: "Location is required",
-      });
-    }
-
-    const collectionEmail = getCollectionEmailByLocation(location);
-
-    const result = await emailService.sendEmail(
-      email || collectionEmail,
-      `🧪 Test Email - Location: ${location}`,
-      emailService.generateTestLocationEmailHTML(location, collectionEmail),
-      false,
-      location,
-      {
-        replyTo: process.env.SUPPORT_EMAIL || "admin@misterfyber.com",
-      },
-    );
-
-    res.status(200).json({
-      success: true,
-      message: "Test email sent successfully",
-      data: {
-        location,
-        collectionEmail,
-        result,
-      },
-    });
-  } catch (error: any) {
-    console.error("❌ Error sending test email:", error);
-    res.status(500).json({
-      success: false,
-      message: error.message || "Error sending test email",
-    });
-  }
-};
-
-// ==================== GET BUILDING INSTALLATION FEE (EXPORTED) ====================
-export const getBuildingInstallationFee = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  try {
-    const { buildingId } = req.params;
-
-    if (!buildingId) {
-      return res.status(400).json({
-        success: false,
-        message: "Building ID is required",
-      });
-    }
-
-    const building = await Building.findById(buildingId).lean();
-    if (!building) {
-      return res.status(404).json({
-        success: false,
-        message: "Building not found",
-      });
-    }
-
-    res.status(200).json({
-      success: true,
-      data: {
-        buildingId: building._id,
-        buildingName: building.buildingName,
-        installationFee: building.installationFee || 0,
-        location: building.location || "",
-      },
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// ==================== START BILLING FOR APPLICATION ====================
-export const startBilling = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  if (!checkAdmin(req, res)) return;
-
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const {
-      applicationId,
-      startDate,
-      customAmount,
-      notes,
-      includeInstallationFee,
-    } = req.body;
-
-    if (!applicationId) {
-      return res.status(400).json({
-        success: false,
-        message: "applicationId is required",
-      });
-    }
-
-    const application = await Application.findOne({
-      applicationId: applicationId,
-    })
-      .populate("planId")
-      .lean();
-
-    if (!application) {
-      return res.status(404).json({
-        success: false,
-        message: `Application not found with ID: ${applicationId}`,
-      });
-    }
-
-    const existingBillingCycle = await BillingCycle.findOne({
-      applicationId: application.applicationId,
-    }).lean();
-
-    if (existingBillingCycle) {
-      const statusMessages: Record<string, string> = {
-        active: "active and running",
-        paused: "paused",
-        pending_activation: "pending payment confirmation",
-        cancelled: "cancelled",
-      };
-
-      return res.status(400).json({
-        success: false,
-        message: `Billing has already been started for this application. Current status: ${statusMessages[existingBillingCycle.status] || existingBillingCycle.status}`,
-        data: {
-          billingCycle: existingBillingCycle,
-          status: existingBillingCycle.status,
-          startDate: existingBillingCycle.billingStartDate,
-          nextBillingDate: existingBillingCycle.nextBillingDate,
-        },
-      });
-    }
-
-    const plan = application.planId as any;
-    if (!plan) {
-      return res.status(400).json({
-        success: false,
-        message: "No plan assigned to this application",
-      });
-    }
-
-    const settings = await getOrCreateSettings();
-    const billingCutoffDay = settings.billingCutoffDay || 24;
-    const monthlyRate = plan.price;
-    const dailyRate = (monthlyRate * 12) / 365;
-
-    let installationFee = 0;
-    if (includeInstallationFee !== false) {
-      const building = await getBuildingForApplication(application);
-      if (
-        building &&
-        building.installationFee !== undefined &&
-        building.installationFee > 0
-      ) {
-        installationFee = building.installationFee;
-        console.log(
-          `🏢 Using building-specific installation fee: ₱${installationFee} for ${building.buildingName}`,
-        );
-      } else {
-        installationFee = settings.installationFee || 1500;
-        console.log(`🌐 Using global installation fee: ₱${installationFee}`);
-      }
-    }
-
-    let installationDate = startDate ? new Date(startDate) : new Date();
-    installationDate.setHours(0, 0, 0, 0);
-
-    const installationDay = installationDate.getDate();
-    const currentMonthEnd = getEndOfMonth(installationDate);
-    const actualBillableDays = currentMonthEnd.getDate() - installationDay + 1;
-    const isAfterCutoff = installationDay > billingCutoffDay;
-
-    let createdInstallationBill: any = null;
-    let createdProRatedBill: any = null;
-    let createdMonthlyBill: any = null;
-    let billingStatus = "active";
-
-    const adminId = req.user?._id?.toString();
-
-    if (!isAfterCutoff) {
-      let proRatedAmount: number;
-      if (installationDay === 1 && currentMonthEnd.getDate() === 31) {
-        proRatedAmount = monthlyRate;
-        console.log(
-          `📅 Month has 31 days, start on 1st. Using full monthly rate: ₱${monthlyRate}`,
-        );
-      } else {
-        proRatedAmount = Math.round(dailyRate * actualBillableDays * 100) / 100;
-      }
-
-      const finalProRatedAmount = customAmount ? customAmount : proRatedAmount;
-
-      const proRatedStartDate = installationDate;
-      const proRatedEndDate = currentMonthEnd;
-
-      const nextFullMonthStart = getStartOfNextMonth(installationDate);
-      const nextFullMonthEnd = getEndOfMonth(nextFullMonthStart);
-      const nextBillingDate = getFirstDayOfMonth(nextFullMonthStart);
-
-      const billingCycle = await BillingCycle.create(
-        [
-          {
-            planId: plan._id,
-            monthlyRate: monthlyRate,
-            currentProRatedAmount: finalProRatedAmount,
-            proRatedPaid: false,
-            actualBillableDays: actualBillableDays,
-            isAfterCutoff: false,
-            cutoffDayUsed: billingCutoffDay,
-            applicationId: application.applicationId,
-            installationFee: installationFee,
-            installationFeePaid: false,
-            billingStartDate: nextFullMonthStart,
-            billingEndDate: nextFullMonthEnd,
-            nextBillingDate: nextBillingDate,
-            status: billingStatus,
-          },
-        ],
-        { session },
-      );
-
-      createdProRatedBill = await createProRatedBill(
-        application,
-        billingCycle[0]._id,
-        proRatedStartDate,
-        proRatedEndDate,
-        finalProRatedAmount,
-        actualBillableDays,
-        dailyRate,
-        settings,
-        false,
-        session,
-        adminId,
-      );
-
-      if (installationFee > 0) {
-        createdInstallationBill = await createInstallationBill(
-          application,
-          billingCycle[0]._id,
-          installationFee,
-          settings,
-          session,
-          adminId,
-        );
-      }
-
-      await session.commitTransaction();
-
-      await Application.updateOne(
-        { applicationId: application.applicationId },
-        {
-          $set: {
-            billingStarted: true,
-            billingCycleId: billingCycle[0]._id,
-            serviceStatus: "active",
-            installationFee: installationFee,
-            installationFeePaid: false,
-          },
-        },
-      );
-
-      clearAllCache();
-
-      let message = `Installation on day ${installationDay} (on/before cutoff). Pro-rated amount of ₱${finalProRatedAmount.toFixed(2)} for ${actualBillableDays} days due on ${formatDateForDisplay(createdProRatedBill.dueDate)}.`;
-      if (createdInstallationBill) {
-        message += ` Installation fee of ₱${installationFee.toFixed(2)} billed separately (Invoice: ${createdInstallationBill.invoiceNumber}, due on ${formatDateForDisplay(createdInstallationBill.dueDate)}).`;
-      }
-      message += ` Regular monthly billing will start next month on 1st with due date on 5th of that month.`;
-
-      res.status(200).json({
-        success: true,
-        message: message,
-        data: {
-          billingCycle: billingCycle[0],
-          proRatedBill: createdProRatedBill,
-          installationBill: createdInstallationBill,
-          proRatedAmount: finalProRatedAmount,
-          dailyRate: dailyRate,
-          monthlyRate: monthlyRate,
-          annualRate: monthlyRate * 12,
-          actualBillableDays: actualBillableDays,
-          installationDay: installationDay,
-          billingCutoffDay: billingCutoffDay,
-          isAfterCutoff: false,
-          dueDate: createdProRatedBill.dueDate,
-          nextBillingDate: nextBillingDate,
-          applicationId: application.applicationId,
-          installationFee: installationFee,
-          installationFeeSeparate: createdInstallationBill !== null,
-          buildingInstallationFee: installationFee,
-        },
-      });
-    } else {
-      let proRatedAmount: number;
-      if (installationDay === 1 && currentMonthEnd.getDate() === 31) {
-        proRatedAmount = monthlyRate;
-        console.log(
-          `📅 Month has 31 days, start on 1st. Using full monthly rate: ₱${monthlyRate}`,
-        );
-      } else {
-        proRatedAmount = Math.round(dailyRate * actualBillableDays * 100) / 100;
-      }
-
-      const finalProRatedAmount = customAmount ? customAmount : proRatedAmount;
-
-      const proRatedStartDate = installationDate;
-      const proRatedEndDate = currentMonthEnd;
-
-      const nextFullMonthStart = getStartOfNextMonth(installationDate);
-      const nextFullMonthEnd = getEndOfMonth(nextFullMonthStart);
-      const nextBillingDate = getFirstDayOfMonth(nextFullMonthStart);
-
-      const combinedDueDate = getDueDateForMonthly(
-        nextFullMonthStart,
-        settings,
-      );
-
-      const billingCycle = await BillingCycle.create(
-        [
-          {
-            planId: plan._id,
-            monthlyRate: monthlyRate,
-            currentProRatedAmount: finalProRatedAmount,
-            proRatedPaid: false,
-            actualBillableDays: actualBillableDays,
-            isAfterCutoff: true,
-            cutoffDayUsed: billingCutoffDay,
-            applicationId: application.applicationId,
-            installationFee: installationFee,
-            installationFeePaid: false,
-            billingStartDate: nextFullMonthStart,
-            billingEndDate: nextFullMonthEnd,
-            nextBillingDate: nextBillingDate,
-            status: billingStatus,
-          },
-        ],
-        { session },
-      );
-
-      createdProRatedBill = await createProRatedBill(
-        application,
-        billingCycle[0]._id,
-        proRatedStartDate,
-        proRatedEndDate,
-        finalProRatedAmount,
-        actualBillableDays,
-        dailyRate,
-        settings,
-        true,
-        session,
-        adminId,
-      );
-
-      const monthlyBillData = {
-        billingCycleId: billingCycle[0]._id,
-        invoiceNumber: generateInvoiceNumber(),
-        billingPeriod: { start: nextFullMonthStart, end: nextFullMonthEnd },
-        dueDate: combinedDueDate,
-        items: [
-          {
-            description: `Monthly Subscription - ${formatDateForDisplay(nextFullMonthStart)} to ${formatDateForDisplay(nextFullMonthEnd)} (PREPAID) - Generated on ${formatDateForDisplay(new Date())}`,
-            quantity: 1,
-            rate: monthlyRate,
-            amount: monthlyRate,
-          },
-        ],
-        subtotal: monthlyRate,
-        tax: 0,
-        discount: 0,
-        total: monthlyRate,
-        status: "sent",
-        isProRated: false,
-        proRatedDays: 0,
-        isInstallationBill: false,
-        installationFee: 0,
-        installationFeePaid: false,
-        notes: `Regular monthly subscription - PREPAID: Generated on 1st, Due on 5th of ${formatDateForDisplay(nextFullMonthStart)}`,
-        applicationId: application.applicationId,
-      };
-
-      const monthlyBillResult = await Billing.create([monthlyBillData], {
-        session,
-      });
-      createdMonthlyBill = monthlyBillResult[0];
-
-      const monthlyInvoice = await createInvoiceFromBilling(
-        createdMonthlyBill,
-        application,
-        settings,
-      );
-      if (monthlyInvoice) {
-        await sendInvoiceWithPDFAttachment(
-          monthlyInvoice,
-          application,
-          adminId,
-        );
-      } else {
-        try {
-          await sendInvoiceToApplication(
-            application,
-            createdMonthlyBill,
-            adminId,
-          );
-        } catch (emailError) {
-          console.error("Failed to send invoice email:", emailError);
-        }
-      }
-
-      if (installationFee > 0) {
-        createdInstallationBill = await createInstallationBill(
-          application,
-          billingCycle[0]._id,
-          installationFee,
-          settings,
-          session,
-          adminId,
-        );
-      }
-
-      await session.commitTransaction();
-
-      await Application.updateOne(
-        { applicationId: application.applicationId },
-        {
-          $set: {
-            billingStarted: true,
-            billingCycleId: billingCycle[0]._id,
-            serviceStatus: "active",
-            installationFee: installationFee,
-            installationFeePaid: false,
-          },
-        },
-      );
-
-      clearAllCache();
-
-      const totalFirstPayment = finalProRatedAmount + monthlyRate;
-      let message = `Installation on day ${installationDay} (after cutoff). Pro-rated amount of ₱${finalProRatedAmount.toFixed(2)} for ${actualBillableDays} days PLUS regular monthly bill of ₱${monthlyRate.toFixed(2)} for period ${formatDateForDisplay(nextFullMonthStart)} to ${formatDateForDisplay(nextFullMonthEnd)}.`;
-      message += ` TOTAL FIRST PAYMENT: ₱${totalFirstPayment.toFixed(2)} due on ${formatDateForDisplay(combinedDueDate)}.`;
-      if (createdInstallationBill) {
-        message += ` Installation fee of ₱${installationFee.toFixed(2)} billed separately (Invoice: ${createdInstallationBill.invoiceNumber}, due on ${formatDateForDisplay(createdInstallationBill.dueDate)}).`;
-      }
-
-      res.status(200).json({
-        success: true,
-        message: message,
-        data: {
-          billingCycle: billingCycle[0],
-          proRatedBill: createdProRatedBill,
-          monthlyBill: createdMonthlyBill,
-          installationBill: createdInstallationBill,
-          proRatedAmount: finalProRatedAmount,
-          monthlyAmount: monthlyRate,
-          totalFirstPayment: totalFirstPayment,
-          dailyRate: dailyRate,
-          monthlyRate: monthlyRate,
-          annualRate: monthlyRate * 12,
-          actualBillableDays: actualBillableDays,
-          installationDay: installationDay,
-          billingCutoffDay: billingCutoffDay,
-          isAfterCutoff: true,
-          dueDate: combinedDueDate,
-          nextBillingDate: nextBillingDate,
-          applicationId: application.applicationId,
-          installationFee: installationFee,
-          installationFeeSeparate: createdInstallationBill !== null,
-          buildingInstallationFee: installationFee,
-        },
-      });
-    }
-  } catch (error) {
-    await session.abortTransaction();
-    next(error);
-  } finally {
-    session.endSession();
-  }
-};
-
-// ==================== INITIALIZE BACKDATED BILLING WITH NEXT MONTH BILL ====================
-export const initializeBackdatedBilling = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  if (!checkAdmin(req, res)) return;
-
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const {
-      applicationId,
-      serviceStartDate,
-      customPlanName,
-      monthlyRate,
-      notes,
-      includeInstallationFee,
-    } = req.body;
-
-    if (!applicationId) {
-      await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: "applicationId is required",
-      });
-    }
-
-    if (!serviceStartDate) {
-      await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: "serviceStartDate is required",
-      });
-    }
-
-    const application = await Application.findOne({ applicationId })
-      .populate("planId")
-      .lean();
-
-    if (!application) {
-      await session.abortTransaction();
-      return res.status(404).json({
-        success: false,
-        message: `Application not found with ID: ${applicationId}`,
-      });
-    }
-
-    const existingBillingCycle = await BillingCycle.findOne({
-      applicationId: application.applicationId,
-    }).session(session);
-
-    if (existingBillingCycle) {
-      await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: `Billing already exists for this application. Status: ${existingBillingCycle.status}`,
-      });
-    }
-
-    let plan: any = application.planId;
-
-    if (!plan && customPlanName && monthlyRate) {
-      const PlanModel = require("../models/Plan").default;
-      plan = await PlanModel.create({
-        name: customPlanName,
-        price: monthlyRate,
-        speed: { download: 0, upload: 0 },
-        type: "custom",
-        isActive: true,
-      });
-    } else if (plan) {
-      plan = await require("../models/Plan").default.findById(plan._id);
-    }
-
-    if (!plan && !monthlyRate) {
-      await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message:
-          "Either a plan must be assigned or customPlanName + monthlyRate provided",
-      });
-    }
-
-    const actualMonthlyRate = plan ? plan.price : monthlyRate;
-    const settings = await getOrCreateSettings();
-
-    let installationFee = 0;
-    if (includeInstallationFee !== false) {
-      const building = await getBuildingForApplication(application);
-      if (
-        building &&
-        building.installationFee !== undefined &&
-        building.installationFee > 0
-      ) {
-        installationFee = building.installationFee;
-        console.log(
-          `🏢 Using building-specific installation fee: ₱${installationFee} for ${building.buildingName}`,
-        );
-      } else {
-        installationFee = settings.installationFee || 1500;
-        console.log(`🌐 Using global installation fee: ₱${installationFee}`);
-      }
-    }
-
-    const startDate = new Date(serviceStartDate);
-    startDate.setHours(0, 0, 0, 0);
-
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const installationDay = startDate.getDate();
-    const billingCutoffDay = settings.billingCutoffDay || 24;
-    const isAfterCutoff = installationDay > billingCutoffDay;
-
-    const nextFullMonthStart = getStartOfNextMonth(startDate);
-    const nextFullMonthEnd = getEndOfMonth(nextFullMonthStart);
-    const nextBillingDate = getFirstDayOfMonth(nextFullMonthStart);
-
-    const adminId = req.user?._id?.toString();
-
-    const billingCycle = await BillingCycle.create(
-      [
-        {
-          applicationId: application.applicationId,
-          planId: plan?._id || null,
-          monthlyRate: actualMonthlyRate,
-          billingStartDate: nextFullMonthStart,
-          billingEndDate: nextFullMonthEnd,
-          nextBillingDate: nextBillingDate,
-          status: "active",
-          proRatedPaid: true,
-          proRatedPaidAt: new Date(),
-          currentProRatedAmount: 0,
-          actualBillableDays: 0,
-          manualBillStart: true,
-          manuallyStartedAt: new Date(),
-          installationFee: installationFee,
-          installationFeePaid: installationFee === 0,
-        },
-      ],
-      { session },
-    );
-
-    const generatedBills = [];
-    const missingMonths = [];
-    let totalMonthlyAmount = 0;
-    const unpaidMonths = [];
-
-    // ============================================================
-    // STEP 1: Generate pro-rated bill for the first month
-    // ============================================================
-    if (startDate.getDate() > 1) {
-      const daysInMonth = new Date(
-        startDate.getFullYear(),
-        startDate.getMonth() + 1,
-        0,
-      ).getDate();
-      const daysUsed = daysInMonth - startDate.getDate() + 1;
-      const dailyRate = (actualMonthlyRate * 12) / 365;
-
-      let proRatedAmount: number;
-      if (startDate.getDate() === 1 && daysInMonth === 31) {
-        proRatedAmount = actualMonthlyRate;
-      } else {
-        proRatedAmount = Math.round(dailyRate * daysUsed * 100) / 100;
-      }
-
-      const monthEnd = getEndOfMonth(startDate);
-
-      let dueDate: Date;
-      let description: string;
-
-      if (isAfterCutoff) {
-        const nextMonthStartForDue = getStartOfNextMonth(startDate);
-        dueDate = getDueDateForMonthly(nextMonthStartForDue, settings);
-        description = `Pro-rated payment from ${formatDateForDisplay(startDate)} to ${formatDateForDisplay(monthEnd)} (${daysUsed} days) - Due on 5th of next month`;
-      } else {
-        dueDate = getDueDateForProRatedBeforeCutoff(startDate, settings);
-        description = `Pro-rated payment from ${formatDateForDisplay(startDate)} to ${formatDateForDisplay(monthEnd)} (${daysUsed} days) - Due on 25th of current month`;
-      }
-
-      const proRatedBillData: any = {
-        billingCycleId: billingCycle[0]._id,
-        invoiceNumber: generateInvoiceNumber(),
-        billingPeriod: { start: startDate, end: monthEnd },
-        dueDate: dueDate,
-        items: [
-          {
-            description: description,
-            quantity: daysUsed,
-            rate: dailyRate,
-            amount: proRatedAmount,
-          },
-        ],
-        subtotal: proRatedAmount,
-        total: proRatedAmount,
-        status: "sent",
-        isProRated: true,
-        proRatedDays: daysUsed,
-        isInstallationBill: false,
-        installationFee: 0,
-        installationFeePaid: false,
-        applicationId: application.applicationId,
-        notes:
-          notes ||
-          `Generated from backdated billing starting ${formatDateForDisplay(startDate)}. PREPAID: Due on ${formatDateForDisplay(dueDate)}.`,
-      };
-
-      const newBill = await Billing.create([proRatedBillData], { session });
-      generatedBills.push(newBill[0]);
-      totalMonthlyAmount += proRatedAmount;
-
-      const invoice = await createInvoiceFromBilling(
-        newBill[0],
-        application,
-        settings,
-      );
-      if (invoice) {
-        await sendInvoiceWithPDFAttachment(invoice, application, adminId);
-      } else {
-        try {
-          await sendInvoiceToApplication(application, newBill[0], adminId);
-        } catch (emailError) {
-          console.error("Failed to send invoice email:", emailError);
-        }
-      }
-    }
-
-    // ============================================================
-    // STEP 2: Generate regular monthly bills from start date to today
-    // ============================================================
-    let currentBillDate = getStartOfNextMonth(startDate);
-
-    while (currentBillDate <= today) {
-      const billingStart = new Date(currentBillDate);
-      billingStart.setDate(1);
-      billingStart.setHours(0, 0, 0, 0);
-
-      const billingEnd = getEndOfMonth(billingStart);
-      const dueDate = getDueDateForMonthly(billingStart, settings);
-
-      const existingBill = await Billing.findOne({
-        applicationId: application.applicationId,
-        billingCycleId: billingCycle[0]._id,
-        "billingPeriod.start": billingStart,
-        isInstallationBill: false,
-      }).session(session);
-
-      if (!existingBill) {
-        let amount = actualMonthlyRate;
-        let isMissingBill = false;
-
-        if (currentBillDate < today) {
-          isMissingBill = true;
-        }
-
-        const billData: any = {
-          billingCycleId: billingCycle[0]._id,
-          invoiceNumber: generateInvoiceNumber(),
-          billingPeriod: { start: billingStart, end: billingEnd },
-          dueDate: dueDate,
-          items: [
-            {
-              description: isMissingBill
-                ? `[MISSING BILL - BACKDATED] Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)} (PREPAID)`
-                : `Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)} (PREPAID) - Generated on ${formatDateForDisplay(new Date())}`,
-              quantity: 1,
-              rate: amount,
-              amount: amount,
-            },
-          ],
-          subtotal: amount,
-          total: amount,
-          status: "sent",
-          isProRated: false,
-          proRatedDays: 0,
-          isInstallationBill: false,
-          installationFee: 0,
-          installationFeePaid: false,
-          applicationId: application.applicationId,
-          notes:
-            notes ||
-            (isMissingBill
-              ? `MISSING BILL - Generated from backdated billing. Original period: ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}. Customer started service on ${formatDateForDisplay(startDate)}. PREPAID: Generated on 1st, Due on 5th.`
-              : `Generated from backdated billing starting ${formatDateForDisplay(startDate)}. PREPAID: Generated on 1st, Due on 5th.`),
-        };
-
-        const newBill = await Billing.create([billData], { session });
-        generatedBills.push(newBill[0]);
-        totalMonthlyAmount += amount;
-
-        if (isMissingBill) {
-          missingMonths.push({
-            month: formatDateForDisplay(billingStart),
-            amount: amount,
-            billId: newBill[0]._id,
-            invoiceNumber: newBill[0].invoiceNumber,
-          });
-        }
-
-        const invoice = await createInvoiceFromBilling(
-          newBill[0],
-          application,
-          settings,
-        );
-        if (invoice) {
-          await sendInvoiceWithPDFAttachment(invoice, application, adminId);
-        } else {
-          try {
-            await sendInvoiceToApplication(application, newBill[0], adminId);
-          } catch (emailError) {
-            console.error("Failed to send invoice email:", emailError);
-          }
-        }
-      } else if (
-        existingBill.status !== "paid" &&
-        !existingBill.isInstallationBill
-      ) {
-        unpaidMonths.push({
-          month: formatDateForDisplay(billingStart),
-          amount: existingBill.total,
-          billId: existingBill._id,
-          invoiceNumber: existingBill.invoiceNumber,
-          status: existingBill.status,
-        });
-      }
-
-      currentBillDate.setMonth(currentBillDate.getMonth() + 1);
-    }
-
-    // ============================================================
-    // STEP 3: GENERATE NEXT MONTH'S BILL (NEXT MONTH FROM TODAY)
-    // ============================================================
-    const nextMonthFromToday = getStartOfNextMonth(today);
-    const nextMonthEnd = getEndOfMonth(nextMonthFromToday);
-    const nextMonthDueDate = getDueDateForMonthly(nextMonthFromToday, settings);
-
-    // Check if next month bill already exists
-    const nextMonthYear = nextMonthFromToday.getFullYear();
-    const nextMonthMonth = nextMonthFromToday.getMonth();
-
-    const existingNextMonthBill = await Billing.findOne({
-      applicationId: application.applicationId,
-      billingCycleId: billingCycle[0]._id,
-      isProRated: false,
-      isInstallationBill: false,
-      $expr: {
-        $and: [
-          { $eq: [{ $year: "$billingPeriod.start" }, nextMonthYear] },
-          { $eq: [{ $month: "$billingPeriod.start" }, nextMonthMonth + 1] },
-        ],
-      },
-    }).session(session);
-
-    if (!existingNextMonthBill) {
-      console.log(
-        `📅 Generating next month's bill for ${formatDateForDisplay(nextMonthFromToday)}`,
-      );
-
-      const nextMonthBillData: any = {
-        billingCycleId: billingCycle[0]._id,
-        invoiceNumber: generateInvoiceNumber(),
-        billingPeriod: { start: nextMonthFromToday, end: nextMonthEnd },
-        dueDate: nextMonthDueDate,
-        items: [
-          {
-            description: `Monthly Subscription - ${formatDateForDisplay(nextMonthFromToday)} to ${formatDateForDisplay(nextMonthEnd)} (PREPAID) - Generated on ${formatDateForDisplay(new Date())}`,
-            quantity: 1,
-            rate: actualMonthlyRate,
-            amount: actualMonthlyRate,
-          },
-        ],
-        subtotal: actualMonthlyRate,
-        total: actualMonthlyRate,
-        status: "sent",
-        isProRated: false,
-        proRatedDays: 0,
-        isInstallationBill: false,
-        installationFee: 0,
-        installationFeePaid: false,
-        applicationId: application.applicationId,
-        notes: `Next month's bill generated from backdated billing. Period: ${formatDateForDisplay(nextMonthFromToday)} to ${formatDateForDisplay(nextMonthEnd)}. PREPAID: Due on ${formatDateForDisplay(nextMonthDueDate)}.`,
-      };
-
-      const nextMonthBill = await Billing.create([nextMonthBillData], {
-        session,
-      });
-      generatedBills.push(nextMonthBill[0]);
-      totalMonthlyAmount += actualMonthlyRate;
-
-      const nextMonthInvoice = await createInvoiceFromBilling(
-        nextMonthBill[0],
-        application,
-        settings,
-      );
-      if (nextMonthInvoice) {
-        await sendInvoiceWithPDFAttachment(
-          nextMonthInvoice,
-          application,
-          adminId,
-        );
-      } else {
-        try {
-          await sendInvoiceToApplication(
-            application,
-            nextMonthBill[0],
-            adminId,
-          );
-        } catch (emailError) {
-          console.error("Failed to send next month invoice email:", emailError);
-        }
-      }
-
-      console.log(
-        `✅ Next month bill generated: ${nextMonthBill[0].invoiceNumber}`,
-      );
-    } else {
-      console.log(
-        `⏭️ Next month bill already exists: ${existingNextMonthBill.invoiceNumber}`,
-      );
-    }
-
-    // ============================================================
-    // STEP 4: Update billing cycle next billing date
-    // ============================================================
-    const lastGeneratedMonth = new Date(currentBillDate);
-    lastGeneratedMonth.setMonth(lastGeneratedMonth.getMonth() - 1);
-    lastGeneratedMonth.setDate(1);
-
-    const newNextBillingDate = getFirstDayOfMonth(
-      getStartOfNextMonth(lastGeneratedMonth),
-    );
-
-    await BillingCycle.updateOne(
-      { _id: billingCycle[0]._id },
-      { $set: { nextBillingDate: newNextBillingDate } },
-      { session },
-    );
-
-    // ============================================================
-    // STEP 5: Generate installation fee bill if applicable
-    // ============================================================
-    let installationBill = null;
-    if (installationFee > 0) {
-      installationBill = await createInstallationBill(
-        application,
-        billingCycle[0]._id,
-        installationFee,
-        settings,
-        session,
-        adminId,
-      );
-    }
-
-    // ============================================================
-    // STEP 6: Update application
-    // ============================================================
-    await Application.updateOne(
-      { applicationId: application.applicationId },
-      {
-        $set: {
-          billingStarted: true,
-          billingCycleId: billingCycle[0]._id,
-          serviceStatus: "active",
-          lastBillingAudit: new Date(),
-          installationFee: installationFee,
-          installationFeePaid: installationFee === 0,
-        },
-      },
-      { session },
-    );
-
-    await session.commitTransaction();
-    clearAllCache();
-
-    let message = `Backdated billing initialized for ${application.firstName} ${application.lastName}. Generated ${generatedBills.length} bill(s) totaling ₱${totalMonthlyAmount.toFixed(2)}.`;
-
-    if (installationBill) {
-      message += ` Installation fee of ₱${installationFee.toFixed(2)} billed separately (Invoice: ${installationBill.invoiceNumber}, due on ${formatDateForDisplay(installationBill.dueDate)}).`;
-    }
-
-    if (missingMonths.length > 0) {
-      message += ` Missing months found: ${missingMonths.map((m) => m.month).join(", ")}. Bills have been generated for these periods.`;
-    }
-
-    if (unpaidMonths.length > 0) {
-      message += ` Warning: ${unpaidMonths.length} unpaid monthly bill(s) detected from previous periods.`;
-    }
-
-    // Add note about next month bill
-    message += ` ✅ Next month's bill (${formatDateForDisplay(nextMonthFromToday)}) has been generated.`;
-
-    res.status(200).json({
-      success: true,
-      message: message,
-      data: {
-        billingCycle: billingCycle[0],
-        generatedMonthlyBills: generatedBills,
-        installationBill: installationBill,
-        totalMonthlyAmount: totalMonthlyAmount,
-        totalInstallationFee: installationFee,
-        billsCount: generatedBills.length,
-        serviceStartDate: startDate,
-        applicationId: application.applicationId,
-        missingMonths: missingMonths,
-        unpaidPreviousBills: unpaidMonths,
-        currentDate: today,
-        installationFee: installationFee,
-        installationFeeSeparate: installationBill !== null,
-        buildingInstallationFee: installationFee,
-        nextMonthBillGenerated: true,
-        nextMonthPeriod: {
-          start: nextMonthFromToday,
-          end: nextMonthEnd,
-          dueDate: nextMonthDueDate,
-        },
-      },
-    });
-  } catch (error) {
-    await session.abortTransaction();
-    next(error);
-  } finally {
-    session.endSession();
-  }
-};
+// ============================================================
+// EXPORTED FUNCTIONS - LAHAT IDINAGDAG!
+// ============================================================
 
 // ==================== GET BILLING SETTINGS ====================
 export const getBillingSettings = async (
@@ -1843,16 +719,6 @@ export const getBillingSettings = async (
   next: NextFunction,
 ) => {
   try {
-    const now = Date.now();
-    if (
-      billingSettingsCache &&
-      now - billingSettingsCacheTime < SETTINGS_CACHE_TTL
-    ) {
-      return res
-        .status(200)
-        .json({ success: true, data: billingSettingsCache });
-    }
-
     let settings = await BillingSettings.findOne().lean();
     if (!settings) {
       settings = await BillingSettings.create({
@@ -1874,10 +740,6 @@ export const getBillingSettings = async (
         earlyBillGenerationDays: 15,
       });
     }
-
-    billingSettingsCache = settings;
-    billingSettingsCacheTime = now;
-
     res.status(200).json({ success: true, data: settings });
   } catch (error) {
     next(error);
@@ -1898,8 +760,10 @@ export const updateBillingSettings = async (
       upsert: true,
     }).lean();
 
-    billingSettingsCache = null;
-    clearAllCache();
+    eventService.emitSettingsUpdated({
+      settings: settings,
+      updatedBy: req.user?._id,
+    });
 
     res.status(200).json({ success: true, data: settings });
   } catch (error) {
@@ -1907,7 +771,7 @@ export const updateBillingSettings = async (
   }
 };
 
-// ==================== GET BILLING SETTINGS FOR ADMIN UI ====================
+// ==================== GET BILLING SETTINGS ADMIN ====================
 export const getBillingSettingsAdmin = async (
   req: AuthRequest,
   res: Response,
@@ -1994,8 +858,10 @@ export const updateBillingSettingsAdmin = async (
       { new: true, upsert: true },
     ).lean();
 
-    billingSettingsCache = null;
-    clearAllCache();
+    eventService.emitSettingsUpdated({
+      settings: settings,
+      updatedBy: req.user?._id,
+    });
 
     res.status(200).json({
       success: true,
@@ -2016,11 +882,6 @@ export const getBillingSummaryAdmin = async (
   if (!checkAdmin(req, res)) return;
 
   try {
-    const now = Date.now();
-    if (summaryCache && now - summaryCache.timestamp < SUMMARY_CACHE_TTL) {
-      return res.status(200).json({ success: true, data: summaryCache.data });
-    }
-
     const [
       totalActiveCycles,
       totalPausedCycles,
@@ -2106,7 +967,6 @@ export const getBillingSummaryAdmin = async (
       },
     };
 
-    summaryCache = { data, timestamp: now };
     res.status(200).json({ success: true, data });
   } catch (error) {
     next(error);
@@ -2122,13 +982,6 @@ export const getAllBillingCycles = async (
   if (!checkAdmin(req, res)) return;
 
   try {
-    const cacheKey = getCacheKey(req.query);
-    const cached = billingCyclesCache.get(cacheKey);
-
-    if (cached && Date.now() - cached.timestamp < LIST_CACHE_TTL) {
-      return res.status(200).json({ success: true, data: cached.data });
-    }
-
     const cycles = await BillingCycle.find()
       .populate("planId", "name price")
       .sort({ createdAt: -1 })
@@ -2153,10 +1006,6 @@ export const getAllBillingCycles = async (
       }),
     );
 
-    billingCyclesCache.set(cacheKey, {
-      data: enrichedCycles,
-      timestamp: Date.now(),
-    });
     res.status(200).json({ success: true, data: enrichedCycles });
   } catch (error) {
     next(error);
@@ -2172,13 +1021,6 @@ export const getAllBills = async (
   if (!checkAdmin(req, res)) return;
 
   try {
-    const cacheKey = getCacheKey(req.query);
-    const cached = billsCache.get(cacheKey);
-
-    if (cached && Date.now() - cached.timestamp < LIST_CACHE_TTL) {
-      return res.status(200).json({ success: true, data: cached.data });
-    }
-
     const { status, type } = req.query;
     let query: any = {};
 
@@ -2211,376 +1053,9 @@ export const getAllBills = async (
       }),
     );
 
-    billsCache.set(cacheKey, { data: enrichedBills, timestamp: Date.now() });
     res.status(200).json({ success: true, data: enrichedBills });
   } catch (error) {
     next(error);
-  }
-};
-
-// ==================== MARK INSTALLATION BILL AS PAID - FIXED ====================
-export const markInstallationBillAsPaid = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  if (!checkAdmin(req, res)) return;
-
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const { billId } = req.params;
-    const { referenceNumber, notes } = req.body;
-    const adminId = req.user?._id;
-
-    const installationBill = await Billing.findById(billId).session(session);
-    if (!installationBill) {
-      await session.abortTransaction();
-      return res
-        .status(404)
-        .json({ success: false, message: "Bill not found" });
-    }
-
-    if (!installationBill.isInstallationBill) {
-      await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: "This is not an installation fee bill",
-      });
-    }
-
-    if (installationBill.status === "paid") {
-      await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: `Installation bill ${installationBill.invoiceNumber} is already paid`,
-      });
-    }
-
-    let application = null;
-    if (installationBill.applicationId) {
-      application = await Application.findOne({
-        applicationId: installationBill.applicationId,
-      }).session(session);
-    }
-
-    const paymentData: any = {
-      amount: installationBill.total,
-      paymentMethod: "manual",
-      paymentType: "installation",
-      status: "completed",
-      referenceNumber: referenceNumber || `INST-ADMIN-${Date.now()}`,
-      billingId: installationBill._id,
-      paymentDetails: {
-        gateway: "manual",
-        gatewayResponse: {
-          confirmedBy: adminId,
-          confirmedAt: new Date(),
-          notes: notes || "Installation fee marked as paid by admin",
-          applicationId: installationBill.applicationId,
-        },
-      },
-      paidAt: new Date(),
-    };
-
-    if (application) {
-      paymentData.applicationId = application.applicationId;
-    }
-
-    const payment = await Payment.create([paymentData], { session });
-
-    await Billing.updateOne(
-      { _id: installationBill._id },
-      {
-        $set: {
-          status: "paid",
-          paymentId: payment[0]._id,
-          paidAt: new Date(),
-          installationFeePaid: true,
-        },
-      },
-      { session },
-    );
-
-    const invoice = await Invoice.findOne({
-      billingId: installationBill._id,
-    }).session(session);
-    if (invoice) {
-      invoice.status = "paid";
-      invoice.paidAt = new Date();
-      invoice.paymentId = payment[0]._id;
-      await invoice.save({ session });
-    }
-
-    if (installationBill.billingCycleId) {
-      await BillingCycle.updateOne(
-        { _id: installationBill.billingCycleId },
-        {
-          $set: {
-            installationFeePaid: true,
-          },
-          $push: {
-            paymentHistory: {
-              billingId: installationBill._id,
-              amount: installationBill.total,
-              paidAt: new Date(),
-            },
-          },
-        },
-        { session },
-      );
-    }
-
-    if (application) {
-      await Application.updateOne(
-        { applicationId: application.applicationId },
-        {
-          $set: {
-            installationFeePaid: true,
-            installationFeePaidAt: new Date(),
-          },
-        },
-        { session },
-      );
-    }
-
-    await session.commitTransaction();
-
-    clearAllCache();
-
-    // Check if email alerts are enabled before sending confirmation
-    const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(
-      adminId?.toString(),
-    );
-
-    if (emailAlertsEnabled) {
-      const location = await getLocationFromEntity(application);
-      try {
-        if (application && application.email) {
-          const collectionEmail = getCollectionEmailByLocation(location);
-          const htmlContent = emailService.generatePaymentConfirmationHTML(
-            installationBill,
-            payment[0],
-            installationBill.total,
-            new Date().toLocaleString(),
-            location,
-            collectionEmail,
-            true,
-          );
-
-          await emailService.sendEmail(
-            application.email,
-            `Installation Fee Payment Confirmation - ${installationBill.invoiceNumber}`,
-            htmlContent,
-            true,
-            location,
-          );
-        }
-      } catch (emailError) {
-        console.error(
-          "Failed to send installation fee payment confirmation email:",
-          emailError,
-        );
-      }
-    } else {
-      console.log(
-        `🔕 Email alerts disabled - skipping payment confirmation email for installation bill ${installationBill.invoiceNumber}`,
-      );
-    }
-
-    res.status(200).json({
-      success: true,
-      message: `Installation bill ${installationBill.invoiceNumber} marked as paid`,
-      data: {
-        billId: installationBill._id,
-        invoiceNumber: installationBill.invoiceNumber,
-        paymentId: payment[0]._id,
-        installationFeePaid: true,
-      },
-    });
-  } catch (error) {
-    await session.abortTransaction();
-    next(error);
-  } finally {
-    session.endSession();
-  }
-};
-
-// ==================== MARK MONTHLY BILL AS PAID ====================
-export const markBillAsPaid = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  if (!checkAdmin(req, res)) return;
-
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const { billId } = req.params;
-    const { referenceNumber, notes } = req.body;
-    const adminId = req.user?._id;
-
-    const existingBill = await Billing.findById(billId).session(session);
-    if (!existingBill) {
-      await session.abortTransaction();
-      return res
-        .status(404)
-        .json({ success: false, message: "Bill not found" });
-    }
-
-    if (existingBill.isInstallationBill) {
-      await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message:
-          "Please use the installation bill payment endpoint for installation fees",
-      });
-    }
-
-    if (existingBill.status === "paid") {
-      await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: `Bill ${existingBill.invoiceNumber} is already paid`,
-      });
-    }
-
-    let application = null;
-
-    if (existingBill.applicationId) {
-      application = await Application.findOne({
-        applicationId: existingBill.applicationId,
-      }).lean();
-    }
-
-    const paymentData: any = {
-      amount: existingBill.total,
-      paymentMethod: "manual",
-      paymentType: "subscription",
-      status: "completed",
-      referenceNumber: referenceNumber || `ADMIN-${Date.now()}`,
-      billingId: existingBill._id,
-      paymentDetails: {
-        gateway: "manual",
-        gatewayResponse: {
-          confirmedBy: adminId,
-          confirmedAt: new Date(),
-          notes: notes || "Manually marked as paid",
-          applicationId: existingBill.applicationId,
-        },
-      },
-      paidAt: new Date(),
-    };
-
-    if (application) {
-      paymentData.applicationId = application.applicationId;
-    }
-
-    const payment = await Payment.create([paymentData], { session });
-
-    await Billing.updateOne(
-      { _id: existingBill._id },
-      {
-        $set: {
-          status: "paid",
-          paymentId: payment[0]._id,
-          paidAt: new Date(),
-        },
-      },
-      { session },
-    );
-
-    const invoice = await Invoice.findOne({
-      billingId: existingBill._id,
-    }).session(session);
-    if (invoice) {
-      invoice.status = "paid";
-      invoice.paidAt = new Date();
-      invoice.paymentId = payment[0]._id;
-      await invoice.save({ session });
-    }
-
-    const billingCycle = await BillingCycle.findById(
-      existingBill.billingCycleId,
-    ).session(session);
-    if (billingCycle) {
-      billingCycle.paymentHistory = billingCycle.paymentHistory || [];
-      billingCycle.paymentHistory.push({
-        billingId: existingBill._id,
-        amount: existingBill.total,
-        paidAt: new Date(),
-      });
-
-      if (existingBill.isProRated && !billingCycle.proRatedPaid) {
-        billingCycle.proRatedPaid = true;
-        billingCycle.proRatedPaidAt = new Date();
-        if (billingCycle.status === "pending_activation") {
-          billingCycle.status = "active";
-        }
-      }
-
-      await billingCycle.save({ session });
-    }
-
-    await session.commitTransaction();
-
-    // Check if email alerts are enabled before sending confirmation
-    const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(
-      adminId?.toString(),
-    );
-
-    if (emailAlertsEnabled) {
-      const location = await getLocationFromEntity(application);
-
-      try {
-        if (application && application.email) {
-          const collectionEmail = getCollectionEmailByLocation(location);
-          const htmlContent = emailService.generatePaymentConfirmationHTML(
-            existingBill,
-            payment[0],
-            existingBill.total,
-            new Date().toLocaleString(),
-            location,
-            collectionEmail,
-            false,
-          );
-
-          await emailService.sendEmail(
-            application.email,
-            `Payment Confirmation - ${existingBill.invoiceNumber}`,
-            htmlContent,
-            true,
-            location,
-          );
-        }
-      } catch (emailError) {
-        console.error("Failed to send payment confirmation email:", emailError);
-      }
-    } else {
-      console.log(
-        `🔕 Email alerts disabled - skipping payment confirmation email for bill ${existingBill.invoiceNumber}`,
-      );
-    }
-
-    clearAllCache();
-
-    res.status(200).json({
-      success: true,
-      message: `Bill ${existingBill.invoiceNumber} marked as paid`,
-      data: {
-        billId: existingBill._id,
-        invoiceNumber: existingBill.invoiceNumber,
-        paymentId: payment[0]._id,
-      },
-    });
-  } catch (error) {
-    await session.abortTransaction();
-    next(error);
-  } finally {
-    session.endSession();
   }
 };
 
@@ -2708,1225 +1183,6 @@ export const getPendingActivations = async (
     res.status(200).json({ success: true, data: enrichedCycles });
   } catch (error) {
     next(error);
-  }
-};
-
-// ==================== CONFIRM PRO-RATED PAYMENT ====================
-export const confirmProRatedPayment = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  if (!checkAdmin(req, res)) return;
-
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const { applicationId, paymentDetails } = req.body;
-    const adminId = req.user?._id;
-
-    if (!applicationId) {
-      return res
-        .status(400)
-        .json({ success: false, message: "applicationId is required" });
-    }
-
-    const application = await Application.findOne({ applicationId }).lean();
-    if (!application) {
-      await session.abortTransaction();
-      return res
-        .status(404)
-        .json({ success: false, message: "Application not found" });
-    }
-
-    const billingCycle = await BillingCycle.findOne({
-      applicationId: application.applicationId,
-      status: "pending_activation",
-    })
-      .populate("planId")
-      .lean();
-
-    if (!billingCycle) {
-      await session.abortTransaction();
-      return res
-        .status(404)
-        .json({ success: false, message: "Billing cycle not found" });
-    }
-
-    const proRatedBill = await Billing.findOne({
-      applicationId: application.applicationId,
-      billingCycleId: billingCycle._id,
-      isProRated: true,
-      status: "pending_confirmation",
-      isInstallationBill: false,
-    }).lean();
-
-    if (!proRatedBill) {
-      await session.abortTransaction();
-      return res
-        .status(404)
-        .json({ success: false, message: "Pro-rated bill not found" });
-    }
-
-    await Billing.updateOne(
-      { _id: proRatedBill._id },
-      { $set: { status: "paid", paidAt: new Date() } },
-      { session },
-    );
-
-    const invoice = await Invoice.findOne({
-      billingId: proRatedBill._id,
-    }).session(session);
-    if (invoice) {
-      invoice.status = "paid";
-      invoice.paidAt = new Date();
-      await invoice.save({ session });
-    }
-
-    const paymentData: any = {
-      amount: proRatedBill.total,
-      paymentMethod: "manual",
-      paymentType: "subscription",
-      status: "completed",
-      referenceNumber: `PRO-${Date.now()}`,
-      billingId: proRatedBill._id,
-      paymentDetails: {
-        gateway: "manual",
-        gatewayResponse: paymentDetails,
-        notes: "Pro-rated payment confirmed",
-      },
-      paidAt: new Date(),
-      applicationId: application.applicationId,
-    };
-
-    const payment = await Payment.create([paymentData], { session });
-
-    await Billing.updateOne(
-      { _id: proRatedBill._id },
-      { $set: { paymentId: payment[0]._id } },
-      { session },
-    );
-
-    await BillingCycle.updateOne(
-      { _id: billingCycle._id },
-      {
-        $set: {
-          proRatedPaid: true,
-          proRatedPaidAt: new Date(),
-          status: "active",
-        },
-      },
-      { session },
-    );
-
-    await session.commitTransaction();
-
-    // Check if email alerts are enabled before sending confirmation
-    const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(
-      adminId?.toString(),
-    );
-
-    if (emailAlertsEnabled) {
-      const location = await getLocationFromEntity(application);
-
-      if (application.email) {
-        try {
-          const collectionEmail = getCollectionEmailByLocation(location);
-          const htmlContent = emailService.generatePaymentConfirmationHTML(
-            proRatedBill,
-            payment[0],
-            proRatedBill.total,
-            new Date().toLocaleString(),
-            location,
-            collectionEmail,
-            false,
-          );
-
-          await emailService.sendEmail(
-            application.email,
-            "Pro-rated Payment Confirmed",
-            htmlContent,
-            true,
-            location,
-          );
-        } catch (emailError) {
-          console.error(
-            "Failed to send pro-rated payment confirmation email:",
-            emailError,
-          );
-        }
-      }
-    } else {
-      console.log(
-        `🔕 Email alerts disabled - skipping pro-rated payment confirmation email`,
-      );
-    }
-
-    clearAllCache();
-    res
-      .status(200)
-      .json({ success: true, message: "Pro-rated payment confirmed" });
-  } catch (error) {
-    await session.abortTransaction();
-    next(error);
-  } finally {
-    session.endSession();
-  }
-};
-
-// ==================== START MONTHLY BILLING ====================
-export const startMonthlyBilling = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  if (!checkAdmin(req, res)) return;
-
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const { applicationId } = req.body;
-    const adminId = req.user?._id?.toString();
-
-    if (!applicationId) {
-      return res
-        .status(400)
-        .json({ success: false, message: "applicationId is required" });
-    }
-
-    const application = await Application.findOne({ applicationId })
-      .populate("planId")
-      .lean();
-
-    if (!application) {
-      await session.abortTransaction();
-      return res
-        .status(404)
-        .json({ success: false, message: "Application not found" });
-    }
-
-    const billingCycle = await BillingCycle.findOne({
-      applicationId: application.applicationId,
-      status: "pending_activation",
-      proRatedPaid: true,
-    })
-      .populate("planId")
-      .lean();
-
-    if (!billingCycle) {
-      await session.abortTransaction();
-      return res
-        .status(404)
-        .json({ success: false, message: "Billing cycle not found" });
-    }
-
-    const settings = await getOrCreateSettings();
-
-    const today = new Date();
-    let billingStart = getFirstDayOfMonth(today);
-    billingStart.setHours(0, 0, 0, 0);
-
-    const billingEnd = getEndOfMonth(billingStart);
-
-    const plan = billingCycle.planId as any;
-    const monthlyRate = plan.price;
-
-    const monthlyBill = await createMonthlyBill(
-      application,
-      billingCycle._id,
-      billingStart,
-      billingEnd,
-      monthlyRate,
-      settings,
-      session,
-      adminId,
-    );
-
-    const nextDate = getFirstDayOfMonth(getStartOfNextMonth(billingStart));
-
-    await BillingCycle.updateOne(
-      { _id: billingCycle._id },
-      {
-        $set: {
-          status: "active",
-          manualBillStart: true,
-          manuallyStartedAt: new Date(),
-          nextBillingDate: nextDate,
-        },
-      },
-      { session },
-    );
-
-    await session.commitTransaction();
-
-    clearAllCache();
-    res.status(200).json({
-      success: true,
-      message: "Monthly billing started",
-      data: { firstMonthlyBill: monthlyBill },
-    });
-  } catch (error) {
-    await session.abortTransaction();
-    next(error);
-  } finally {
-    session.endSession();
-  }
-};
-
-// ==================== STOP BILLING ====================
-export const stopBilling = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  if (!checkAdmin(req, res)) return;
-
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const { applicationId, reason } = req.body;
-    const adminId = req.user?._id?.toString();
-
-    if (!applicationId) {
-      return res
-        .status(400)
-        .json({ success: false, message: "applicationId is required" });
-    }
-
-    const application = await Application.findOne({ applicationId }).lean();
-    if (!application) {
-      await session.abortTransaction();
-      return res
-        .status(404)
-        .json({ success: false, message: "Application not found" });
-    }
-
-    const billingCycle = await BillingCycle.findOne({
-      applicationId: application.applicationId,
-      status: { $in: ["active", "paused"] },
-    }).lean();
-
-    if (!billingCycle) {
-      await session.abortTransaction();
-      return res
-        .status(404)
-        .json({ success: false, message: "No active billing cycle found" });
-    }
-
-    await BillingCycle.updateOne(
-      { _id: billingCycle._id },
-      {
-        $set: {
-          status: "cancelled",
-          billingEndDate: new Date(),
-          disconnectReason: reason,
-        },
-      },
-      { session },
-    );
-
-    await Application.updateOne(
-      { applicationId: application.applicationId },
-      { $set: { status: "rejected" } },
-      { session },
-    );
-
-    await session.commitTransaction();
-    clearAllCache();
-
-    // Check if email alerts are enabled before sending notification
-    const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(adminId);
-
-    if (emailAlertsEnabled) {
-      const location = await getLocationFromEntity(application);
-      try {
-        await emailService.sendEmail(
-          application.email,
-          "Your Service Has Been Stopped - Mister Fyber",
-          emailService.generateServiceStatusHTML(
-            application.firstName,
-            application.lastName,
-            "stopped",
-            `Your internet service has been stopped. Reason: ${reason || "Service terminated"}.`,
-          ),
-          true,
-          location,
-        );
-      } catch (emailError) {
-        console.error("Failed to send stop notification email:", emailError);
-      }
-    } else {
-      console.log(
-        `🔕 Email alerts disabled - skipping stop notification email`,
-      );
-    }
-
-    res.status(200).json({
-      success: true,
-      message: `Billing stopped for ${application.firstName} ${application.lastName}`,
-    });
-  } catch (error) {
-    await session.abortTransaction();
-    next(error);
-  } finally {
-    session.endSession();
-  }
-};
-
-// ==================== PAUSE BILLING ====================
-export const pauseBilling = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  if (!checkAdmin(req, res)) return;
-
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const { applicationId, reason, pauseUntilDate } = req.body;
-    const adminId = req.user?._id?.toString();
-
-    if (!applicationId) {
-      return res
-        .status(400)
-        .json({ success: false, message: "applicationId is required" });
-    }
-
-    const application = await Application.findOne({ applicationId }).lean();
-    if (!application) {
-      await session.abortTransaction();
-      return res
-        .status(404)
-        .json({ success: false, message: "Application not found" });
-    }
-
-    const billingCycle = await BillingCycle.findOne({
-      applicationId: application.applicationId,
-      status: { $in: ["active", "pending_activation"] },
-    }).lean();
-
-    if (!billingCycle) {
-      await session.abortTransaction();
-      return res.status(404).json({
-        success: false,
-        message: "No active billing cycle found to pause.",
-      });
-    }
-
-    const unpaidMonthlyBills = await Billing.find({
-      applicationId: application.applicationId,
-      status: { $in: ["sent", "overdue", "pending_confirmation"] },
-      isInstallationBill: false,
-    }).lean();
-
-    if (unpaidMonthlyBills.length > 0) {
-      await session.abortTransaction();
-      const totalAmount = unpaidMonthlyBills.reduce(
-        (sum, b) => sum + (b.total || 0),
-        0,
-      );
-      return res.status(400).json({
-        success: false,
-        message: `Cannot pause service. Customer has ${unpaidMonthlyBills.length} unpaid monthly bill(s) totaling ₱${totalAmount.toFixed(2)}.`,
-        data: { unpaidMonthlyBills, totalAmount },
-      });
-    }
-
-    const pauseDate = new Date();
-    await BillingCycle.updateOne(
-      { _id: billingCycle._id },
-      {
-        $set: {
-          status: "paused",
-          pausedAt: pauseDate,
-          pauseReason: reason || "Customer requested pause",
-          pauseUntil: pauseUntilDate ? new Date(pauseUntilDate) : undefined,
-        },
-      },
-      { session },
-    );
-
-    await Application.updateOne(
-      { applicationId: application.applicationId },
-      { $set: { status: "pending" } },
-      { session },
-    );
-
-    await session.commitTransaction();
-
-    // Check if email alerts are enabled before sending notification
-    const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(adminId);
-
-    if (emailAlertsEnabled) {
-      const location = await getLocationFromEntity(application);
-
-      try {
-        await emailService.sendEmail(
-          application.email,
-          "Your Service Has Been Paused - Mister Fyber",
-          emailService.generateServiceStatusHTML(
-            application.firstName,
-            application.lastName,
-            "paused",
-            `Your internet service has been paused. Reason: ${reason || "Customer requested pause"}.`,
-          ),
-          true,
-          location,
-        );
-      } catch (emailError) {
-        console.error("Failed to send pause notification email:", emailError);
-      }
-    } else {
-      console.log(
-        `🔕 Email alerts disabled - skipping pause notification email`,
-      );
-    }
-
-    clearAllCache();
-
-    res.status(200).json({
-      success: true,
-      message: `Service paused for ${application.firstName} ${application.lastName}`,
-      data: {
-        customerName: `${application.firstName} ${application.lastName}`,
-        customerEmail: application.email,
-        pausedAt: pauseDate,
-      },
-    });
-  } catch (error) {
-    await session.abortTransaction();
-    next(error);
-  } finally {
-    session.endSession();
-  }
-};
-
-// ==================== RESUME BILLING ====================
-export const resumeBilling = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  if (!checkAdmin(req, res)) return;
-
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const { applicationId } = req.body;
-    const adminId = req.user?._id?.toString();
-
-    if (!applicationId) {
-      return res
-        .status(400)
-        .json({ success: false, message: "applicationId is required" });
-    }
-
-    const application = await Application.findOne({ applicationId })
-      .populate("planId")
-      .lean();
-
-    if (!application) {
-      await session.abortTransaction();
-      return res
-        .status(404)
-        .json({ success: false, message: "Application not found" });
-    }
-
-    const billingCycle = await BillingCycle.findOne({
-      applicationId: application.applicationId,
-      status: "paused",
-    }).lean();
-
-    if (!billingCycle) {
-      await session.abortTransaction();
-      return res.status(404).json({
-        success: false,
-        message: "No paused billing cycle found for this customer.",
-      });
-    }
-
-    const pendingMonthlyBills = await Billing.find({
-      applicationId: application.applicationId,
-      status: { $in: ["sent", "overdue", "pending_confirmation"] },
-      isInstallationBill: false,
-    }).lean();
-
-    if (pendingMonthlyBills.length > 0) {
-      await session.abortTransaction();
-      const totalAmount = pendingMonthlyBills.reduce(
-        (sum, b) => sum + (b.total || 0),
-        0,
-      );
-      return res.status(400).json({
-        success: false,
-        message: `Cannot resume service. Customer has ${pendingMonthlyBills.length} unpaid monthly bill(s) totaling ₱${totalAmount.toFixed(2)}.`,
-      });
-    }
-
-    const resumeDate = new Date();
-    const nextBillingDate = getFirstDayOfMonth(getStartOfNextMonth(resumeDate));
-
-    await BillingCycle.updateOne(
-      { _id: billingCycle._id },
-      {
-        $set: {
-          status: "active",
-          resumedAt: resumeDate,
-          nextBillingDate: nextBillingDate,
-          pausedAt: undefined,
-          pauseReason: undefined,
-          pauseUntil: undefined,
-        },
-      },
-      { session },
-    );
-
-    await Application.updateOne(
-      { applicationId: application.applicationId },
-      { $set: { status: "approved" } },
-      { session },
-    );
-
-    await session.commitTransaction();
-
-    // Check if email alerts are enabled before sending notification
-    const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(adminId);
-
-    if (emailAlertsEnabled) {
-      const location = await getLocationFromEntity(application);
-
-      try {
-        await emailService.sendEmail(
-          application.email,
-          "Your Service Has Been Resumed - Mister Fyber",
-          emailService.generateServiceStatusHTML(
-            application.firstName,
-            application.lastName,
-            "resumed",
-            "Your internet service has been resumed.",
-          ),
-          true,
-          location,
-        );
-      } catch (emailError) {
-        console.error("Failed to send resume notification email:", emailError);
-      }
-    } else {
-      console.log(
-        `🔕 Email alerts disabled - skipping resume notification email`,
-      );
-    }
-
-    clearAllCache();
-
-    res.status(200).json({
-      success: true,
-      message: `Service resumed for ${application.firstName} ${application.lastName}`,
-      data: {
-        customerName: `${application.firstName} ${application.lastName}`,
-        customerEmail: application.email,
-        resumedAt: resumeDate,
-        nextBillingDate,
-      },
-    });
-  } catch (error) {
-    await session.abortTransaction();
-    next(error);
-  } finally {
-    session.endSession();
-  }
-};
-
-// ==================== DISCONNECT CLIENT ====================
-export const disconnectClient = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  if (!checkAdmin(req, res)) return;
-
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const { applicationId } = req.body;
-    const adminId = req.user?._id?.toString();
-
-    if (!applicationId) {
-      return res
-        .status(400)
-        .json({ success: false, message: "applicationId is required" });
-    }
-
-    const application = await Application.findOne({ applicationId }).lean();
-    if (!application) {
-      await session.abortTransaction();
-      return res
-        .status(404)
-        .json({ success: false, message: "Application not found" });
-    }
-
-    await Application.updateOne(
-      { applicationId: application.applicationId },
-      { $set: { status: "rejected" } },
-      { session },
-    );
-
-    await session.commitTransaction();
-    clearAllCache();
-
-    // Check if email alerts are enabled before sending notification
-    const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(adminId);
-
-    if (emailAlertsEnabled) {
-      const location = await getLocationFromEntity(application);
-      try {
-        await emailService.sendEmail(
-          application.email,
-          "Your Service Has Been Disconnected - Mister Fyber",
-          emailService.generateServiceStatusHTML(
-            application.firstName,
-            application.lastName,
-            "disconnected",
-            "Your internet service has been disconnected.",
-          ),
-          true,
-          location,
-        );
-      } catch (emailError) {
-        console.error(
-          "Failed to send disconnect notification email:",
-          emailError,
-        );
-      }
-    } else {
-      console.log(
-        `🔕 Email alerts disabled - skipping disconnect notification email`,
-      );
-    }
-
-    res.status(200).json({ success: true, message: "Service disconnected" });
-  } catch (error) {
-    await session.abortTransaction();
-    next(error);
-  } finally {
-    session.endSession();
-  }
-};
-
-// ==================== RECONNECT CLIENT ====================
-export const reconnectClient = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  if (!checkAdmin(req, res)) return;
-
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const { applicationId } = req.body;
-    const adminId = req.user?._id?.toString();
-
-    if (!applicationId) {
-      return res
-        .status(400)
-        .json({ success: false, message: "applicationId is required" });
-    }
-
-    const application = await Application.findOne({ applicationId }).lean();
-    if (!application) {
-      await session.abortTransaction();
-      return res
-        .status(404)
-        .json({ success: false, message: "Application not found" });
-    }
-
-    await Application.updateOne(
-      { applicationId: application.applicationId },
-      { $set: { status: "approved" } },
-      { session },
-    );
-
-    await session.commitTransaction();
-    clearAllCache();
-
-    // Check if email alerts are enabled before sending notification
-    const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(adminId);
-
-    if (emailAlertsEnabled) {
-      const location = await getLocationFromEntity(application);
-      try {
-        await emailService.sendEmail(
-          application.email,
-          "Your Service Has Been Reconnected - Mister Fyber",
-          emailService.generateServiceStatusHTML(
-            application.firstName,
-            application.lastName,
-            "reconnected",
-            "Your internet service has been reconnected.",
-          ),
-          true,
-          location,
-        );
-      } catch (emailError) {
-        console.error(
-          "Failed to send reconnect notification email:",
-          emailError,
-        );
-      }
-    } else {
-      console.log(
-        `🔕 Email alerts disabled - skipping reconnect notification email`,
-      );
-    }
-
-    res.status(200).json({ success: true, message: "Service reconnected" });
-  } catch (error) {
-    await session.abortTransaction();
-    next(error);
-  } finally {
-    session.endSession();
-  }
-};
-
-// ==================== DELETE BILLING CYCLE ====================
-export const deleteBillingCycle = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  if (!checkAdmin(req, res)) return;
-
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const { billingCycleId, applicationId } = req.body;
-
-    if (!billingCycleId) {
-      await session.abortTransaction();
-      return res
-        .status(400)
-        .json({ success: false, message: "Billing cycle ID is required" });
-    }
-
-    const billingCycle =
-      await BillingCycle.findById(billingCycleId).session(session);
-    if (!billingCycle) {
-      await session.abortTransaction();
-      return res
-        .status(404)
-        .json({ success: false, message: "Billing cycle not found" });
-    }
-
-    await Invoice.deleteMany({ billingCycleId: billingCycle._id }, { session });
-    await Billing.deleteMany({ billingCycleId: billingCycle._id }, { session });
-    await BillingCycle.deleteOne({ _id: billingCycle._id }, { session });
-
-    if (applicationId) {
-      await Application.updateOne(
-        { applicationId: applicationId },
-        { $set: { billingStarted: false }, $unset: { billingCycleId: "" } },
-        { session },
-      );
-    }
-
-    await session.commitTransaction();
-    clearAllCache();
-
-    res
-      .status(200)
-      .json({ success: true, message: "Billing cycle deleted successfully" });
-  } catch (error) {
-    await session.abortTransaction();
-    next(error);
-  } finally {
-    session.endSession();
-  }
-};
-
-// ==================== AUTO-GENERATE MONTHLY BILLS ====================
-export const autoGenerateMonthlyBills = async (
-  req?: AuthRequest,
-  res?: Response,
-) => {
-  try {
-    const settings = await getOrCreateSettings();
-    if (!settings.autoGenerateBills) {
-      if (res)
-        return res.status(200).json({
-          success: true,
-          message: "Auto-generate bills is disabled",
-        });
-      return;
-    }
-
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const nextMonth = getStartOfNextMonth(today);
-    const nextMonthEnd = getEndOfMonth(nextMonth);
-    const dueDate = getDueDateForMonthly(nextMonth, settings);
-
-    console.log(
-      `📅 Generating bills for ${formatDateForDisplay(nextMonth)} (Next month)`,
-    );
-    console.log(`📅 Today is ${formatDateForDisplay(today)}`);
-
-    const billingCycles = await BillingCycle.find({
-      status: "active",
-      proRatedPaid: true,
-      applicationId: { $exists: true, $ne: null },
-    })
-      .populate("planId")
-      .lean();
-
-    let generatedCount = 0;
-    let skippedCount = 0;
-    let alreadyGeneratedCount = 0;
-
-    for (const cycle of billingCycles) {
-      if (!cycle.applicationId) {
-        skippedCount++;
-        continue;
-      }
-
-      const application = await Application.findOne({
-        applicationId: cycle.applicationId,
-      }).lean();
-
-      if (!application) {
-        skippedCount++;
-        continue;
-      }
-
-      const plan = cycle.planId as any;
-      if (!plan) {
-        skippedCount++;
-        continue;
-      }
-
-      const nextMonthYear = nextMonth.getFullYear();
-      const nextMonthMonth = nextMonth.getMonth();
-
-      const existingBill = await Billing.findOne({
-        applicationId: cycle.applicationId,
-        billingCycleId: cycle._id,
-        isProRated: false,
-        isInstallationBill: false,
-        $expr: {
-          $and: [
-            { $eq: [{ $year: "$billingPeriod.start" }, nextMonthYear] },
-            { $eq: [{ $month: "$billingPeriod.start" }, nextMonthMonth + 1] },
-          ],
-        },
-      }).lean();
-
-      if (!existingBill) {
-        await createMonthlyBill(
-          application,
-          cycle._id,
-          nextMonth,
-          nextMonthEnd,
-          plan.price,
-          settings,
-          undefined,
-          undefined,
-        );
-        generatedCount++;
-        console.log(
-          `✅ Generated bill for ${application.firstName} ${application.lastName} - ${plan.price} for ${formatDateForDisplay(nextMonth)}`,
-        );
-      } else {
-        alreadyGeneratedCount++;
-        console.log(
-          `⏭️ Bill already exists for ${application.firstName} ${application.lastName} for ${formatDateForDisplay(nextMonth)}`,
-        );
-      }
-    }
-
-    clearAllCache();
-    console.log(
-      `📊 Bill generation complete: ${generatedCount} generated, ${alreadyGeneratedCount} already existed, ${skippedCount} skipped`,
-    );
-
-    if (res) {
-      res.status(200).json({
-        success: true,
-        message: `Generated ${generatedCount} bills for ${formatDateForDisplay(nextMonth)} (Due on ${formatDateForDisplay(dueDate)})`,
-        data: {
-          generated: generatedCount,
-          alreadyGenerated: alreadyGeneratedCount,
-          skipped: skippedCount,
-          billingMonth: formatDateForDisplay(nextMonth),
-          dueDate: formatDateForDisplay(dueDate),
-          generationDate: formatDateForDisplay(today),
-        },
-      });
-    }
-  } catch (error) {
-    console.error("Auto-generate monthly bills error:", error);
-    if (res) {
-      res.status(500).json({
-        success: false,
-        message: "Failed to generate bills",
-        error: String(error),
-      });
-    }
-  }
-};
-
-// ==================== FIXED: MANUALLY GENERATE EARLY BILL ====================
-export const manuallyGenerateEarlyBill = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  if (!checkAdmin(req, res)) return;
-
-  try {
-    const { applicationId, monthOffset } = req.body;
-    const adminId = req.user?._id?.toString();
-
-    if (!applicationId) {
-      return res.status(400).json({
-        success: false,
-        message: "applicationId is required",
-      });
-    }
-
-    const settings = await getOrCreateSettings();
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const offset = monthOffset || 1;
-
-    const currentMonthStart = getFirstDayOfMonth(today);
-
-    const targetMonth = new Date(currentMonthStart);
-    targetMonth.setMonth(currentMonthStart.getMonth() + offset);
-    targetMonth.setDate(1);
-    targetMonth.setHours(0, 0, 0, 0);
-
-    const targetMonthStart = getFirstDayOfMonth(targetMonth);
-    const targetMonthEnd = getEndOfMonth(targetMonth);
-    const dueDate = getDueDateForMonthly(targetMonthStart, settings);
-
-    console.log(`📅 Today is ${formatDateForDisplay(today)}`);
-    console.log(
-      `📅 Current month start: ${formatDateForDisplay(currentMonthStart)}`,
-    );
-    console.log(
-      `📅 Target month (offset ${offset}): ${formatDateForDisplay(targetMonthStart)}`,
-    );
-    console.log(`📅 Due date: ${formatDateForDisplay(dueDate)}`);
-
-    const application = await Application.findOne({ applicationId })
-      .populate("planId")
-      .lean();
-
-    if (!application) {
-      return res.status(404).json({
-        success: false,
-        message: "Application not found",
-      });
-    }
-
-    const billingCycle = await BillingCycle.findOne({
-      applicationId: application.applicationId,
-      status: "active",
-      proRatedPaid: true,
-    })
-      .populate("planId")
-      .lean();
-
-    if (!billingCycle) {
-      return res.status(404).json({
-        success: false,
-        message: "No active billing cycle found for this application",
-      });
-    }
-
-    const plan = billingCycle.planId as any;
-    if (!plan) {
-      return res.status(400).json({
-        success: false,
-        message: "No plan found for this billing cycle",
-      });
-    }
-
-    const targetYear = targetMonthStart.getFullYear();
-    const targetMonthNum = targetMonthStart.getMonth();
-
-    const existingBill = await Billing.findOne({
-      applicationId: application.applicationId,
-      billingCycleId: billingCycle._id,
-      isProRated: false,
-      isInstallationBill: false,
-      $expr: {
-        $and: [
-          { $eq: [{ $year: "$billingPeriod.start" }, targetYear] },
-          { $eq: [{ $month: "$billingPeriod.start" }, targetMonthNum + 1] },
-        ],
-      },
-    }).lean();
-
-    if (existingBill) {
-      return res.status(400).json({
-        success: false,
-        message: `Bill already exists for ${formatDateForDisplay(targetMonthStart)}`,
-        data: {
-          existingBill,
-          invoiceNumber: existingBill.invoiceNumber,
-        },
-      });
-    }
-
-    const newBill = await createMonthlyBill(
-      application,
-      billingCycle._id,
-      targetMonthStart,
-      targetMonthEnd,
-      plan.price,
-      settings,
-      undefined,
-      adminId,
-    );
-
-    if (offset > 1) {
-      const nextBilling = getFirstDayOfMonth(
-        new Date(
-          targetMonthStart.getFullYear(),
-          targetMonthStart.getMonth() + 1,
-          1,
-        ),
-      );
-      await BillingCycle.updateOne(
-        { _id: billingCycle._id },
-        { $set: { nextBillingDate: nextBilling } },
-      );
-    }
-
-    clearAllCache();
-
-    res.status(200).json({
-      success: true,
-      message: `✅ Early bill generated for ${application.firstName} ${application.lastName} for ${formatDateForDisplay(targetMonthStart)} (Due on ${formatDateForDisplay(dueDate)})`,
-      data: {
-        bill: newBill,
-        billingMonth: formatDateForDisplay(targetMonthStart),
-        dueDate: formatDateForDisplay(dueDate),
-        applicationName: `${application.firstName} ${application.lastName}`,
-        applicationId: application.applicationId,
-        invoiceNumber: newBill.invoiceNumber,
-        amount: plan.price,
-        monthOffset: offset,
-      },
-    });
-  } catch (error) {
-    console.error("Error manually generating early bill:", error);
-    next(error);
-  }
-};
-
-// ==================== CHECK FOR NEW CUSTOMERS ====================
-export const checkForNewCustomers = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  try {
-    const newCustomers = await Application.find({
-      status: "approved",
-      billingStarted: { $ne: true },
-    })
-      .select(
-        "firstName lastName email applicationId planId buildingName phoneNumber",
-      )
-      .populate("planId", "name price")
-      .lean();
-
-    res.status(200).json({
-      success: true,
-      data: newCustomers,
-      total: newCustomers.length,
-    });
-  } catch (error) {
-    console.error("Error checking for new customers:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to check for new customers",
-    });
-  }
-};
-
-// ==================== AUTO SUSPEND OVERDUE ====================
-export const autoSuspendOverdue = async (req?: AuthRequest, res?: Response) => {
-  try {
-    const settings = await getOrCreateSettings();
-    if (!settings.autoSuspendOnNonPayment) {
-      if (res)
-        return res
-          .status(200)
-          .json({ success: true, message: "Auto-suspend is disabled" });
-      return;
-    }
-
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const gracePeriodDate = new Date(today);
-    gracePeriodDate.setDate(
-      gracePeriodDate.getDate() - settings.gracePeriodDays,
-    );
-
-    const overdueMonthlyBills = await Billing.find({
-      status: "overdue",
-      dueDate: { $lt: gracePeriodDate },
-      suspensionNotified: { $ne: true },
-      applicationId: { $exists: true, $ne: null },
-      isInstallationBill: false,
-    }).lean();
-
-    let suspendedCount = 0;
-
-    for (const bill of overdueMonthlyBills) {
-      if (!bill.applicationId) continue;
-
-      await Billing.updateOne(
-        { _id: bill._id },
-        { $set: { suspensionNotified: true } },
-      );
-
-      await Application.updateOne(
-        { applicationId: bill.applicationId },
-        { $set: { status: "suspended" } },
-      );
-
-      suspendedCount++;
-    }
-
-    clearAllCache();
-    if (res) {
-      res.status(200).json({
-        success: true,
-        message: `Suspended ${suspendedCount} customers`,
-      });
-    }
-  } catch (error) {
-    console.error("Auto-suspend overdue error:", error);
-    if (res) {
-      res
-        .status(500)
-        .json({ success: false, message: "Failed to suspend customers" });
-    }
   }
 };
 
@@ -4058,165 +1314,7 @@ export const getApplicationBillingHistory = async (
   }
 };
 
-// ==================== SUBMIT PRO-RATED PAYMENT ====================
-export const submitProRatedPayment = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const { billId, referenceNumber, notes } = req.body;
-
-    const bill = await Billing.findOne({
-      _id: billId,
-      isInstallationBill: false,
-    });
-    if (!bill)
-      return res
-        .status(404)
-        .json({ success: false, message: "Bill not found" });
-    if (bill.status === "paid")
-      return res
-        .status(400)
-        .json({ success: false, message: "Bill already paid" });
-    if (bill.status === "pending_confirmation")
-      return res
-        .status(400)
-        .json({ success: false, message: "Payment already pending" });
-
-    await Billing.updateOne(
-      { _id: bill._id },
-      { $set: { status: "pending_confirmation" } },
-      { session },
-    );
-
-    const payment = await Payment.create(
-      [
-        {
-          amount: bill.total,
-          paymentMethod: "manual",
-          paymentType: "subscription",
-          status: "pending",
-          referenceNumber: referenceNumber || `PAY-${Date.now()}`,
-          billingId: bill._id,
-          applicationId: bill.applicationId,
-          paymentDetails: {
-            gateway: "manual",
-            gatewayResponse: {
-              submittedAt: new Date(),
-              notes: notes || "Payment submitted",
-            },
-          },
-          paidAt: new Date(),
-        },
-      ],
-      { session },
-    );
-
-    await Billing.updateOne(
-      { _id: bill._id },
-      { $set: { paymentId: payment[0]._id } },
-      { session },
-    );
-    await session.commitTransaction();
-
-    clearAllCache();
-    res.status(200).json({
-      success: true,
-      message: "Payment submitted! Awaiting admin confirmation.",
-      data: { status: "pending_confirmation" },
-    });
-  } catch (error) {
-    await session.abortTransaction();
-    next(error);
-  } finally {
-    session.endSession();
-  }
-};
-
-// ==================== SUBMIT INSTALLATION PAYMENT ====================
-export const submitInstallationPayment = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const { billId, referenceNumber, notes } = req.body;
-
-    const bill = await Billing.findOne({
-      _id: billId,
-      isInstallationBill: true,
-    });
-    if (!bill)
-      return res
-        .status(404)
-        .json({ success: false, message: "Installation bill not found" });
-    if (bill.installationFeePaid)
-      return res
-        .status(400)
-        .json({ success: false, message: "Installation fee already paid" });
-
-    await Billing.updateOne(
-      { _id: bill._id },
-      { $set: { status: "pending_confirmation" } },
-      { session },
-    );
-
-    const payment = await Payment.create(
-      [
-        {
-          amount: bill.total,
-          paymentMethod: "manual",
-          paymentType: "installation",
-          status: "pending",
-          referenceNumber: referenceNumber || `INST-PAY-${Date.now()}`,
-          billingId: bill._id,
-          applicationId: bill.applicationId,
-          paymentDetails: {
-            gateway: "manual",
-            gatewayResponse: {
-              submittedAt: new Date(),
-              notes: notes || "Installation fee payment submitted",
-            },
-          },
-          paidAt: new Date(),
-        },
-      ],
-      { session },
-    );
-
-    await Billing.updateOne(
-      { _id: bill._id },
-      { $set: { paymentId: payment[0]._id } },
-      { session },
-    );
-    await session.commitTransaction();
-
-    clearAllCache();
-    res.status(200).json({
-      success: true,
-      message:
-        "Installation fee payment submitted! Awaiting admin confirmation.",
-      data: { status: "pending_confirmation" },
-    });
-  } catch (error) {
-    await session.abortTransaction();
-    next(error);
-  } finally {
-    session.endSession();
-  }
-};
-
-// ==================== SUBMIT MONTHLY PAYMENT ====================
-export const submitMonthlyPayment = submitProRatedPayment;
-
-// ==================== GET BILLING STATUS FOR APPLICATION ====================
+// ==================== GET APPLICATION BILLING STATUS ====================
 export const getApplicationBillingStatus = async (
   req: AuthRequest,
   res: Response,
@@ -4288,7 +1386,6 @@ export const recoverMissingBills = async (
 
   try {
     const { applicationId, startFromDate } = req.body;
-    const adminId = req.user?._id?.toString();
 
     if (!applicationId) {
       return res
@@ -4368,7 +1465,7 @@ export const recoverMissingBills = async (
           monthlyRate,
           settings,
           undefined,
-          adminId,
+          req,
         );
         missingBills.push(monthlyBill);
       }
@@ -4383,7 +1480,25 @@ export const recoverMissingBills = async (
       { $set: { nextBillingDate: nextBilling } },
     );
 
-    clearAllCache();
+    if (missingBills.length > 0) {
+      for (const bill of missingBills) {
+        eventService.emitBillingCreated({
+          billing: bill,
+          applicationId: applicationId,
+          type: "monthly",
+          customerName: `${application.firstName} ${application.lastName}`,
+          recovered: true,
+        });
+      }
+      eventService.emitDashboardUpdate({
+        reason: "Recovered missing bills - FORCE REFRESH",
+        applicationId: applicationId,
+        count: missingBills.length,
+        customerName: `${application.firstName} ${application.lastName}`,
+        forceRefresh: true,
+        timestamp: Date.now(),
+      });
+    }
 
     res.status(200).json({
       success: true,
@@ -4396,6 +1511,572 @@ export const recoverMissingBills = async (
     });
   } catch (error) {
     next(error);
+  }
+};
+
+// ==================== INITIALIZE BACKDATED BILLING ====================
+export const initializeBackdatedBilling = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const {
+      applicationId,
+      serviceStartDate,
+      customPlanName,
+      monthlyRate,
+      notes,
+      includeInstallationFee,
+    } = req.body;
+
+    if (!applicationId) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: "applicationId is required",
+      });
+    }
+
+    if (!serviceStartDate) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: "serviceStartDate is required",
+      });
+    }
+
+    const application = await Application.findOne({ applicationId })
+      .populate("planId")
+      .lean();
+
+    if (!application) {
+      await session.abortTransaction();
+      return res.status(404).json({
+        success: false,
+        message: `Application not found with ID: ${applicationId}`,
+      });
+    }
+
+    const existingBillingCycle = await BillingCycle.findOne({
+      applicationId: application.applicationId,
+    }).session(session);
+
+    if (existingBillingCycle) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: `Billing already exists for this application. Status: ${existingBillingCycle.status}`,
+      });
+    }
+
+    let plan: any = application.planId;
+
+    if (!plan && customPlanName && monthlyRate) {
+      const PlanModel = require("../models/Plan").default;
+      plan = await PlanModel.create({
+        name: customPlanName,
+        price: monthlyRate,
+        speed: { download: 0, upload: 0 },
+        type: "custom",
+        isActive: true,
+      });
+    } else if (plan) {
+      plan = await require("../models/Plan").default.findById(plan._id);
+    }
+
+    if (!plan && !monthlyRate) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message:
+          "Either a plan must be assigned or customPlanName + monthlyRate provided",
+      });
+    }
+
+    const actualMonthlyRate = plan ? plan.price : monthlyRate;
+    const settings = await getOrCreateSettings();
+
+    let installationFee = 0;
+    if (includeInstallationFee !== false) {
+      const building = await getBuildingForApplication(application);
+      if (
+        building &&
+        building.installationFee !== undefined &&
+        building.installationFee > 0
+      ) {
+        installationFee = building.installationFee;
+        console.log(
+          `🏢 Using building-specific installation fee: ₱${installationFee} for ${building.buildingName}`,
+        );
+      } else {
+        installationFee = settings.installationFee || 1500;
+        console.log(`🌐 Using global installation fee: ₱${installationFee}`);
+      }
+    }
+
+    const startDate = new Date(serviceStartDate);
+    startDate.setHours(0, 0, 0, 0);
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const installationDay = startDate.getDate();
+    const billingCutoffDay = settings.billingCutoffDay || 24;
+    const isAfterCutoff = installationDay > billingCutoffDay;
+
+    const nextFullMonthStart = getStartOfNextMonth(startDate);
+    const nextFullMonthEnd = getEndOfMonth(nextFullMonthStart);
+    const nextBillingDate = getFirstDayOfMonth(nextFullMonthStart);
+
+    const billingCycle = await BillingCycle.create(
+      [
+        {
+          applicationId: application.applicationId,
+          planId: plan?._id || null,
+          monthlyRate: actualMonthlyRate,
+          billingStartDate: nextFullMonthStart,
+          billingEndDate: nextFullMonthEnd,
+          nextBillingDate: nextBillingDate,
+          status: "active",
+          proRatedPaid: true,
+          proRatedPaidAt: new Date(),
+          currentProRatedAmount: 0,
+          actualBillableDays: 0,
+          manualBillStart: true,
+          manuallyStartedAt: new Date(),
+          installationFee: installationFee,
+          installationFeePaid: installationFee === 0,
+        },
+      ],
+      { session },
+    );
+
+    const generatedBills = [];
+    const missingMonths = [];
+    let totalMonthlyAmount = 0;
+    const unpaidMonths = [];
+
+    if (startDate.getDate() > 1) {
+      const daysInMonth = new Date(
+        startDate.getFullYear(),
+        startDate.getMonth() + 1,
+        0,
+      ).getDate();
+      const daysUsed = daysInMonth - startDate.getDate() + 1;
+      const dailyRate = (actualMonthlyRate * 12) / 365;
+
+      let proRatedAmount: number;
+      if (startDate.getDate() === 1 && daysInMonth === 31) {
+        proRatedAmount = actualMonthlyRate;
+      } else {
+        proRatedAmount = Math.round(dailyRate * daysUsed * 100) / 100;
+      }
+
+      const monthEnd = getEndOfMonth(startDate);
+
+      let dueDate: Date;
+      let description: string;
+
+      if (isAfterCutoff) {
+        const nextMonthStartForDue = getStartOfNextMonth(startDate);
+        dueDate = getDueDateForMonthly(nextMonthStartForDue, settings);
+        description = `Pro-rated payment from ${formatDateForDisplay(startDate)} to ${formatDateForDisplay(monthEnd)} (${daysUsed} days) - Due on 5th of next month`;
+      } else {
+        dueDate = getDueDateForProRatedBeforeCutoff(startDate, settings);
+        description = `Pro-rated payment from ${formatDateForDisplay(startDate)} to ${formatDateForDisplay(monthEnd)} (${daysUsed} days) - Due on 25th of current month`;
+      }
+
+      const proRatedBillData: any = {
+        billingCycleId: billingCycle[0]._id,
+        invoiceNumber: generateInvoiceNumber(),
+        billingPeriod: { start: startDate, end: monthEnd },
+        dueDate: dueDate,
+        items: [
+          {
+            description: description,
+            quantity: daysUsed,
+            rate: dailyRate,
+            amount: proRatedAmount,
+          },
+        ],
+        subtotal: proRatedAmount,
+        total: proRatedAmount,
+        status: "sent",
+        isProRated: true,
+        proRatedDays: daysUsed,
+        isInstallationBill: false,
+        installationFee: 0,
+        installationFeePaid: false,
+        applicationId: application.applicationId,
+        notes:
+          notes ||
+          `Generated from backdated billing starting ${formatDateForDisplay(startDate)}. PREPAID: Due on ${formatDateForDisplay(dueDate)}.`,
+      };
+
+      const newBill = await Billing.create([proRatedBillData], { session });
+      generatedBills.push(newBill[0]);
+      totalMonthlyAmount += proRatedAmount;
+
+      const invoice = await createInvoiceFromBilling(
+        newBill[0],
+        application,
+        settings,
+      );
+      if (invoice) {
+        await sendInvoiceWithPDFAttachment(invoice, application, req);
+      } else {
+        try {
+          await sendInvoiceToApplication(application, newBill[0], req);
+        } catch (emailError) {
+          console.error("Failed to send invoice email:", emailError);
+        }
+      }
+    }
+
+    let currentBillDate = new Date(startDate);
+    currentBillDate.setDate(1);
+    currentBillDate.setHours(0, 0, 0, 0);
+
+    console.log(
+      `📅 Starting monthly bill generation from: ${formatDateForDisplay(currentBillDate)}`,
+    );
+    console.log(`📅 Today is: ${formatDateForDisplay(today)}`);
+
+    if (startDate.getDate() > 1) {
+      currentBillDate = getStartOfNextMonth(startDate);
+      console.log(
+        `📅 Start date is not 1st, skipping to next month: ${formatDateForDisplay(currentBillDate)}`,
+      );
+    }
+
+    while (currentBillDate <= today) {
+      const billingStart = new Date(currentBillDate);
+      billingStart.setDate(1);
+      billingStart.setHours(0, 0, 0, 0);
+
+      const isStartMonth =
+        billingStart.getFullYear() === startDate.getFullYear() &&
+        billingStart.getMonth() === startDate.getMonth();
+
+      if (isStartMonth && startDate.getDate() > 1) {
+        console.log(
+          `⏭️ Skipping start month ${formatDateForDisplay(billingStart)} - pro-rated already generated`,
+        );
+        currentBillDate = getStartOfNextMonth(currentBillDate);
+        continue;
+      }
+
+      const billingEnd = getEndOfMonth(billingStart);
+      const dueDate = getDueDateForMonthly(billingStart, settings);
+
+      const existingBill = await Billing.findOne({
+        applicationId: application.applicationId,
+        billingCycleId: billingCycle[0]._id,
+        "billingPeriod.start": billingStart,
+        isInstallationBill: false,
+        isProRated: false,
+      }).session(session);
+
+      if (!existingBill) {
+        let amount = actualMonthlyRate;
+        let isMissingBill = false;
+
+        const billEndDate = new Date(billingEnd);
+        billEndDate.setHours(0, 0, 0, 0);
+        const todayDate = new Date(today);
+        todayDate.setHours(0, 0, 0, 0);
+
+        if (billEndDate < todayDate) {
+          isMissingBill = true;
+        }
+
+        const billData: any = {
+          billingCycleId: billingCycle[0]._id,
+          invoiceNumber: generateInvoiceNumber(),
+          billingPeriod: { start: billingStart, end: billingEnd },
+          dueDate: dueDate,
+          items: [
+            {
+              description: isMissingBill
+                ? `[MISSING BILL - BACKDATED] Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)} (PREPAID)`
+                : `Monthly Subscription - ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)} (PREPAID) - Generated on ${formatDateForDisplay(new Date())}`,
+              quantity: 1,
+              rate: amount,
+              amount: amount,
+            },
+          ],
+          subtotal: amount,
+          total: amount,
+          status: "sent",
+          isProRated: false,
+          proRatedDays: 0,
+          isInstallationBill: false,
+          installationFee: 0,
+          installationFeePaid: false,
+          applicationId: application.applicationId,
+          notes:
+            notes ||
+            (isMissingBill
+              ? `MISSING BILL - Generated from backdated billing. Original period: ${formatDateForDisplay(billingStart)} to ${formatDateForDisplay(billingEnd)}. Customer started service on ${formatDateForDisplay(startDate)}. PREPAID: Generated on 1st, Due on 5th.`
+              : `Generated from backdated billing starting ${formatDateForDisplay(startDate)}. PREPAID: Generated on 1st, Due on 5th.`),
+        };
+
+        const newBill = await Billing.create([billData], { session });
+        generatedBills.push(newBill[0]);
+        totalMonthlyAmount += amount;
+
+        if (isMissingBill) {
+          missingMonths.push({
+            month: formatDateForDisplay(billingStart),
+            amount: amount,
+            billId: newBill[0]._id,
+            invoiceNumber: newBill[0].invoiceNumber,
+          });
+        }
+
+        const invoice = await createInvoiceFromBilling(
+          newBill[0],
+          application,
+          settings,
+        );
+        if (invoice) {
+          await sendInvoiceWithPDFAttachment(invoice, application, req);
+        } else {
+          try {
+            await sendInvoiceToApplication(application, newBill[0], req);
+          } catch (emailError) {
+            console.error("Failed to send invoice email:", emailError);
+          }
+        }
+      } else if (
+        existingBill.status !== "paid" &&
+        !existingBill.isInstallationBill
+      ) {
+        unpaidMonths.push({
+          month: formatDateForDisplay(billingStart),
+          amount: existingBill.total,
+          billId: existingBill._id,
+          invoiceNumber: existingBill.invoiceNumber,
+          status: existingBill.status,
+        });
+      }
+
+      currentBillDate.setMonth(currentBillDate.getMonth() + 1);
+    }
+
+    const nextMonthFromToday = getStartOfNextMonth(today);
+    const nextMonthEnd = getEndOfMonth(nextMonthFromToday);
+    const nextMonthDueDate = getDueDateForMonthly(nextMonthFromToday, settings);
+
+    const nextMonthYear = nextMonthFromToday.getFullYear();
+    const nextMonthMonth = nextMonthFromToday.getMonth();
+
+    const existingNextMonthBill = await Billing.findOne({
+      applicationId: application.applicationId,
+      billingCycleId: billingCycle[0]._id,
+      isProRated: false,
+      isInstallationBill: false,
+      $expr: {
+        $and: [
+          { $eq: [{ $year: "$billingPeriod.start" }, nextMonthYear] },
+          { $eq: [{ $month: "$billingPeriod.start" }, nextMonthMonth + 1] },
+        ],
+      },
+    }).session(session);
+
+    if (!existingNextMonthBill) {
+      console.log(
+        `📅 Generating next month's bill for ${formatDateForDisplay(nextMonthFromToday)}`,
+      );
+
+      const nextMonthBillData: any = {
+        billingCycleId: billingCycle[0]._id,
+        invoiceNumber: generateInvoiceNumber(),
+        billingPeriod: { start: nextMonthFromToday, end: nextMonthEnd },
+        dueDate: nextMonthDueDate,
+        items: [
+          {
+            description: `Monthly Subscription - ${formatDateForDisplay(nextMonthFromToday)} to ${formatDateForDisplay(nextMonthEnd)} (PREPAID) - Generated on ${formatDateForDisplay(new Date())}`,
+            quantity: 1,
+            rate: actualMonthlyRate,
+            amount: actualMonthlyRate,
+          },
+        ],
+        subtotal: actualMonthlyRate,
+        total: actualMonthlyRate,
+        status: "sent",
+        isProRated: false,
+        proRatedDays: 0,
+        isInstallationBill: false,
+        installationFee: 0,
+        installationFeePaid: false,
+        applicationId: application.applicationId,
+        notes: `Next month's bill generated from backdated billing. Period: ${formatDateForDisplay(nextMonthFromToday)} to ${formatDateForDisplay(nextMonthEnd)}. PREPAID: Due on ${formatDateForDisplay(nextMonthDueDate)}.`,
+      };
+
+      const nextMonthBill = await Billing.create([nextMonthBillData], {
+        session,
+      });
+      generatedBills.push(nextMonthBill[0]);
+      totalMonthlyAmount += actualMonthlyRate;
+
+      const nextMonthInvoice = await createInvoiceFromBilling(
+        nextMonthBill[0],
+        application,
+        settings,
+      );
+      if (nextMonthInvoice) {
+        await sendInvoiceWithPDFAttachment(nextMonthInvoice, application, req);
+      } else {
+        try {
+          await sendInvoiceToApplication(application, nextMonthBill[0], req);
+        } catch (emailError) {
+          console.error("Failed to send next month invoice email:", emailError);
+        }
+      }
+
+      console.log(
+        `✅ Next month bill generated: ${nextMonthBill[0].invoiceNumber}`,
+      );
+    } else {
+      console.log(
+        `⏭️ Next month bill already exists: ${existingNextMonthBill.invoiceNumber}`,
+      );
+    }
+
+    const lastGeneratedMonth = new Date(currentBillDate);
+    lastGeneratedMonth.setMonth(lastGeneratedMonth.getMonth() - 1);
+    lastGeneratedMonth.setDate(1);
+
+    const newNextBillingDate = getFirstDayOfMonth(
+      getStartOfNextMonth(lastGeneratedMonth),
+    );
+
+    await BillingCycle.updateOne(
+      { _id: billingCycle[0]._id },
+      { $set: { nextBillingDate: newNextBillingDate } },
+      { session },
+    );
+
+    let installationBill = null;
+    if (installationFee > 0) {
+      installationBill = await createInstallationBill(
+        application,
+        billingCycle[0]._id,
+        installationFee,
+        settings,
+        session,
+        req,
+      );
+    }
+
+    await Application.updateOne(
+      { applicationId: application.applicationId },
+      {
+        $set: {
+          billingStarted: true,
+          billingCycleId: billingCycle[0]._id,
+          serviceStatus: "active",
+          lastBillingAudit: new Date(),
+          installationFee: installationFee,
+          installationFeePaid: installationFee === 0,
+        },
+      },
+      { session },
+    );
+
+    await session.commitTransaction();
+
+    eventService.emitBillingCycleCreated({
+      billingCycle: billingCycle[0],
+      applicationId: application.applicationId,
+      customerName: `${application.firstName} ${application.lastName}`,
+      isBackdated: true,
+    });
+
+    for (const bill of generatedBills) {
+      eventService.emitBillingCreated({
+        billing: bill,
+        applicationId: application.applicationId,
+        type: bill.isProRated ? "pro-rated" : "monthly",
+        customerName: `${application.firstName} ${application.lastName}`,
+        isBackdated: true,
+      });
+    }
+
+    if (installationBill) {
+      eventService.emitBillingCreated({
+        billing: installationBill,
+        applicationId: application.applicationId,
+        type: "installation",
+        customerName: `${application.firstName} ${application.lastName}`,
+        isBackdated: true,
+      });
+    }
+
+    eventService.emitDashboardUpdate({
+      reason: "Backdated billing initialized - FORCE REFRESH",
+      applicationId: application.applicationId,
+      customerName: `${application.firstName} ${application.lastName}`,
+      billsCount: generatedBills.length,
+      forceRefresh: true,
+      timestamp: Date.now(),
+    });
+
+    let message = `Backdated billing initialized for ${application.firstName} ${application.lastName}. Generated ${generatedBills.length} bill(s) totaling ₱${totalMonthlyAmount.toFixed(2)}.`;
+
+    if (installationBill) {
+      message += ` Installation fee of ₱${installationFee.toFixed(2)} billed separately (Invoice: ${installationBill.invoiceNumber}, due on ${formatDateForDisplay(installationBill.dueDate)}).`;
+    }
+
+    if (missingMonths.length > 0) {
+      message += ` Missing months found: ${missingMonths.map((m) => m.month).join(", ")}. Bills have been generated for these periods.`;
+    }
+
+    if (unpaidMonths.length > 0) {
+      message += ` Warning: ${unpaidMonths.length} unpaid monthly bill(s) detected from previous periods.`;
+    }
+
+    message += ` ✅ Next month's bill (${formatDateForDisplay(nextMonthFromToday)}) has been generated.`;
+
+    res.status(200).json({
+      success: true,
+      message: message,
+      data: {
+        billingCycle: billingCycle[0],
+        generatedMonthlyBills: generatedBills,
+        installationBill: installationBill,
+        totalMonthlyAmount: totalMonthlyAmount,
+        totalInstallationFee: installationFee,
+        billsCount: generatedBills.length,
+        serviceStartDate: startDate,
+        applicationId: application.applicationId,
+        missingMonths: missingMonths,
+        unpaidPreviousBills: unpaidMonths,
+        currentDate: today,
+        installationFee: installationFee,
+        installationFeeSeparate: installationBill !== null,
+        buildingInstallationFee: installationFee,
+        nextMonthBillGenerated: true,
+        nextMonthPeriod: {
+          start: nextMonthFromToday,
+          end: nextMonthEnd,
+          dueDate: nextMonthDueDate,
+        },
+      },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    console.error("Error in initializeBackdatedBilling:", error);
+    next(error);
+  } finally {
+    session.endSession();
   }
 };
 
@@ -4520,7 +2201,7 @@ export const getUnpaidBillsReport = async (
   }
 };
 
-// ==================== MANUALLY TRIGGER BILL GENERATION ====================
+// ==================== MANUALLY GENERATE BILLS FOR MONTH ====================
 export const manuallyGenerateBillsForMonth = async (
   req: AuthRequest,
   res: Response,
@@ -4530,7 +2211,6 @@ export const manuallyGenerateBillsForMonth = async (
 
   try {
     const { year, month, applicationId } = req.body;
-    const adminId = req.user?._id?.toString();
 
     const targetDate = new Date();
     if (year && month) {
@@ -4604,7 +2284,7 @@ export const manuallyGenerateBillsForMonth = async (
           plan.price,
           settings,
           undefined,
-          adminId,
+          req,
         );
         generatedCount++;
         generatedBills.push(newBill);
@@ -4616,7 +2296,23 @@ export const manuallyGenerateBillsForMonth = async (
       }
     }
 
-    clearAllCache();
+    if (generatedCount > 0) {
+      for (const bill of generatedBills) {
+        eventService.emitBillingCreated({
+          billing: bill,
+          applicationId: bill.applicationId,
+          type: "monthly",
+          manuallyGenerated: true,
+        });
+      }
+      eventService.emitDashboardUpdate({
+        reason: "Manually generated bills for month - FORCE REFRESH",
+        count: generatedCount,
+        month: formatDateForDisplay(targetMonthStart),
+        forceRefresh: true,
+        timestamp: Date.now(),
+      });
+    }
 
     res.status(200).json({
       success: true,
@@ -4634,26 +2330,120 @@ export const manuallyGenerateBillsForMonth = async (
   }
 };
 
-// ==================== GET DASHBOARD DATA (AGGREGATED) ====================
+// ==================== GET LOCATION EMAILS ====================
+export const getLocationEmails = async (req: AuthRequest, res: Response) => {
+  try {
+    const emails = {
+      breeze:
+        process.env.COLLECTION_EMAIL_BREEZE ||
+        "collection.breeze@misterfyber.com",
+      sil: process.env.COLLECTION_EMAIL_SIL || "collection.sil@misterfyber.com",
+      default:
+        process.env.COLLECTION_EMAIL_DEFAULT || "collection@misterfyber.com",
+    };
+
+    res.status(200).json({
+      success: true,
+      data: emails,
+    });
+  } catch (error: any) {
+    console.error("❌ Error getting location emails:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message || "Error getting location emails",
+    });
+  }
+};
+
+// ==================== TEST LOCATION EMAIL ====================
+export const testLocationEmail = async (req: AuthRequest, res: Response) => {
+  try {
+    const { location, email } = req.body;
+
+    if (!location) {
+      return res.status(400).json({
+        success: false,
+        message: "Location is required",
+      });
+    }
+
+    const collectionEmail = getCollectionEmailByLocation(location);
+
+    const result = await emailService.sendEmail(
+      email || collectionEmail,
+      `🧪 Test Email - Location: ${location}`,
+      emailService.generateTestLocationEmailHTML(location, collectionEmail),
+      false,
+      location,
+      {
+        replyTo: process.env.SUPPORT_EMAIL || "admin@misterfyber.com",
+      },
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Test email sent successfully",
+      data: {
+        location,
+        collectionEmail,
+        result,
+      },
+    });
+  } catch (error: any) {
+    console.error("❌ Error sending test email:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message || "Error sending test email",
+    });
+  }
+};
+
+// ==================== GET BUILDING INSTALLATION FEE ====================
+export const getBuildingInstallationFee = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const { buildingId } = req.params;
+
+    if (!buildingId) {
+      return res.status(400).json({
+        success: false,
+        message: "Building ID is required",
+      });
+    }
+
+    const building = await Building.findById(buildingId).lean();
+    if (!building) {
+      return res.status(404).json({
+        success: false,
+        message: "Building not found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        buildingId: building._id,
+        buildingName: building.buildingName,
+        installationFee: building.installationFee || 0,
+        location: building.location || "",
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ==================== GET DASHBOARD DATA - NO CACHE! ====================
 export const getDashboardData = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ) => {
   try {
-    const now = Date.now();
-    if (
-      dashboardDataCache &&
-      now - dashboardDataCacheTime < DASHBOARD_CACHE_TTL
-    ) {
-      console.log("📦 Returning cached dashboard data");
-      return res.status(200).json({
-        success: true,
-        data: dashboardDataCache,
-      });
-    }
-
-    console.log("🔄 Fetching fresh dashboard data...");
+    console.log("🔄 Fetching dashboard data DIRECTLY from database...");
 
     const buildings = await Building.find({}).lean();
 
@@ -5020,14 +2810,13 @@ export const getDashboardData = async (
       stats: stats,
     };
 
-    dashboardDataCache = dashboardData;
-    dashboardDataCacheTime = now;
-
-    console.log(`✅ Dashboard data cached: ${allCustomers.length} customers`);
+    console.log(`✅ Dashboard data fetched: ${allCustomers.length} customers`);
 
     res.status(200).json({
       success: true,
       data: dashboardData,
+      fetchedAt: new Date().toISOString(),
+      fromCache: false,
     });
   } catch (error) {
     console.error("Error in getDashboardData:", error);
@@ -5084,6 +2873,2361 @@ export const checkForUpdates = async (
   } catch (error) {
     console.error("Error in checkForUpdates:", error);
     next(error);
+  }
+};
+
+// ==================== MANUALLY GENERATE EARLY BILL ====================
+export const manuallyGenerateEarlyBill = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  try {
+    const { applicationId, monthOffset } = req.body;
+
+    if (!applicationId) {
+      return res.status(400).json({
+        success: false,
+        message: "applicationId is required",
+      });
+    }
+
+    const settings = await getOrCreateSettings();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const offset = monthOffset || 1;
+
+    const currentMonthStart = getFirstDayOfMonth(today);
+
+    const targetMonth = new Date(currentMonthStart);
+    targetMonth.setMonth(currentMonthStart.getMonth() + offset);
+    targetMonth.setDate(1);
+    targetMonth.setHours(0, 0, 0, 0);
+
+    const targetMonthStart = getFirstDayOfMonth(targetMonth);
+    const targetMonthEnd = getEndOfMonth(targetMonth);
+    const dueDate = getDueDateForMonthly(targetMonthStart, settings);
+
+    const application = await Application.findOne({ applicationId })
+      .populate("planId")
+      .lean();
+
+    if (!application) {
+      return res.status(404).json({
+        success: false,
+        message: "Application not found",
+      });
+    }
+
+    const billingCycle = await BillingCycle.findOne({
+      applicationId: application.applicationId,
+      status: "active",
+      proRatedPaid: true,
+    })
+      .populate("planId")
+      .lean();
+
+    if (!billingCycle) {
+      return res.status(404).json({
+        success: false,
+        message: "No active billing cycle found for this application",
+      });
+    }
+
+    const plan = billingCycle.planId as any;
+    if (!plan) {
+      return res.status(400).json({
+        success: false,
+        message: "No plan found for this billing cycle",
+      });
+    }
+
+    const targetYear = targetMonthStart.getFullYear();
+    const targetMonthNum = targetMonthStart.getMonth();
+
+    const existingBill = await Billing.findOne({
+      applicationId: application.applicationId,
+      billingCycleId: billingCycle._id,
+      isProRated: false,
+      isInstallationBill: false,
+      $expr: {
+        $and: [
+          { $eq: [{ $year: "$billingPeriod.start" }, targetYear] },
+          { $eq: [{ $month: "$billingPeriod.start" }, targetMonthNum + 1] },
+        ],
+      },
+    }).lean();
+
+    if (existingBill) {
+      return res.status(400).json({
+        success: false,
+        message: `Bill already exists for ${formatDateForDisplay(targetMonthStart)}`,
+        data: {
+          existingBill,
+          invoiceNumber: existingBill.invoiceNumber,
+        },
+      });
+    }
+
+    const newBill = await createMonthlyBill(
+      application,
+      billingCycle._id,
+      targetMonthStart,
+      targetMonthEnd,
+      plan.price,
+      settings,
+      undefined,
+      req,
+    );
+
+    if (offset > 1) {
+      const nextBilling = getFirstDayOfMonth(
+        new Date(
+          targetMonthStart.getFullYear(),
+          targetMonthStart.getMonth() + 1,
+          1,
+        ),
+      );
+      await BillingCycle.updateOne(
+        { _id: billingCycle._id },
+        { $set: { nextBillingDate: nextBilling } },
+      );
+    }
+
+    if (newBill) {
+      eventService.emitBillingCreated({
+        billing: newBill,
+        applicationId: application.applicationId,
+        type: "monthly",
+        customerName: `${application.firstName} ${application.lastName}`,
+        manuallyGenerated: true,
+        monthOffset: offset,
+      });
+    }
+
+    eventService.emitDashboardUpdate({
+      reason: "Manually generated early bill - FORCE REFRESH",
+      applicationId: application.applicationId,
+      customerName: `${application.firstName} ${application.lastName}`,
+      forceRefresh: true,
+      timestamp: Date.now(),
+    });
+
+    res.status(200).json({
+      success: true,
+      message: `✅ Early bill generated for ${application.firstName} ${application.lastName} for ${formatDateForDisplay(targetMonthStart)} (Due on ${formatDateForDisplay(dueDate)})`,
+      data: {
+        bill: newBill,
+        billingMonth: formatDateForDisplay(targetMonthStart),
+        dueDate: formatDateForDisplay(dueDate),
+        applicationName: `${application.firstName} ${application.lastName}`,
+        applicationId: application.applicationId,
+        invoiceNumber: newBill.invoiceNumber,
+        amount: plan.price,
+        monthOffset: offset,
+      },
+    });
+  } catch (error) {
+    console.error("Error manually generating early bill:", error);
+    next(error);
+  }
+};
+
+// ==================== CHECK FOR NEW CUSTOMERS ====================
+export const checkForNewCustomers = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const newCustomers = await Application.find({
+      status: "approved",
+      billingStarted: { $ne: true },
+    })
+      .select(
+        "firstName lastName email applicationId planId buildingName phoneNumber",
+      )
+      .populate("planId", "name price")
+      .lean();
+
+    if (newCustomers.length > 0) {
+      eventService.emitCustomerCreated({
+        customers: newCustomers,
+        count: newCustomers.length,
+        type: "new_customers_detected",
+      });
+      eventService.emitDashboardUpdate({
+        reason: "New customers detected - FORCE REFRESH",
+        count: newCustomers.length,
+        forceRefresh: true,
+        timestamp: Date.now(),
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: newCustomers,
+      total: newCustomers.length,
+    });
+  } catch (error) {
+    console.error("Error checking for new customers:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to check for new customers",
+    });
+  }
+};
+
+// ==================== START BILLING ====================
+export const startBilling = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const {
+      applicationId,
+      startDate,
+      customAmount,
+      notes,
+      includeInstallationFee,
+    } = req.body;
+
+    if (!applicationId) {
+      return res.status(400).json({
+        success: false,
+        message: "applicationId is required",
+      });
+    }
+
+    const application = await Application.findOne({
+      applicationId: applicationId,
+    })
+      .populate("planId")
+      .lean();
+
+    if (!application) {
+      return res.status(404).json({
+        success: false,
+        message: `Application not found with ID: ${applicationId}`,
+      });
+    }
+
+    const existingBillingCycle = await BillingCycle.findOne({
+      applicationId: application.applicationId,
+    }).lean();
+
+    if (existingBillingCycle) {
+      const statusMessages: Record<string, string> = {
+        active: "active and running",
+        paused: "paused",
+        pending_activation: "pending payment confirmation",
+        cancelled: "cancelled",
+      };
+
+      return res.status(400).json({
+        success: false,
+        message: `Billing has already been started for this application. Current status: ${statusMessages[existingBillingCycle.status] || existingBillingCycle.status}`,
+        data: {
+          billingCycle: existingBillingCycle,
+          status: existingBillingCycle.status,
+          startDate: existingBillingCycle.billingStartDate,
+          nextBillingDate: existingBillingCycle.nextBillingDate,
+        },
+      });
+    }
+
+    const plan = application.planId as any;
+    if (!plan) {
+      return res.status(400).json({
+        success: false,
+        message: "No plan assigned to this application",
+      });
+    }
+
+    const settings = await getOrCreateSettings();
+    const billingCutoffDay = settings.billingCutoffDay || 24;
+    const monthlyRate = plan.price;
+    const dailyRate = (monthlyRate * 12) / 365;
+
+    let installationFee = 0;
+    if (includeInstallationFee !== false) {
+      const building = await getBuildingForApplication(application);
+      if (
+        building &&
+        building.installationFee !== undefined &&
+        building.installationFee > 0
+      ) {
+        installationFee = building.installationFee;
+        console.log(
+          `🏢 Using building-specific installation fee: ₱${installationFee} for ${building.buildingName}`,
+        );
+      } else {
+        installationFee = settings.installationFee || 1500;
+        console.log(`🌐 Using global installation fee: ₱${installationFee}`);
+      }
+    }
+
+    let installationDate = startDate ? new Date(startDate) : new Date();
+    installationDate.setHours(0, 0, 0, 0);
+
+    const installationDay = installationDate.getDate();
+    const currentMonthEnd = getEndOfMonth(installationDate);
+    const actualBillableDays = currentMonthEnd.getDate() - installationDay + 1;
+    const isAfterCutoff = installationDay > billingCutoffDay;
+
+    let createdInstallationBill: any = null;
+    let createdProRatedBill: any = null;
+    let createdMonthlyBill: any = null;
+    let billingStatus = "active";
+
+    if (!isAfterCutoff) {
+      let proRatedAmount: number;
+      if (installationDay === 1 && currentMonthEnd.getDate() === 31) {
+        proRatedAmount = monthlyRate;
+        console.log(
+          `📅 Month has 31 days, start on 1st. Using full monthly rate: ₱${monthlyRate}`,
+        );
+      } else {
+        proRatedAmount = Math.round(dailyRate * actualBillableDays * 100) / 100;
+      }
+
+      const finalProRatedAmount = customAmount ? customAmount : proRatedAmount;
+
+      const proRatedStartDate = installationDate;
+      const proRatedEndDate = currentMonthEnd;
+
+      const nextFullMonthStart = getStartOfNextMonth(installationDate);
+      const nextFullMonthEnd = getEndOfMonth(nextFullMonthStart);
+      const nextBillingDate = getFirstDayOfMonth(nextFullMonthStart);
+
+      const billingCycle = await BillingCycle.create(
+        [
+          {
+            planId: plan._id,
+            monthlyRate: monthlyRate,
+            currentProRatedAmount: finalProRatedAmount,
+            proRatedPaid: false,
+            actualBillableDays: actualBillableDays,
+            isAfterCutoff: false,
+            cutoffDayUsed: billingCutoffDay,
+            applicationId: application.applicationId,
+            installationFee: installationFee,
+            installationFeePaid: false,
+            billingStartDate: nextFullMonthStart,
+            billingEndDate: nextFullMonthEnd,
+            nextBillingDate: nextBillingDate,
+            status: billingStatus,
+          },
+        ],
+        { session },
+      );
+
+      createdProRatedBill = await createProRatedBill(
+        application,
+        billingCycle[0]._id,
+        proRatedStartDate,
+        proRatedEndDate,
+        finalProRatedAmount,
+        actualBillableDays,
+        dailyRate,
+        settings,
+        false,
+        session,
+        req,
+      );
+
+      if (installationFee > 0) {
+        createdInstallationBill = await createInstallationBill(
+          application,
+          billingCycle[0]._id,
+          installationFee,
+          settings,
+          session,
+          req,
+        );
+      }
+
+      await session.commitTransaction();
+
+      await Application.updateOne(
+        { applicationId: application.applicationId },
+        {
+          $set: {
+            billingStarted: true,
+            billingCycleId: billingCycle[0]._id,
+            serviceStatus: "active",
+            installationFee: installationFee,
+            installationFeePaid: false,
+          },
+        },
+      );
+
+      eventService.emitBillingCycleCreated({
+        billingCycle: billingCycle[0],
+        applicationId: application.applicationId,
+        customerName: `${application.firstName} ${application.lastName}`,
+        isBackdated: false,
+      });
+
+      if (createdProRatedBill) {
+        eventService.emitBillingCreated({
+          billing: createdProRatedBill,
+          applicationId: application.applicationId,
+          type: "pro-rated",
+          customerName: `${application.firstName} ${application.lastName}`,
+        });
+      }
+
+      if (createdInstallationBill) {
+        eventService.emitBillingCreated({
+          billing: createdInstallationBill,
+          applicationId: application.applicationId,
+          type: "installation",
+          customerName: `${application.firstName} ${application.lastName}`,
+        });
+      }
+
+      eventService.emitDashboardUpdate({
+        reason: "New billing started - FORCE REFRESH",
+        applicationId: application.applicationId,
+        customerName: `${application.firstName} ${application.lastName}`,
+        forceRefresh: true,
+        timestamp: Date.now(),
+      });
+
+      let message = `Installation on day ${installationDay} (on/before cutoff). Pro-rated amount of ₱${finalProRatedAmount.toFixed(2)} for ${actualBillableDays} days due on ${formatDateForDisplay(createdProRatedBill.dueDate)}.`;
+      if (createdInstallationBill) {
+        message += ` Installation fee of ₱${installationFee.toFixed(2)} billed separately (Invoice: ${createdInstallationBill.invoiceNumber}, due on ${formatDateForDisplay(createdInstallationBill.dueDate)}).`;
+      }
+      message += ` Regular monthly billing will start next month on 1st with due date on 5th of that month.`;
+
+      res.status(200).json({
+        success: true,
+        message: message,
+        data: {
+          billingCycle: billingCycle[0],
+          proRatedBill: createdProRatedBill,
+          installationBill: createdInstallationBill,
+          proRatedAmount: finalProRatedAmount,
+          dailyRate: dailyRate,
+          monthlyRate: monthlyRate,
+          annualRate: monthlyRate * 12,
+          actualBillableDays: actualBillableDays,
+          installationDay: installationDay,
+          billingCutoffDay: billingCutoffDay,
+          isAfterCutoff: false,
+          dueDate: createdProRatedBill.dueDate,
+          nextBillingDate: nextBillingDate,
+          applicationId: application.applicationId,
+          installationFee: installationFee,
+          installationFeeSeparate: createdInstallationBill !== null,
+          buildingInstallationFee: installationFee,
+        },
+      });
+    } else {
+      let proRatedAmount: number;
+      if (installationDay === 1 && currentMonthEnd.getDate() === 31) {
+        proRatedAmount = monthlyRate;
+        console.log(
+          `📅 Month has 31 days, start on 1st. Using full monthly rate: ₱${monthlyRate}`,
+        );
+      } else {
+        proRatedAmount = Math.round(dailyRate * actualBillableDays * 100) / 100;
+      }
+
+      const finalProRatedAmount = customAmount ? customAmount : proRatedAmount;
+
+      const proRatedStartDate = installationDate;
+      const proRatedEndDate = currentMonthEnd;
+
+      const nextFullMonthStart = getStartOfNextMonth(installationDate);
+      const nextFullMonthEnd = getEndOfMonth(nextFullMonthStart);
+      const nextBillingDate = getFirstDayOfMonth(nextFullMonthStart);
+
+      const combinedDueDate = getDueDateForMonthly(
+        nextFullMonthStart,
+        settings,
+      );
+
+      const billingCycle = await BillingCycle.create(
+        [
+          {
+            planId: plan._id,
+            monthlyRate: monthlyRate,
+            currentProRatedAmount: finalProRatedAmount,
+            proRatedPaid: false,
+            actualBillableDays: actualBillableDays,
+            isAfterCutoff: true,
+            cutoffDayUsed: billingCutoffDay,
+            applicationId: application.applicationId,
+            installationFee: installationFee,
+            installationFeePaid: false,
+            billingStartDate: nextFullMonthStart,
+            billingEndDate: nextFullMonthEnd,
+            nextBillingDate: nextBillingDate,
+            status: billingStatus,
+          },
+        ],
+        { session },
+      );
+
+      createdProRatedBill = await createProRatedBill(
+        application,
+        billingCycle[0]._id,
+        proRatedStartDate,
+        proRatedEndDate,
+        finalProRatedAmount,
+        actualBillableDays,
+        dailyRate,
+        settings,
+        true,
+        session,
+        req,
+      );
+
+      const monthlyBillData = {
+        billingCycleId: billingCycle[0]._id,
+        invoiceNumber: generateInvoiceNumber(),
+        billingPeriod: { start: nextFullMonthStart, end: nextFullMonthEnd },
+        dueDate: combinedDueDate,
+        items: [
+          {
+            description: `Monthly Subscription - ${formatDateForDisplay(nextFullMonthStart)} to ${formatDateForDisplay(nextFullMonthEnd)} (PREPAID) - Generated on ${formatDateForDisplay(new Date())}`,
+            quantity: 1,
+            rate: monthlyRate,
+            amount: monthlyRate,
+          },
+        ],
+        subtotal: monthlyRate,
+        tax: 0,
+        discount: 0,
+        total: monthlyRate,
+        status: "sent",
+        isProRated: false,
+        proRatedDays: 0,
+        isInstallationBill: false,
+        installationFee: 0,
+        installationFeePaid: false,
+        notes: `Regular monthly subscription - PREPAID: Generated on 1st, Due on 5th of ${formatDateForDisplay(nextFullMonthStart)}`,
+        applicationId: application.applicationId,
+      };
+
+      const monthlyBillResult = await Billing.create([monthlyBillData], {
+        session,
+      });
+      createdMonthlyBill = monthlyBillResult[0];
+
+      const monthlyInvoice = await createInvoiceFromBilling(
+        createdMonthlyBill,
+        application,
+        settings,
+      );
+      if (monthlyInvoice) {
+        await sendInvoiceWithPDFAttachment(monthlyInvoice, application, req);
+      } else {
+        try {
+          await sendInvoiceToApplication(application, createdMonthlyBill, req);
+        } catch (emailError) {
+          console.error("Failed to send invoice email:", emailError);
+        }
+      }
+
+      if (installationFee > 0) {
+        createdInstallationBill = await createInstallationBill(
+          application,
+          billingCycle[0]._id,
+          installationFee,
+          settings,
+          session,
+          req,
+        );
+      }
+
+      await session.commitTransaction();
+
+      await Application.updateOne(
+        { applicationId: application.applicationId },
+        {
+          $set: {
+            billingStarted: true,
+            billingCycleId: billingCycle[0]._id,
+            serviceStatus: "active",
+            installationFee: installationFee,
+            installationFeePaid: false,
+          },
+        },
+      );
+
+      eventService.emitBillingCycleCreated({
+        billingCycle: billingCycle[0],
+        applicationId: application.applicationId,
+        customerName: `${application.firstName} ${application.lastName}`,
+        isBackdated: false,
+      });
+
+      if (createdProRatedBill) {
+        eventService.emitBillingCreated({
+          billing: createdProRatedBill,
+          applicationId: application.applicationId,
+          type: "pro-rated",
+          customerName: `${application.firstName} ${application.lastName}`,
+        });
+      }
+
+      if (createdMonthlyBill) {
+        eventService.emitBillingCreated({
+          billing: createdMonthlyBill,
+          applicationId: application.applicationId,
+          type: "monthly",
+          customerName: `${application.firstName} ${application.lastName}`,
+        });
+      }
+
+      if (createdInstallationBill) {
+        eventService.emitBillingCreated({
+          billing: createdInstallationBill,
+          applicationId: application.applicationId,
+          type: "installation",
+          customerName: `${application.firstName} ${application.lastName}`,
+        });
+      }
+
+      eventService.emitDashboardUpdate({
+        reason: "New billing started (after cutoff) - FORCE REFRESH",
+        applicationId: application.applicationId,
+        customerName: `${application.firstName} ${application.lastName}`,
+        forceRefresh: true,
+        timestamp: Date.now(),
+      });
+
+      const totalFirstPayment = finalProRatedAmount + monthlyRate;
+      let message = `Installation on day ${installationDay} (after cutoff). Pro-rated amount of ₱${finalProRatedAmount.toFixed(2)} for ${actualBillableDays} days PLUS regular monthly bill of ₱${monthlyRate.toFixed(2)} for period ${formatDateForDisplay(nextFullMonthStart)} to ${formatDateForDisplay(nextFullMonthEnd)}.`;
+      message += ` TOTAL FIRST PAYMENT: ₱${totalFirstPayment.toFixed(2)} due on ${formatDateForDisplay(combinedDueDate)}.`;
+      if (createdInstallationBill) {
+        message += ` Installation fee of ₱${installationFee.toFixed(2)} billed separately (Invoice: ${createdInstallationBill.invoiceNumber}, due on ${formatDateForDisplay(createdInstallationBill.dueDate)}).`;
+      }
+
+      res.status(200).json({
+        success: true,
+        message: message,
+        data: {
+          billingCycle: billingCycle[0],
+          proRatedBill: createdProRatedBill,
+          monthlyBill: createdMonthlyBill,
+          installationBill: createdInstallationBill,
+          proRatedAmount: finalProRatedAmount,
+          monthlyAmount: monthlyRate,
+          totalFirstPayment: totalFirstPayment,
+          dailyRate: dailyRate,
+          monthlyRate: monthlyRate,
+          annualRate: monthlyRate * 12,
+          actualBillableDays: actualBillableDays,
+          installationDay: installationDay,
+          billingCutoffDay: billingCutoffDay,
+          isAfterCutoff: true,
+          dueDate: combinedDueDate,
+          nextBillingDate: nextBillingDate,
+          applicationId: application.applicationId,
+          installationFee: installationFee,
+          installationFeeSeparate: createdInstallationBill !== null,
+          buildingInstallationFee: installationFee,
+        },
+      });
+    }
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
+// ==================== STOP BILLING ====================
+export const stopBilling = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { applicationId, reason } = req.body;
+
+    if (!applicationId) {
+      return res
+        .status(400)
+        .json({ success: false, message: "applicationId is required" });
+    }
+
+    const application = await Application.findOne({ applicationId }).lean();
+    if (!application) {
+      await session.abortTransaction();
+      return res
+        .status(404)
+        .json({ success: false, message: "Application not found" });
+    }
+
+    const billingCycle = await BillingCycle.findOne({
+      applicationId: application.applicationId,
+      status: { $in: ["active", "paused"] },
+    }).lean();
+
+    if (!billingCycle) {
+      await session.abortTransaction();
+      return res
+        .status(404)
+        .json({ success: false, message: "No active billing cycle found" });
+    }
+
+    await BillingCycle.updateOne(
+      { _id: billingCycle._id },
+      {
+        $set: {
+          status: "cancelled",
+          billingEndDate: new Date(),
+          disconnectReason: reason,
+        },
+      },
+      { session },
+    );
+
+    await Application.updateOne(
+      { applicationId: application.applicationId },
+      { $set: { status: "rejected" } },
+      { session },
+    );
+
+    await session.commitTransaction();
+
+    eventService.emitBillingCycleDeleted({
+      billingCycleId: billingCycle._id,
+      applicationId: application.applicationId,
+      reason: reason || "Admin action",
+      customerName: `${application.firstName} ${application.lastName}`,
+    });
+
+    eventService.emitDashboardUpdate({
+      reason: "Billing stopped - FORCE REFRESH",
+      applicationId: application.applicationId,
+      customerName: `${application.firstName} ${application.lastName}`,
+      forceRefresh: true,
+      timestamp: Date.now(),
+    });
+
+    res.status(200).json({
+      success: true,
+      message: `Billing stopped for ${application.firstName} ${application.lastName}`,
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
+// ==================== PAUSE BILLING ====================
+export const pauseBilling = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { applicationId, reason, pauseUntilDate } = req.body;
+
+    if (!applicationId) {
+      return res
+        .status(400)
+        .json({ success: false, message: "applicationId is required" });
+    }
+
+    const application = await Application.findOne({ applicationId }).lean();
+    if (!application) {
+      await session.abortTransaction();
+      return res
+        .status(404)
+        .json({ success: false, message: "Application not found" });
+    }
+
+    const billingCycle = await BillingCycle.findOne({
+      applicationId: application.applicationId,
+      status: { $in: ["active", "pending_activation"] },
+    }).lean();
+
+    if (!billingCycle) {
+      await session.abortTransaction();
+      return res.status(404).json({
+        success: false,
+        message: "No active billing cycle found to pause.",
+      });
+    }
+
+    const unpaidMonthlyBills = await Billing.find({
+      applicationId: application.applicationId,
+      status: { $in: ["sent", "overdue", "pending_confirmation"] },
+      isInstallationBill: false,
+    }).lean();
+
+    if (unpaidMonthlyBills.length > 0) {
+      await session.abortTransaction();
+      const totalAmount = unpaidMonthlyBills.reduce(
+        (sum, b) => sum + (b.total || 0),
+        0,
+      );
+      return res.status(400).json({
+        success: false,
+        message: `Cannot pause service. Customer has ${unpaidMonthlyBills.length} unpaid monthly bill(s) totaling ₱${totalAmount.toFixed(2)}.`,
+        data: { unpaidMonthlyBills, totalAmount },
+      });
+    }
+
+    const pauseDate = new Date();
+    await BillingCycle.updateOne(
+      { _id: billingCycle._id },
+      {
+        $set: {
+          status: "paused",
+          pausedAt: pauseDate,
+          pauseReason: reason || "Customer requested pause",
+          pauseUntil: pauseUntilDate ? new Date(pauseUntilDate) : undefined,
+        },
+      },
+      { session },
+    );
+
+    await Application.updateOne(
+      { applicationId: application.applicationId },
+      { $set: { status: "pending" } },
+      { session },
+    );
+
+    await session.commitTransaction();
+
+    eventService.emitBillingCycleUpdated({
+      billingCycleId: billingCycle._id,
+      applicationId: application.applicationId,
+      status: "paused",
+      reason: reason || "Customer requested pause",
+      customerName: `${application.firstName} ${application.lastName}`,
+    });
+
+    eventService.emitDashboardUpdate({
+      reason: "Billing paused - FORCE REFRESH",
+      applicationId: application.applicationId,
+      customerName: `${application.firstName} ${application.lastName}`,
+      forceRefresh: true,
+      timestamp: Date.now(),
+    });
+
+    const location = await getLocationFromEntity(application);
+    const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(
+      req.user?._id,
+    );
+
+    try {
+      if (application.email && emailAlertsEnabled) {
+        await emailService.sendEmail(
+          application.email,
+          "Your Service Has Been Paused - Mister Fyber",
+          emailService.generateServiceStatusHTML(
+            application.firstName,
+            application.lastName,
+            "paused",
+            `Your internet service has been paused. Reason: ${reason || "Customer requested pause"}.`,
+          ),
+          true,
+          location,
+        );
+      }
+    } catch (emailError) {
+      console.error("Failed to send pause notification email:", emailError);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: `Service paused for ${application.firstName} ${application.lastName}`,
+      data: {
+        customerName: `${application.firstName} ${application.lastName}`,
+        customerEmail: application.email,
+        pausedAt: pauseDate,
+      },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
+// ==================== RESUME BILLING ====================
+export const resumeBilling = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { applicationId } = req.body;
+
+    if (!applicationId) {
+      return res
+        .status(400)
+        .json({ success: false, message: "applicationId is required" });
+    }
+
+    const application = await Application.findOne({ applicationId })
+      .populate("planId")
+      .lean();
+
+    if (!application) {
+      await session.abortTransaction();
+      return res
+        .status(404)
+        .json({ success: false, message: "Application not found" });
+    }
+
+    const billingCycle = await BillingCycle.findOne({
+      applicationId: application.applicationId,
+      status: "paused",
+    }).lean();
+
+    if (!billingCycle) {
+      await session.abortTransaction();
+      return res.status(404).json({
+        success: false,
+        message: "No paused billing cycle found for this customer.",
+      });
+    }
+
+    const pendingMonthlyBills = await Billing.find({
+      applicationId: application.applicationId,
+      status: { $in: ["sent", "overdue", "pending_confirmation"] },
+      isInstallationBill: false,
+    }).lean();
+
+    if (pendingMonthlyBills.length > 0) {
+      await session.abortTransaction();
+      const totalAmount = pendingMonthlyBills.reduce(
+        (sum, b) => sum + (b.total || 0),
+        0,
+      );
+      return res.status(400).json({
+        success: false,
+        message: `Cannot resume service. Customer has ${pendingMonthlyBills.length} unpaid monthly bill(s) totaling ₱${totalAmount.toFixed(2)}.`,
+      });
+    }
+
+    const resumeDate = new Date();
+    const nextBillingDate = getFirstDayOfMonth(getStartOfNextMonth(resumeDate));
+
+    await BillingCycle.updateOne(
+      { _id: billingCycle._id },
+      {
+        $set: {
+          status: "active",
+          resumedAt: resumeDate,
+          nextBillingDate: nextBillingDate,
+          pausedAt: undefined,
+          pauseReason: undefined,
+          pauseUntil: undefined,
+        },
+      },
+      { session },
+    );
+
+    await Application.updateOne(
+      { applicationId: application.applicationId },
+      { $set: { status: "approved" } },
+      { session },
+    );
+
+    await session.commitTransaction();
+
+    eventService.emitBillingCycleUpdated({
+      billingCycleId: billingCycle._id,
+      applicationId: application.applicationId,
+      status: "active",
+      customerName: `${application.firstName} ${application.lastName}`,
+    });
+
+    eventService.emitDashboardUpdate({
+      reason: "Billing resumed - FORCE REFRESH",
+      applicationId: application.applicationId,
+      customerName: `${application.firstName} ${application.lastName}`,
+      forceRefresh: true,
+      timestamp: Date.now(),
+    });
+
+    const location = await getLocationFromEntity(application);
+    const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(
+      req.user?._id,
+    );
+
+    try {
+      if (application.email && emailAlertsEnabled) {
+        await emailService.sendEmail(
+          application.email,
+          "Your Service Has Been Resumed - Mister Fyber",
+          emailService.generateServiceStatusHTML(
+            application.firstName,
+            application.lastName,
+            "resumed",
+            "Your internet service has been resumed.",
+          ),
+          true,
+          location,
+        );
+      }
+    } catch (emailError) {
+      console.error("Failed to send resume notification email:", emailError);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: `Service resumed for ${application.firstName} ${application.lastName}`,
+      data: {
+        customerName: `${application.firstName} ${application.lastName}`,
+        customerEmail: application.email,
+        resumedAt: resumeDate,
+        nextBillingDate,
+      },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
+// ==================== DISCONNECT CLIENT ====================
+export const disconnectClient = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { applicationId } = req.body;
+
+    if (!applicationId) {
+      return res
+        .status(400)
+        .json({ success: false, message: "applicationId is required" });
+    }
+
+    const application = await Application.findOne({ applicationId }).lean();
+    if (!application) {
+      await session.abortTransaction();
+      return res
+        .status(404)
+        .json({ success: false, message: "Application not found" });
+    }
+
+    await Application.updateOne(
+      { applicationId: application.applicationId },
+      { $set: { status: "rejected" } },
+      { session },
+    );
+
+    await session.commitTransaction();
+
+    eventService.emitCustomerUpdated({
+      applicationId: application.applicationId,
+      customerName: `${application.firstName} ${application.lastName}`,
+      status: "rejected",
+      type: "disconnect",
+    });
+
+    eventService.emitDashboardUpdate({
+      reason: "Client disconnected - FORCE REFRESH",
+      applicationId: application.applicationId,
+      customerName: `${application.firstName} ${application.lastName}`,
+      forceRefresh: true,
+      timestamp: Date.now(),
+    });
+
+    res.status(200).json({ success: true, message: "Service disconnected" });
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
+// ==================== RECONNECT CLIENT ====================
+export const reconnectClient = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { applicationId } = req.body;
+
+    if (!applicationId) {
+      return res
+        .status(400)
+        .json({ success: false, message: "applicationId is required" });
+    }
+
+    const application = await Application.findOne({ applicationId }).lean();
+    if (!application) {
+      await session.abortTransaction();
+      return res
+        .status(404)
+        .json({ success: false, message: "Application not found" });
+    }
+
+    await Application.updateOne(
+      { applicationId: application.applicationId },
+      { $set: { status: "approved" } },
+      { session },
+    );
+
+    await session.commitTransaction();
+
+    eventService.emitCustomerUpdated({
+      applicationId: application.applicationId,
+      customerName: `${application.firstName} ${application.lastName}`,
+      status: "approved",
+      type: "reconnect",
+    });
+
+    eventService.emitDashboardUpdate({
+      reason: "Client reconnected - FORCE REFRESH",
+      applicationId: application.applicationId,
+      customerName: `${application.firstName} ${application.lastName}`,
+      forceRefresh: true,
+      timestamp: Date.now(),
+    });
+
+    res.status(200).json({ success: true, message: "Service reconnected" });
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
+// ==================== DELETE BILLING CYCLE ====================
+export const deleteBillingCycle = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { billingCycleId, applicationId } = req.body;
+
+    if (!billingCycleId) {
+      await session.abortTransaction();
+      return res
+        .status(400)
+        .json({ success: false, message: "Billing cycle ID is required" });
+    }
+
+    const billingCycle =
+      await BillingCycle.findById(billingCycleId).session(session);
+    if (!billingCycle) {
+      await session.abortTransaction();
+      return res
+        .status(404)
+        .json({ success: false, message: "Billing cycle not found" });
+    }
+
+    await Invoice.deleteMany({ billingCycleId: billingCycle._id }, { session });
+    await Billing.deleteMany({ billingCycleId: billingCycle._id }, { session });
+    await BillingCycle.deleteOne({ _id: billingCycle._id }, { session });
+
+    if (applicationId) {
+      await Application.updateOne(
+        { applicationId: applicationId },
+        { $set: { billingStarted: false }, $unset: { billingCycleId: "" } },
+        { session },
+      );
+    }
+
+    await session.commitTransaction();
+
+    eventService.emitBillingCycleDeleted({
+      billingCycleId: billingCycleId,
+      applicationId: applicationId,
+      reason: "Deleted by admin",
+    });
+
+    eventService.emitDashboardUpdate({
+      reason: "Billing cycle deleted - FORCE REFRESH",
+      billingCycleId: billingCycleId,
+      applicationId: applicationId,
+      forceRefresh: true,
+      timestamp: Date.now(),
+    });
+
+    res
+      .status(200)
+      .json({ success: true, message: "Billing cycle deleted successfully" });
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
+// ==================== CONFIRM PRO-RATED PAYMENT ====================
+export const confirmProRatedPayment = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { applicationId, paymentDetails } = req.body;
+
+    if (!applicationId) {
+      return res
+        .status(400)
+        .json({ success: false, message: "applicationId is required" });
+    }
+
+    const application = await Application.findOne({ applicationId }).lean();
+    if (!application) {
+      await session.abortTransaction();
+      return res
+        .status(404)
+        .json({ success: false, message: "Application not found" });
+    }
+
+    const billingCycle = await BillingCycle.findOne({
+      applicationId: application.applicationId,
+      status: "pending_activation",
+    })
+      .populate("planId")
+      .lean();
+
+    if (!billingCycle) {
+      await session.abortTransaction();
+      return res
+        .status(404)
+        .json({ success: false, message: "Billing cycle not found" });
+    }
+
+    const proRatedBill = await Billing.findOne({
+      applicationId: application.applicationId,
+      billingCycleId: billingCycle._id,
+      isProRated: true,
+      status: "pending_confirmation",
+      isInstallationBill: false,
+    }).lean();
+
+    if (!proRatedBill) {
+      await session.abortTransaction();
+      return res
+        .status(404)
+        .json({ success: false, message: "Pro-rated bill not found" });
+    }
+
+    await Billing.updateOne(
+      { _id: proRatedBill._id },
+      { $set: { status: "paid", paidAt: new Date() } },
+      { session },
+    );
+
+    const invoice = await Invoice.findOne({
+      billingId: proRatedBill._id,
+    }).session(session);
+    if (invoice) {
+      invoice.status = "paid";
+      invoice.paidAt = new Date();
+      await invoice.save({ session });
+    }
+
+    const paymentData: any = {
+      amount: proRatedBill.total,
+      paymentMethod: "manual",
+      paymentType: "subscription",
+      status: "completed",
+      referenceNumber: `PRO-${Date.now()}`,
+      billingId: proRatedBill._id,
+      paymentDetails: {
+        gateway: "manual",
+        gatewayResponse: paymentDetails,
+        notes: "Pro-rated payment confirmed",
+      },
+      paidAt: new Date(),
+      applicationId: application.applicationId,
+    };
+
+    const payment = await Payment.create([paymentData], { session });
+
+    await Billing.updateOne(
+      { _id: proRatedBill._id },
+      { $set: { paymentId: payment[0]._id } },
+      { session },
+    );
+
+    await BillingCycle.updateOne(
+      { _id: billingCycle._id },
+      {
+        $set: {
+          proRatedPaid: true,
+          proRatedPaidAt: new Date(),
+          status: "active",
+        },
+      },
+      { session },
+    );
+
+    await session.commitTransaction();
+
+    eventService.emitBillingPaid({
+      billId: proRatedBill._id,
+      invoiceNumber: proRatedBill.invoiceNumber,
+      applicationId: application.applicationId,
+      paymentId: payment[0]._id,
+      amount: proRatedBill.total,
+      isProRated: true,
+      customerName: `${application.firstName} ${application.lastName}`,
+    });
+
+    eventService.emitBillingCycleUpdated({
+      billingCycleId: billingCycle._id,
+      applicationId: application.applicationId,
+      status: "active",
+      customerName: `${application.firstName} ${application.lastName}`,
+    });
+
+    eventService.emitPaymentConfirmed({
+      payment: payment[0],
+      billingId: proRatedBill._id,
+      applicationId: application.applicationId,
+      type: "pro-rated",
+    });
+
+    eventService.emitDashboardUpdate({
+      reason: "Pro-rated payment confirmed - FORCE REFRESH",
+      applicationId: application.applicationId,
+      forceRefresh: true,
+      timestamp: Date.now(),
+    });
+
+    const location = await getLocationFromEntity(application);
+    const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(
+      req.user?._id,
+    );
+
+    if (application.email && emailAlertsEnabled) {
+      try {
+        const collectionEmail = getCollectionEmailByLocation(location);
+        const htmlContent = emailService.generatePaymentConfirmationHTML(
+          proRatedBill,
+          payment[0],
+          proRatedBill.total,
+          new Date().toLocaleString(),
+          location,
+          collectionEmail,
+          false,
+        );
+
+        await emailService.sendEmail(
+          application.email,
+          "Pro-rated Payment Confirmed",
+          htmlContent,
+          true,
+          location,
+        );
+      } catch (emailError) {
+        console.error(
+          "Failed to send pro-rated payment confirmation email:",
+          emailError,
+        );
+      }
+    }
+
+    res
+      .status(200)
+      .json({ success: true, message: "Pro-rated payment confirmed" });
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
+// ==================== START MONTHLY BILLING ====================
+export const startMonthlyBilling = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { applicationId } = req.body;
+
+    if (!applicationId) {
+      return res
+        .status(400)
+        .json({ success: false, message: "applicationId is required" });
+    }
+
+    const application = await Application.findOne({ applicationId })
+      .populate("planId")
+      .lean();
+
+    if (!application) {
+      await session.abortTransaction();
+      return res
+        .status(404)
+        .json({ success: false, message: "Application not found" });
+    }
+
+    const billingCycle = await BillingCycle.findOne({
+      applicationId: application.applicationId,
+      status: "pending_activation",
+      proRatedPaid: true,
+    })
+      .populate("planId")
+      .lean();
+
+    if (!billingCycle) {
+      await session.abortTransaction();
+      return res
+        .status(404)
+        .json({ success: false, message: "Billing cycle not found" });
+    }
+
+    const settings = await getOrCreateSettings();
+
+    const today = new Date();
+    let billingStart = getFirstDayOfMonth(today);
+    billingStart.setHours(0, 0, 0, 0);
+
+    const billingEnd = getEndOfMonth(billingStart);
+
+    const plan = billingCycle.planId as any;
+    const monthlyRate = plan.price;
+
+    const monthlyBill = await createMonthlyBill(
+      application,
+      billingCycle._id,
+      billingStart,
+      billingEnd,
+      monthlyRate,
+      settings,
+      session,
+      req,
+    );
+
+    const nextDate = getFirstDayOfMonth(getStartOfNextMonth(billingStart));
+
+    await BillingCycle.updateOne(
+      { _id: billingCycle._id },
+      {
+        $set: {
+          status: "active",
+          manualBillStart: true,
+          manuallyStartedAt: new Date(),
+          nextBillingDate: nextDate,
+        },
+      },
+      { session },
+    );
+
+    await session.commitTransaction();
+
+    if (monthlyBill) {
+      eventService.emitBillingCreated({
+        billing: monthlyBill,
+        applicationId: application.applicationId,
+        type: "monthly",
+        customerName: `${application.firstName} ${application.lastName}`,
+      });
+    }
+
+    eventService.emitBillingCycleUpdated({
+      billingCycleId: billingCycle._id,
+      applicationId: application.applicationId,
+      status: "active",
+      customerName: `${application.firstName} ${application.lastName}`,
+    });
+
+    eventService.emitDashboardUpdate({
+      reason: "Monthly billing started - FORCE REFRESH",
+      applicationId: application.applicationId,
+      forceRefresh: true,
+      timestamp: Date.now(),
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Monthly billing started",
+      data: { firstMonthlyBill: monthlyBill },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
+// ==================== AUTO-GENERATE MONTHLY BILLS ====================
+export const autoGenerateMonthlyBills = async (
+  req?: AuthRequest,
+  res?: Response,
+) => {
+  try {
+    const settings = await getOrCreateSettings();
+    if (!settings.autoGenerateBills) {
+      if (res)
+        return res.status(200).json({
+          success: true,
+          message: "Auto-generate bills is disabled",
+        });
+      return;
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const nextMonth = getStartOfNextMonth(today);
+    const nextMonthEnd = getEndOfMonth(nextMonth);
+    const dueDate = getDueDateForMonthly(nextMonth, settings);
+
+    console.log(
+      `📅 Generating bills for ${formatDateForDisplay(nextMonth)} (Next month)`,
+    );
+    console.log(`📅 Today is ${formatDateForDisplay(today)}`);
+
+    const billingCycles = await BillingCycle.find({
+      status: "active",
+      proRatedPaid: true,
+      applicationId: { $exists: true, $ne: null },
+    })
+      .populate("planId")
+      .lean();
+
+    let generatedCount = 0;
+    let skippedCount = 0;
+    let alreadyGeneratedCount = 0;
+    const generatedBills = [];
+
+    for (const cycle of billingCycles) {
+      if (!cycle.applicationId) {
+        skippedCount++;
+        continue;
+      }
+
+      const application = await Application.findOne({
+        applicationId: cycle.applicationId,
+      }).lean();
+
+      if (!application) {
+        skippedCount++;
+        continue;
+      }
+
+      const plan = cycle.planId as any;
+      if (!plan) {
+        skippedCount++;
+        continue;
+      }
+
+      const nextMonthYear = nextMonth.getFullYear();
+      const nextMonthMonth = nextMonth.getMonth();
+
+      const existingBill = await Billing.findOne({
+        applicationId: cycle.applicationId,
+        billingCycleId: cycle._id,
+        isProRated: false,
+        isInstallationBill: false,
+        $expr: {
+          $and: [
+            { $eq: [{ $year: "$billingPeriod.start" }, nextMonthYear] },
+            { $eq: [{ $month: "$billingPeriod.start" }, nextMonthMonth + 1] },
+          ],
+        },
+      }).lean();
+
+      if (!existingBill) {
+        const newBill = await createMonthlyBill(
+          application,
+          cycle._id,
+          nextMonth,
+          nextMonthEnd,
+          plan.price,
+          settings,
+          undefined,
+          req,
+        );
+        generatedCount++;
+        generatedBills.push(newBill);
+        console.log(
+          `✅ Generated bill for ${application.firstName} ${application.lastName} - ${plan.price} for ${formatDateForDisplay(nextMonth)}`,
+        );
+      } else {
+        alreadyGeneratedCount++;
+        console.log(
+          `⏭️ Bill already exists for ${application.firstName} ${application.lastName} for ${formatDateForDisplay(nextMonth)}`,
+        );
+      }
+    }
+
+    if (generatedCount > 0) {
+      for (const bill of generatedBills) {
+        eventService.emitBillingCreated({
+          billing: bill,
+          applicationId: bill.applicationId,
+          type: "monthly",
+          autoGenerated: true,
+        });
+      }
+      eventService.emitDashboardUpdate({
+        reason: "Auto-generated monthly bills - FORCE REFRESH",
+        count: generatedCount,
+        forceRefresh: true,
+        timestamp: Date.now(),
+      });
+    }
+
+    console.log(
+      `📊 Bill generation complete: ${generatedCount} generated, ${alreadyGeneratedCount} already existed, ${skippedCount} skipped`,
+    );
+
+    if (res) {
+      res.status(200).json({
+        success: true,
+        message: `Generated ${generatedCount} bills for ${formatDateForDisplay(nextMonth)} (Due on ${formatDateForDisplay(dueDate)})`,
+        data: {
+          generated: generatedCount,
+          alreadyGenerated: alreadyGeneratedCount,
+          skipped: skippedCount,
+          billingMonth: formatDateForDisplay(nextMonth),
+          dueDate: formatDateForDisplay(dueDate),
+          generationDate: formatDateForDisplay(today),
+        },
+      });
+    }
+  } catch (error) {
+    console.error("Auto-generate monthly bills error:", error);
+    if (res) {
+      res.status(500).json({
+        success: false,
+        message: "Failed to generate bills",
+        error: String(error),
+      });
+    }
+  }
+};
+
+// ==================== AUTO SUSPEND OVERDUE ====================
+export const autoSuspendOverdue = async (req?: AuthRequest, res?: Response) => {
+  try {
+    const settings = await getOrCreateSettings();
+    if (!settings.autoSuspendOnNonPayment) {
+      if (res)
+        return res
+          .status(200)
+          .json({ success: true, message: "Auto-suspend is disabled" });
+      return;
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const gracePeriodDate = new Date(today);
+    gracePeriodDate.setDate(
+      gracePeriodDate.getDate() - settings.gracePeriodDays,
+    );
+
+    const overdueMonthlyBills = await Billing.find({
+      status: "overdue",
+      dueDate: { $lt: gracePeriodDate },
+      suspensionNotified: { $ne: true },
+      applicationId: { $exists: true, $ne: null },
+      isInstallationBill: false,
+    }).lean();
+
+    let suspendedCount = 0;
+
+    for (const bill of overdueMonthlyBills) {
+      if (!bill.applicationId) continue;
+
+      await Billing.updateOne(
+        { _id: bill._id },
+        { $set: { suspensionNotified: true } },
+      );
+
+      await Application.updateOne(
+        { applicationId: bill.applicationId },
+        { $set: { status: "suspended" } },
+      );
+
+      suspendedCount++;
+    }
+
+    if (suspendedCount > 0) {
+      eventService.emitSuspensionUpdated({
+        count: suspendedCount,
+        type: "auto_suspend",
+        timestamp: new Date(),
+      });
+      eventService.emitDashboardUpdate({
+        reason: "Auto-suspended overdue customers - FORCE REFRESH",
+        count: suspendedCount,
+        forceRefresh: true,
+        timestamp: Date.now(),
+      });
+    }
+
+    if (res) {
+      res.status(200).json({
+        success: true,
+        message: `Suspended ${suspendedCount} customers`,
+      });
+    }
+  } catch (error) {
+    console.error("Auto-suspend overdue error:", error);
+    if (res) {
+      res
+        .status(500)
+        .json({ success: false, message: "Failed to suspend customers" });
+    }
+  }
+};
+
+// ==================== SUBMIT PRO-RATED PAYMENT ====================
+export const submitProRatedPayment = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { billId, referenceNumber, notes } = req.body;
+
+    const bill = await Billing.findOne({
+      _id: billId,
+      isInstallationBill: false,
+    });
+    if (!bill)
+      return res
+        .status(404)
+        .json({ success: false, message: "Bill not found" });
+    if (bill.status === "paid")
+      return res
+        .status(400)
+        .json({ success: false, message: "Bill already paid" });
+    if (bill.status === "pending_confirmation")
+      return res
+        .status(400)
+        .json({ success: false, message: "Payment already pending" });
+
+    await Billing.updateOne(
+      { _id: bill._id },
+      { $set: { status: "pending_confirmation" } },
+      { session },
+    );
+
+    const payment = await Payment.create(
+      [
+        {
+          amount: bill.total,
+          paymentMethod: "manual",
+          paymentType: "subscription",
+          status: "pending",
+          referenceNumber: referenceNumber || `PAY-${Date.now()}`,
+          billingId: bill._id,
+          applicationId: bill.applicationId,
+          paymentDetails: {
+            gateway: "manual",
+            gatewayResponse: {
+              submittedAt: new Date(),
+              notes: notes || "Payment submitted",
+            },
+          },
+          paidAt: new Date(),
+        },
+      ],
+      { session },
+    );
+
+    await Billing.updateOne(
+      { _id: bill._id },
+      { $set: { paymentId: payment[0]._id } },
+      { session },
+    );
+    await session.commitTransaction();
+
+    eventService.emitPaymentCreated({
+      paymentId: payment[0]._id,
+      billingId: bill._id,
+      applicationId: bill.applicationId,
+      amount: bill.total,
+      type: "pro-rated",
+    });
+
+    eventService.emitDashboardUpdate({
+      reason: "Pro-rated payment submitted - FORCE REFRESH",
+      billingId: bill._id,
+      applicationId: bill.applicationId,
+      forceRefresh: true,
+      timestamp: Date.now(),
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Payment submitted! Awaiting admin confirmation.",
+      data: { status: "pending_confirmation" },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
+// ==================== SUBMIT INSTALLATION PAYMENT ====================
+export const submitInstallationPayment = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { billId, referenceNumber, notes } = req.body;
+
+    const bill = await Billing.findOne({
+      _id: billId,
+      isInstallationBill: true,
+    });
+    if (!bill)
+      return res
+        .status(404)
+        .json({ success: false, message: "Installation bill not found" });
+    if (bill.installationFeePaid)
+      return res
+        .status(400)
+        .json({ success: false, message: "Installation fee already paid" });
+
+    await Billing.updateOne(
+      { _id: bill._id },
+      { $set: { status: "pending_confirmation" } },
+      { session },
+    );
+
+    const payment = await Payment.create(
+      [
+        {
+          amount: bill.total,
+          paymentMethod: "manual",
+          paymentType: "installation",
+          status: "pending",
+          referenceNumber: referenceNumber || `INST-PAY-${Date.now()}`,
+          billingId: bill._id,
+          applicationId: bill.applicationId,
+          paymentDetails: {
+            gateway: "manual",
+            gatewayResponse: {
+              submittedAt: new Date(),
+              notes: notes || "Installation fee payment submitted",
+            },
+          },
+          paidAt: new Date(),
+        },
+      ],
+      { session },
+    );
+
+    await Billing.updateOne(
+      { _id: bill._id },
+      { $set: { paymentId: payment[0]._id } },
+      { session },
+    );
+    await session.commitTransaction();
+
+    eventService.emitPaymentCreated({
+      paymentId: payment[0]._id,
+      billingId: bill._id,
+      applicationId: bill.applicationId,
+      amount: bill.total,
+      type: "installation",
+    });
+
+    eventService.emitDashboardUpdate({
+      reason: "Installation payment submitted - FORCE REFRESH",
+      billingId: bill._id,
+      applicationId: bill.applicationId,
+      forceRefresh: true,
+      timestamp: Date.now(),
+    });
+
+    res.status(200).json({
+      success: true,
+      message:
+        "Installation fee payment submitted! Awaiting admin confirmation.",
+      data: { status: "pending_confirmation" },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
+// ==================== SUBMIT MONTHLY PAYMENT ====================
+export const submitMonthlyPayment = submitProRatedPayment;
+
+// ==================== MARK INSTALLATION BILL AS PAID ====================
+export const markInstallationBillAsPaid = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { billId } = req.params;
+    const { referenceNumber, notes } = req.body;
+    const adminId = req.user?._id;
+
+    const installationBill = await Billing.findById(billId).session(session);
+    if (!installationBill) {
+      await session.abortTransaction();
+      return res
+        .status(404)
+        .json({ success: false, message: "Bill not found" });
+    }
+
+    if (!installationBill.isInstallationBill) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: "This is not an installation fee bill",
+      });
+    }
+
+    if (installationBill.status === "paid") {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: `Installation bill ${installationBill.invoiceNumber} is already paid`,
+      });
+    }
+
+    let application = null;
+    if (installationBill.applicationId) {
+      application = await Application.findOne({
+        applicationId: installationBill.applicationId,
+      }).session(session);
+    }
+
+    const paymentData: any = {
+      amount: installationBill.total,
+      paymentMethod: "manual",
+      paymentType: "installation",
+      status: "completed",
+      referenceNumber: referenceNumber || `INST-ADMIN-${Date.now()}`,
+      billingId: installationBill._id,
+      paymentDetails: {
+        gateway: "manual",
+        gatewayResponse: {
+          confirmedBy: adminId,
+          confirmedAt: new Date(),
+          notes: notes || "Installation fee marked as paid by admin",
+          applicationId: installationBill.applicationId,
+        },
+      },
+      paidAt: new Date(),
+    };
+
+    if (application) {
+      paymentData.applicationId = application.applicationId;
+    }
+
+    const payment = await Payment.create([paymentData], { session });
+
+    await Billing.updateOne(
+      { _id: installationBill._id },
+      {
+        $set: {
+          status: "paid",
+          paymentId: payment[0]._id,
+          paidAt: new Date(),
+          installationFeePaid: true,
+        },
+      },
+      { session },
+    );
+
+    const invoice = await Invoice.findOne({
+      billingId: installationBill._id,
+    }).session(session);
+    if (invoice) {
+      invoice.status = "paid";
+      invoice.paidAt = new Date();
+      invoice.paymentId = payment[0]._id;
+      await invoice.save({ session });
+    }
+
+    if (installationBill.billingCycleId) {
+      await BillingCycle.updateOne(
+        { _id: installationBill.billingCycleId },
+        {
+          $set: {
+            installationFeePaid: true,
+          },
+          $push: {
+            paymentHistory: {
+              billingId: installationBill._id,
+              amount: installationBill.total,
+              paidAt: new Date(),
+            },
+          },
+        },
+        { session },
+      );
+    }
+
+    if (application) {
+      await Application.updateOne(
+        { applicationId: application.applicationId },
+        {
+          $set: {
+            installationFeePaid: true,
+            installationFeePaidAt: new Date(),
+          },
+        },
+        { session },
+      );
+    }
+
+    await session.commitTransaction();
+
+    eventService.emitBillingPaid({
+      billId: installationBill._id,
+      invoiceNumber: installationBill.invoiceNumber,
+      applicationId: installationBill.applicationId,
+      paymentId: payment[0]._id,
+      amount: installationBill.total,
+      isInstallation: true,
+      customerName: application
+        ? `${application.firstName} ${application.lastName}`
+        : undefined,
+    });
+
+    eventService.emitPaymentConfirmed({
+      payment: payment[0],
+      billingId: installationBill._id,
+      applicationId: installationBill.applicationId,
+      type: "installation",
+    });
+
+    eventService.emitDashboardUpdate({
+      reason: "Installation fee paid - FORCE REFRESH",
+      applicationId: installationBill.applicationId,
+      billId: installationBill._id,
+      forceRefresh: true,
+      timestamp: Date.now(),
+    });
+
+    const location = await getLocationFromEntity(application);
+    const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(
+      req.user?._id,
+    );
+
+    try {
+      if (application && application.email && emailAlertsEnabled) {
+        const collectionEmail = getCollectionEmailByLocation(location);
+        const htmlContent = emailService.generatePaymentConfirmationHTML(
+          installationBill,
+          payment[0],
+          installationBill.total,
+          new Date().toLocaleString(),
+          location,
+          collectionEmail,
+          true,
+        );
+
+        await emailService.sendEmail(
+          application.email,
+          `Installation Fee Payment Confirmation - ${installationBill.invoiceNumber}`,
+          htmlContent,
+          true,
+          location,
+        );
+      }
+    } catch (emailError) {
+      console.error(
+        "Failed to send installation fee payment confirmation email:",
+        emailError,
+      );
+    }
+
+    res.status(200).json({
+      success: true,
+      message: `Installation bill ${installationBill.invoiceNumber} marked as paid`,
+      data: {
+        billId: installationBill._id,
+        invoiceNumber: installationBill.invoiceNumber,
+        paymentId: payment[0]._id,
+        installationFeePaid: true,
+      },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
+// ==================== MARK BILL AS PAID ====================
+export const markBillAsPaid = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { billId } = req.params;
+    const { referenceNumber, notes } = req.body;
+    const adminId = req.user?._id;
+
+    const existingBill = await Billing.findById(billId).session(session);
+    if (!existingBill) {
+      await session.abortTransaction();
+      return res
+        .status(404)
+        .json({ success: false, message: "Bill not found" });
+    }
+
+    if (existingBill.isInstallationBill) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message:
+          "Please use the installation bill payment endpoint for installation fees",
+      });
+    }
+
+    if (existingBill.status === "paid") {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: `Bill ${existingBill.invoiceNumber} is already paid`,
+      });
+    }
+
+    let application = null;
+
+    if (existingBill.applicationId) {
+      application = await Application.findOne({
+        applicationId: existingBill.applicationId,
+      }).lean();
+    }
+
+    const paymentData: any = {
+      amount: existingBill.total,
+      paymentMethod: "manual",
+      paymentType: "subscription",
+      status: "completed",
+      referenceNumber: referenceNumber || `ADMIN-${Date.now()}`,
+      billingId: existingBill._id,
+      paymentDetails: {
+        gateway: "manual",
+        gatewayResponse: {
+          confirmedBy: adminId,
+          confirmedAt: new Date(),
+          notes: notes || "Manually marked as paid",
+          applicationId: existingBill.applicationId,
+        },
+      },
+      paidAt: new Date(),
+    };
+
+    if (application) {
+      paymentData.applicationId = application.applicationId;
+    }
+
+    const payment = await Payment.create([paymentData], { session });
+
+    await Billing.updateOne(
+      { _id: existingBill._id },
+      {
+        $set: {
+          status: "paid",
+          paymentId: payment[0]._id,
+          paidAt: new Date(),
+        },
+      },
+      { session },
+    );
+
+    const invoice = await Invoice.findOne({
+      billingId: existingBill._id,
+    }).session(session);
+    if (invoice) {
+      invoice.status = "paid";
+      invoice.paidAt = new Date();
+      invoice.paymentId = payment[0]._id;
+      await invoice.save({ session });
+    }
+
+    const billingCycle = await BillingCycle.findById(
+      existingBill.billingCycleId,
+    ).session(session);
+    if (billingCycle) {
+      billingCycle.paymentHistory = billingCycle.paymentHistory || [];
+      billingCycle.paymentHistory.push({
+        billingId: existingBill._id,
+        amount: existingBill.total,
+        paidAt: new Date(),
+      });
+
+      if (existingBill.isProRated && !billingCycle.proRatedPaid) {
+        billingCycle.proRatedPaid = true;
+        billingCycle.proRatedPaidAt = new Date();
+        if (billingCycle.status === "pending_activation") {
+          billingCycle.status = "active";
+        }
+      }
+
+      await billingCycle.save({ session });
+    }
+
+    await session.commitTransaction();
+
+    eventService.emitBillingPaid({
+      billId: existingBill._id,
+      invoiceNumber: existingBill.invoiceNumber,
+      applicationId: existingBill.applicationId,
+      paymentId: payment[0]._id,
+      amount: existingBill.total,
+      isInstallation: false,
+      isProRated: existingBill.isProRated || false,
+      customerName: application
+        ? `${application.firstName} ${application.lastName}`
+        : undefined,
+    });
+
+    eventService.emitPaymentConfirmed({
+      payment: payment[0],
+      billingId: existingBill._id,
+      applicationId: existingBill.applicationId,
+      type: existingBill.isProRated ? "pro-rated" : "monthly",
+    });
+
+    eventService.emitDashboardUpdate({
+      reason: "Bill marked as paid - FORCE REFRESH",
+      applicationId: existingBill.applicationId,
+      billId: existingBill._id,
+      forceRefresh: true,
+      timestamp: Date.now(),
+    });
+
+    const location = await getLocationFromEntity(application);
+    const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(
+      req.user?._id,
+    );
+
+    try {
+      if (application && application.email && emailAlertsEnabled) {
+        const collectionEmail = getCollectionEmailByLocation(location);
+        const htmlContent = emailService.generatePaymentConfirmationHTML(
+          existingBill,
+          payment[0],
+          existingBill.total,
+          new Date().toLocaleString(),
+          location,
+          collectionEmail,
+          false,
+        );
+
+        await emailService.sendEmail(
+          application.email,
+          `Payment Confirmation - ${existingBill.invoiceNumber}`,
+          htmlContent,
+          true,
+          location,
+        );
+      }
+    } catch (emailError) {
+      console.error("Failed to send payment confirmation email:", emailError);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: `Bill ${existingBill.invoiceNumber} marked as paid`,
+      data: {
+        billId: existingBill._id,
+        invoiceNumber: existingBill.invoiceNumber,
+        paymentId: payment[0]._id,
+      },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
   }
 };
 

@@ -1,5 +1,6 @@
-// backend/src/services/emailService.ts - COMPLETE FIXED VERSION WITH NO FORCE ENABLING
-// REMOVED ADMIN NOTIFICATIONS FOR NEW CUSTOMER REGISTRATION AND WELCOME EMAILS
+// backend/src/services/emailService.ts - COMPLETE FIXED VERSION
+// FIXED: areCustomerEmailsEnabled() now returns TRUE only if customerEmailAlertsEnabled === true
+// If undefined or false, returns FALSE - NO EMAIL SENT
 
 import { IUser } from "../models/User";
 import Admin from "../models/Admin";
@@ -246,6 +247,7 @@ class EmailService {
 
   constructor() {
     this.adminEmail = process.env.ADMIN_EMAIL || "admin@misterfyber.com";
+    this.supportEmail = process.env.SUPPORT_EMAIL || "admin@misterfyber.com";
     this.emailFrom =
       process.env.EMAIL_FROM || "Mister Fyber <admin@misterfyber.com>";
     this.apiKey = process.env.BREVO_API_KEY || "";
@@ -967,9 +969,15 @@ class EmailService {
 
   // ==================== FIXED: CUSTOMER EMAIL ENABLED CHECK ====================
   /**
-   * FIXED: Check if customer emails are enabled
-   * Returns TRUE if enabled, FALSE if disabled (OFF)
-   * NO FORCE ENABLING - respects the database value
+   * CRITICAL FIX: Check if customer emails are enabled
+   *
+   * RULES:
+   * - If customerEmailAlertsEnabled === true → RETURN TRUE (send email)
+   * - If customerEmailAlertsEnabled === false → RETURN FALSE (DON'T send email)
+   * - If customerEmailAlertsEnabled === undefined → RETURN FALSE (DON'T send email)
+   * - If no admin found → RETURN FALSE (DON'T send email)
+   *
+   * NO DEFAULTS, NO FORCE ENABLING
    */
   private async areCustomerEmailsEnabled(): Promise<boolean> {
     try {
@@ -979,27 +987,30 @@ class EmailService {
         status: "active",
       }).sort({ role: 1 });
 
-      // CRITICAL FIX: If admin found, use their EXACT value
-      // If customerEmailAlertsEnabled is undefined, default to true (enabled)
-      // If it's false, respect it as DISABLED
-      if (admin) {
-        const enabled = admin.customerEmailAlertsEnabled !== false;
-        console.log(`📧 Customer emails enabled: ${enabled}`);
-        console.log(
-          `   customerEmailAlertsEnabled value: ${admin.customerEmailAlertsEnabled}`,
-        );
-        return enabled;
+      // If no admin found, return FALSE (don't send email)
+      if (!admin) {
+        console.log("📧 No admin found - returning FALSE (no email)");
+        return false;
       }
 
-      // If no admin found, default to true
-      console.log("📧 No admin found, defaulting to enabled");
-      return true;
+      // CRITICAL FIX: Get the exact value
+      // If undefined or false → return false
+      // If true → return true
+      const enabled = admin.customerEmailAlertsEnabled === true;
+
+      console.log(`📧 Customer emails enabled: ${enabled}`);
+      console.log(
+        `   customerEmailAlertsEnabled value: ${admin.customerEmailAlertsEnabled}`,
+      );
+      console.log(`   Type: ${typeof admin.customerEmailAlertsEnabled}`);
+
+      return enabled;
     } catch (error) {
       console.warn(
-        "⚠️ Could not check customer email setting, defaulting to true:",
+        "⚠️ Could not check customer email setting, returning FALSE:",
         error,
       );
-      return true;
+      return false;
     }
   }
 
@@ -1051,8 +1062,8 @@ class EmailService {
 
   // ==================== CORE EMAIL SENDING ====================
   /**
-   * FIXED: sendEmail now properly checks customer email toggle
-   * and respects the OFF setting
+   * CRITICAL FIX: sendEmail now properly checks customer email toggle
+   * and respects the EXACT value
    */
   async sendEmail(
     to: string | string[],
@@ -1078,8 +1089,8 @@ class EmailService {
       );
 
       // ============================================================
-      // FIXED: Check if customer emails are enabled
-      // If this is a customer email and emails are disabled, SKIP sending
+      // CRITICAL FIX: Check if customer emails are enabled
+      // If this is a customer email, check the admin setting
       // ============================================================
       if (isCustomerEmail) {
         const customerEmailsEnabled = await this.areCustomerEmailsEnabled();
@@ -1088,6 +1099,7 @@ class EmailService {
             `⚠️ CUSTOMER EMAILS ARE DISABLED (OFF). Skipping email to: ${to}`,
           );
           console.log(`   Subject: ${subject}`);
+          console.log(`   customerEmailAlertsEnabled is NOT exactly TRUE`);
           console.log(`   This email was NOT sent because the toggle is OFF.`);
           // Return true to indicate "success" so the caller doesn't retry
           return true;
@@ -1188,9 +1200,6 @@ class EmailService {
           );
         }
       }
-
-      // NOTE: Admin email BCC is intentionally removed for customer welcome emails
-      // Admin will still receive notifications for other important emails
 
       console.log(
         `📧 Sending email via Brevo API to ${validToArray.join(", ")}...`,
@@ -1388,7 +1397,7 @@ class EmailService {
 
   /**
    * Send invoice with PDF attachment - INCLUDES BUILDING INSTALLATION FEE
-   * FIXED: Respects customer email toggle
+   * CRITICAL FIX: Respects customer email toggle
    */
   async sendInvoiceWithPDF(
     invoiceData: any,
@@ -1399,7 +1408,7 @@ class EmailService {
   ): Promise<boolean> {
     try {
       // ============================================================
-      // FIXED: Check if customer emails are enabled
+      // CRITICAL FIX: Check if customer emails are enabled
       // If emails are disabled, SKIP sending
       // ============================================================
       const customerEmailsEnabled = await this.areCustomerEmailsEnabled();
@@ -1719,10 +1728,7 @@ class EmailService {
         to: [{ email: invoiceData.customerEmail.trim() }],
         subject: `🧾 Invoice #${invoiceData.invoiceNumber} - Mister Fyber`,
         htmlContent: html,
-        bcc: [
-          { email: collectionEmail.trim() },
-          // Admin email removed from BCC for customer emails - only collection email gets BCC
-        ],
+        bcc: [{ email: collectionEmail.trim() }],
         replyTo: { email: collectionEmail },
         attachment: [
           {
@@ -1799,7 +1805,7 @@ class EmailService {
 
   /**
    * Send payment confirmation email with paid invoice attachment
-   * FIXED: Respects customer email toggle
+   * CRITICAL FIX: Respects customer email toggle
    */
   async sendPaymentConfirmationEmail(
     invoice: any,
@@ -1815,7 +1821,7 @@ class EmailService {
 
     try {
       // ============================================================
-      // FIXED: Check if customer emails are enabled
+      // CRITICAL FIX: Check if customer emails are enabled
       // If emails are disabled, SKIP sending
       // ============================================================
       const customerEmailsEnabled = await this.areCustomerEmailsEnabled();
@@ -1968,10 +1974,7 @@ class EmailService {
           true,
           location,
           {
-            bcc: [
-              getCollectionEmailByLocation(location || ""),
-              // Admin email removed from BCC for customer emails - only collection email gets BCC
-            ],
+            bcc: [getCollectionEmailByLocation(location || "")],
             replyTo: getCollectionEmailByLocation(location || ""),
           },
         );
@@ -1988,7 +1991,7 @@ class EmailService {
 
   /**
    * Send paid invoice email with PDF attachment
-   * FIXED: Respects customer email toggle
+   * CRITICAL FIX: Respects customer email toggle
    */
   async sendPaidInvoiceEmail(
     invoiceData: any,
@@ -2010,7 +2013,7 @@ class EmailService {
       console.log(`📧 PDF size: ${pdfBuffer ? pdfBuffer.length : 0} bytes`);
 
       // ============================================================
-      // FIXED: Check if customer emails are enabled
+      // CRITICAL FIX: Check if customer emails are enabled
       // If emails are disabled, SKIP sending
       // ============================================================
       const customerEmailsEnabled = await this.areCustomerEmailsEnabled();
@@ -2115,10 +2118,7 @@ class EmailService {
           true,
           location,
           {
-            bcc: [
-              getCollectionEmailByLocation(location || ""),
-              // Admin email removed from BCC for customer emails - only collection email gets BCC
-            ],
+            bcc: [getCollectionEmailByLocation(location || "")],
             replyTo: getCollectionEmailByLocation(location || ""),
           },
         );
@@ -2430,10 +2430,7 @@ class EmailService {
         to: [{ email: invoiceData.customerEmail.trim() }],
         subject: `✅ Payment Confirmed - ${invoiceData.invoiceNumber}`,
         htmlContent: html,
-        bcc: [
-          { email: collectionEmail.trim() },
-          // Admin email removed from BCC for customer emails - only collection email gets BCC
-        ],
+        bcc: [{ email: collectionEmail.trim() }],
         replyTo: { email: collectionEmail },
         attachment: [
           {
