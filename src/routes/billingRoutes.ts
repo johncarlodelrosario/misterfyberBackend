@@ -1,4 +1,4 @@
-// backend/src/routes/billingRoutes.ts - COMPLETE FIXED VERSION
+// backend/src/routes/billingRoutes.ts - COMPLETE FIXED VERSION WITH PRICE EDIT ROUTE
 
 import express from "express";
 import { optionalAuth, adminMiddleware } from "../middleware/auth";
@@ -18,13 +18,16 @@ import {
   getAllBillingCycles,
   getAllBills,
   markBillAsPaid,
+  markBillAsFree,
   markInstallationBillAsPaid,
+  markInstallationBillAsFree,
   getPendingProRatedBills,
   getPendingInstallationBills,
   getPendingActivations,
   confirmProRatedPayment,
   startMonthlyBilling,
   autoGenerateMonthlyBills,
+  autoGenerateEarlyBills,
   autoSuspendOverdue,
   getApplicationCurrentBilling,
   getApplicationBillingHistory,
@@ -42,6 +45,7 @@ import {
   checkForUpdates,
   manuallyGenerateEarlyBill,
   checkForNewCustomers,
+  updateBillPrice, // ADDED
 } from "../controllers/billingController";
 
 const router = express.Router();
@@ -75,12 +79,28 @@ router.post("/location/test", adminMiddleware, testLocationEmail);
 router.put("/settings", adminMiddleware, updateBillingSettings);
 router.get("/settings/admin", adminMiddleware, getBillingSettingsAdmin);
 router.put("/settings/admin", adminMiddleware, updateBillingSettingsAdmin);
+
+// ===== MARK PAID ROUTES =====
 router.put("/mark-paid/:billId", adminMiddleware, markBillAsPaid);
 router.put(
   "/mark-installation-paid/:billId",
   adminMiddleware,
   markInstallationBillAsPaid,
 );
+
+// ===== MARK FREE ROUTES =====
+router.put("/mark-free/:billId", adminMiddleware, markBillAsFree);
+router.put(
+  "/mark-installation-free/:billId",
+  adminMiddleware,
+  markInstallationBillAsFree,
+);
+
+// ===== UPDATE PRICE ROUTE =====
+router.put("/update-price/:billId", adminMiddleware, updateBillPrice);
+console.log("✅ /update-price/:billId route registered");
+
+// ===== BILLING ACTION ROUTES =====
 router.post("/confirm-pro-rated", adminMiddleware, confirmProRatedPayment);
 router.post("/start-monthly", adminMiddleware, startMonthlyBilling);
 router.post("/start", adminMiddleware, startBilling);
@@ -90,13 +110,17 @@ router.post("/resume", adminMiddleware, resumeBilling);
 router.post("/disconnect", adminMiddleware, disconnectClient);
 router.post("/reconnect", adminMiddleware, reconnectClient);
 router.delete("/delete-cycle", adminMiddleware, deleteBillingCycle);
+
+// ===== AUTO GENERATION ROUTES =====
 router.post("/auto-generate", adminMiddleware, autoGenerateMonthlyBills);
 router.post(
   "/auto-generate-early-bills",
   adminMiddleware,
-  autoGenerateMonthlyBills,
+  autoGenerateEarlyBills,
 );
 router.post("/auto-suspend", adminMiddleware, autoSuspendOverdue);
+
+// ===== RECOVERY & BACKDATED ROUTES =====
 router.post("/recover-missing-bills", adminMiddleware, recoverMissingBills);
 router.post(
   "/initialize-backdated",

@@ -1,4 +1,4 @@
-// backend/src/controllers/paymentController.ts - COMPLETE WITH BULK DELETE
+// backend/src/controllers/paymentController.ts - COMPLETE WITH BULK DELETE AND FREE SUPPORT
 
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
@@ -125,12 +125,15 @@ export const createPayment = async (
       customerName,
       customerEmail,
       customerPhone,
+      isFree,
     } = req.body;
     const userId = req.user._id;
 
-    if (!amount) {
+    // Allow zero amount for free payments
+    if (amount === undefined || amount === null) {
       return res.status(400).json({ message: "Amount is required" });
     }
+
     if (!billingId) {
       return res.status(400).json({ message: "Billing ID is required" });
     }
@@ -192,20 +195,27 @@ export const createPayment = async (
       paymentType:
         paymentType ||
         (billing.isInstallationBill ? "installation" : "subscription"),
-      status: "pending",
+      status: isFree ? "completed" : "pending",
       referenceNumber: referenceNumber || `MANUAL-${Date.now()}`,
       billingId,
       customerName: customerNameFinal,
       customerEmail: customerEmailFinal,
       customerPhone: customerPhoneFinal,
+      paidAt: isFree ? new Date() : undefined,
       paymentDetails: {
-        gateway: "manual",
+        gateway: isFree ? "free" : "manual",
         gatewayResponse: {
           customerName: customerNameFinal,
           customerEmail: customerEmailFinal,
           customerPhone: customerPhoneFinal,
+          isFree: isFree || false,
         },
-        notes: notes || "Manual payment - pending admin approval",
+        notes:
+          notes ||
+          (isFree
+            ? "Marked as free"
+            : "Manual payment - pending admin approval"),
+        isFree: isFree || false,
       },
     };
 
@@ -215,9 +225,29 @@ export const createPayment = async (
 
     const payment = await Payment.create(paymentData);
 
+    // If free payment, auto-confirm it
+    if (isFree) {
+      // Create a fake request for auto-confirmation
+      const confirmReq = {
+        params: { id: payment._id },
+        body: { notes: notes || "Auto-confirmed free payment" },
+        user: req.user,
+      } as AuthRequest;
+
+      const confirmRes = {
+        status: (code: number) => ({
+          json: (data: any) => data,
+        }),
+      } as any;
+
+      await confirmPayment(confirmReq, confirmRes, next);
+    }
+
     res.status(201).json({
       success: true,
-      message: "Payment recorded. Waiting for admin confirmation.",
+      message: isFree
+        ? "Free payment recorded successfully"
+        : "Payment recorded. Waiting for admin confirmation.",
       data: payment,
     });
   } catch (error) {
@@ -626,6 +656,7 @@ export const confirmPayment = async (
         customerPhone: payment.customerPhone,
       },
       notes: payment.paymentDetails?.notes,
+      isFree: payment.paymentDetails?.isFree || false,
     };
     await payment.save({ session });
 
