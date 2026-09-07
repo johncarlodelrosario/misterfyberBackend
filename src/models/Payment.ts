@@ -1,4 +1,5 @@
-// backend/src/models/Payment.ts
+// backend/src/models/Payment.ts - COMPLETE WITH 'free' ENUM
+
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IPayment extends Document {
@@ -13,8 +14,9 @@ export interface IPayment extends Document {
     | "maya"
     | "card"
     | "bank_transfer"
-    | "manual";
-  paymentType: "subscription" | "installation" | "others";
+    | "manual"
+    | "free";
+  paymentType: "subscription" | "installation" | "others" | "pro_rated";
   status: "pending" | "processing" | "completed" | "failed" | "refunded";
   transactionId: string;
   referenceNumber: string;
@@ -32,8 +34,10 @@ export interface IPayment extends Document {
     rejectionReason?: string;
     rejectedAt?: Date;
     rejectedBy?: string;
+    isFree?: boolean;
   };
   billingId: mongoose.Types.ObjectId;
+  invoiceId?: mongoose.Types.ObjectId;
   metadata: any;
   paidAt: Date;
   createdAt: Date;
@@ -61,13 +65,14 @@ const PaymentSchema: Schema = new Schema(
         "card",
         "bank_transfer",
         "manual",
+        "free",
       ],
       required: true,
       default: "manual",
     },
     paymentType: {
       type: String,
-      enum: ["subscription", "installation", "others"],
+      enum: ["subscription", "installation", "others", "pro_rated"],
       default: "subscription",
     },
     status: {
@@ -91,8 +96,10 @@ const PaymentSchema: Schema = new Schema(
       rejectionReason: { type: String },
       rejectedAt: { type: Date },
       rejectedBy: { type: String },
+      isFree: { type: Boolean, default: false },
     },
-    billingId: { type: Schema.Types.ObjectId, ref: "Billing", required: true },
+    billingId: { type: Schema.Types.ObjectId, ref: "Billing", required: false },
+    invoiceId: { type: Schema.Types.ObjectId, ref: "Invoice" },
     metadata: { type: Schema.Types.Mixed },
     paidAt: { type: Date },
   },
@@ -111,7 +118,8 @@ PaymentSchema.pre("save", function (next) {
 });
 
 PaymentSchema.pre("validate", function (next) {
-  if (!this.userId && !this.applicationId) {
+  // Allow payments without userId or applicationId if it's a free payment
+  if (!this.userId && !this.applicationId && this.paymentMethod !== "free") {
     next(new Error("Either userId or applicationId must be provided"));
   }
   next();
@@ -125,5 +133,6 @@ PaymentSchema.index({ paymentType: 1 });
 PaymentSchema.index({ billingId: 1 });
 PaymentSchema.index({ referenceNumber: 1 });
 PaymentSchema.index({ customerName: 1 });
+PaymentSchema.index({ paymentMethod: 1 });
 
 export default mongoose.model<IPayment>("Payment", PaymentSchema);

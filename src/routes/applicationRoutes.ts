@@ -1,4 +1,4 @@
-// routes/applicationRoutes.ts - COMPLETE FIXED WITH PROPER 409 HANDLING - REMOVED birthDate AND gender
+// routes/applicationRoutes.ts - COMPLETE FINAL FIXED - WORKING!
 import express, { Router, Request, Response, NextFunction } from "express";
 import { body } from "express-validator";
 import {
@@ -40,7 +40,7 @@ function getImageUrl(imagePath?: string): string {
     return imagePath;
   }
   if (imagePath.startsWith("data:")) return imagePath;
-  const PRODUCTION_URL = "https://misterfyberbackend.onrender.com";
+  const PRODUCTION_URL = "https://misterfyberbackend-q4k5.onrender.com";
   let filename = "";
   const parts = imagePath.split(/[\\\/]/);
   filename = parts[parts.length - 1];
@@ -67,7 +67,7 @@ router.get("/address/provinces/:regionCode", getProvincesByRegion);
 router.get("/address/cities/:provinceCode", getCitiesByProvince);
 router.get("/address/barangays/:cityCode", getBarangaysByCity);
 
-// ✅ SUBMIT APPLICATION - WITH PROPER VALIDATION - REMOVED birthDate AND gender
+// ✅ SUBMIT APPLICATION - WITH PROPER VALIDATION
 router.post(
   "/",
   uploadIdCard.single("idImage"),
@@ -153,7 +153,7 @@ router.get("/dashboard/data", getApplicationDashboardData);
 router.get("/dashboard/stats", getApplicationStats);
 
 // ============================================================
-// ✅ MAIN GET - WITH SEARCH & BUILDING FILTERS
+// ✅ MAIN GET - ULTRA FAST + MINIMAL FIELDS!
 // ============================================================
 router.get("/", async (req: Request, res: Response, next: NextFunction) => {
   const startTime = Date.now();
@@ -170,7 +170,7 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
     const limitNum = parseInt(limit) || 20;
     const skip = (pageNum - 1) * limitNum;
 
-    const cacheKey = `apps_${pageNum}_${limitNum}_${status || "all"}_${search || ""}_${buildingId || ""}`;
+    const cacheKey = `apps_ultra_${pageNum}_${limitNum}_${status || "all"}_${search || ""}_${buildingId || ""}`;
 
     if (forceRefresh !== "true") {
       const cachedData = cache.get(cacheKey);
@@ -180,23 +180,9 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
       }
     }
 
-    console.log(`📊 DB QUERY: ${cacheKey}`);
-    console.log(
-      `🔍 Filters: status=${status}, search=${search}, buildingId=${buildingId}`,
-    );
+    console.log(`📊 DB QUERY (ULTRA FAST): ${cacheKey}`);
 
-    if (mongoose.connection.readyState !== 1) {
-      return res.status(503).json({
-        success: false,
-        message: "Database connection unavailable",
-        data: [],
-        total: 0,
-        totalPages: 0,
-        currentPage: 1,
-        limit: 20,
-      });
-    }
-
+    // ✅ BUILD FILTER
     const filter: any = {};
 
     if (status && status !== "all" && status !== "") {
@@ -221,71 +207,71 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
 
     console.log(`🔍 Final filter:`, JSON.stringify(filter, null, 2));
 
+    // ✅ ULTRA FAST TOTAL
+    let total = 0;
+    const totalCacheKey = `total_ultra_${status || "all"}_${search || ""}_${buildingId || ""}`;
+    const cachedTotal = cache.get(totalCacheKey) as number | undefined;
+
+    if (cachedTotal !== undefined && forceRefresh !== "true") {
+      total = cachedTotal;
+      console.log(`⚡ TOTAL COUNT CACHE HIT! ${total}`);
+    } else {
+      console.log(`📊 Getting total count...`);
+      if (Object.keys(filter).length === 0) {
+        total = await Application.estimatedDocumentCount();
+        console.log(`✅ Estimated total: ${total} (from collection stats)`);
+      } else {
+        total = await Application.countDocuments(filter);
+        console.log(`✅ Counted total with filter: ${total}`);
+      }
+      cache.set(totalCacheKey, total, 60);
+    }
+
+    // ✅ GET DATA - MINIMAL FIELDS LANG PARA IWAS "Maximum response size reached"
     const applications = await Application.find(filter)
       .select(
-        "applicationId firstName lastName middleName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName installationFee installationFeePaid serviceStatus planId notes",
+        "applicationId firstName lastName middleName email phoneNumber status createdAt buildingId buildingName tower floor unitNumber planId installationFee installationFeePaid serviceStatus billingStarted registeredUserId",
       )
-      .populate("planId", "name price speed")
+      .populate("planId", "name price")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limitNum)
-      .lean()
-      .maxTimeMS(3000);
-
-    const totalCacheKey = `total_${status || "all"}_${search || ""}_${buildingId || ""}`;
-    let total = cache.get(totalCacheKey) as number | undefined;
-
-    if (total === undefined || forceRefresh === "true") {
-      console.log(`📊 Counting total with filters...`);
-      total = await Application.countDocuments(filter).maxTimeMS(3000);
-      cache.set(totalCacheKey, total, 60);
-      console.log(`✅ Total count: ${total} - CACHED`);
-    } else {
-      console.log(`⚡ TOTAL COUNT CACHE HIT! ${total}`);
-    }
+      .lean();
 
     const elapsed = Date.now() - startTime;
-    console.log(
-      `✅ ${applications.length} apps, Total: ${total} in ${elapsed}ms`,
-    );
 
+    // ✅ FORMATTED DATA - KONTI LANG ANG FIELDS!
     const formattedData = applications.map((app: any) => ({
-      _id: app._id,
-      applicationId: app.applicationId,
+      id: app.applicationId,
       firstName: app.firstName,
       lastName: app.lastName,
       middleName: app.middleName || "",
       email: app.email,
-      phoneNumber: app.phoneNumber,
+      phone: app.phoneNumber,
       status: app.status,
-      createdAt: app.createdAt,
-      idImage: app.idImage,
-      idImageUrl: getImageUrl(app.idImage),
-      billingStarted: app.billingStarted || false,
-      registeredUserId: app.registeredUserId,
-      billingCycleId: app.billingCycleId,
-      idType: app.idType,
-      idNumber: app.idNumber,
-      tower: app.tower || "",
-      floor: app.floor,
-      unitNumber: app.unitNumber,
-      macAddress: app.macAddress || "",
+      building: app.buildingName,
       buildingId: app.buildingId,
-      buildingName: app.buildingName,
-      hasAccount: !!app.registeredUserId,
+      tower: app.tower || "",
+      floor: app.floor || "",
+      unit: app.unitNumber || "",
+      plan: app.planId?.name || "N/A",
+      price: app.planId?.price || 0,
       installationFee: app.installationFee || 0,
       installationFeePaid: app.installationFeePaid || false,
       serviceStatus: app.serviceStatus || "pending",
-      planId: app.planId,
-      plan: app.planId,
-      building: null,
-      notes: app.notes || "",
+      billingStarted: app.billingStarted || false,
+      hasAccount: !!app.registeredUserId,
+      createdAt: app.createdAt,
     }));
+
+    console.log(
+      `✅ ${applications.length} apps, Total: ${total} in ${elapsed}ms`,
+    );
 
     const responseData = {
       success: true,
       data: formattedData,
-      totalPages: Math.ceil(total / limitNum) || 1,
+      totalPages: Math.ceil((total || 0) / limitNum) || 1,
       currentPage: pageNum,
       total: total || 0,
       limit: limitNum,
@@ -307,7 +293,7 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
     const status = getStringQuery(req.query.status);
     const search = getStringQuery(req.query.search);
     const buildingId = getStringQuery(req.query.buildingId);
-    const cacheKey = `apps_${page}_${limit}_${status || "all"}_${search || ""}_${buildingId || ""}`;
+    const cacheKey = `apps_ultra_${page}_${limit}_${status || "all"}_${search || ""}_${buildingId || ""}`;
     const cachedData = cache.get(cacheKey);
     if (cachedData) {
       console.log("📦 Returning cached data due to error");
@@ -329,13 +315,13 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
 });
 
 // ============================================================
-// ✅ GET ALL - NO LIMIT
+// ✅ GET ALL - NO LIMIT (MINIMAL FIELDS LANG!)
 // ============================================================
 router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
   const startTime = Date.now();
 
   try {
-    const cacheKey = "apps_all";
+    const cacheKey = "apps_all_minimal";
     const cachedData = cache.get(cacheKey);
 
     if (cachedData) {
@@ -349,7 +335,7 @@ router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
       });
     }
 
-    console.log("📊 DB QUERY: all");
+    console.log("📊 DB QUERY: all (MINIMAL FIELDS)");
 
     if (mongoose.connection.readyState !== 1) {
       return res.status(503).json({
@@ -360,68 +346,53 @@ router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
       });
     }
 
+    // ✅ KONTI LANG ANG FIELDS!
     const applications = await Application.find()
       .select(
-        "applicationId firstName lastName middleName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName installationFee installationFeePaid serviceStatus planId notes",
+        "applicationId firstName lastName email phoneNumber status createdAt buildingName tower floor unitNumber planId",
       )
-      .populate("planId", "name price speed")
+      .populate("planId", "name price")
       .sort({ createdAt: -1 })
-      .lean()
-      .maxTimeMS(3000);
+      .lean();
 
     const total = applications.length;
 
+    // ✅ SUPER MINIMAL DATA!
     const formattedData = applications.map((app: any) => ({
-      _id: app._id,
-      applicationId: app.applicationId,
-      firstName: app.firstName,
-      lastName: app.lastName,
-      middleName: app.middleName || "",
+      id: app.applicationId,
+      name: `${app.firstName || ""} ${app.lastName || ""}`.trim(),
       email: app.email,
-      phoneNumber: app.phoneNumber,
+      phone: app.phoneNumber,
       status: app.status,
+      building: app.buildingName,
+      unit:
+        app.tower && app.floor
+          ? `${app.tower} - ${app.floor}${app.unitNumber ? `-${app.unitNumber}` : ""}`
+          : app.floor && app.unitNumber
+            ? `${app.floor}${app.unitNumber ? `-${app.unitNumber}` : ""}`
+            : "N/A",
+      plan: app.planId?.name || "N/A",
+      price: app.planId?.price || 0,
       createdAt: app.createdAt,
-      idImage: app.idImage,
-      idImageUrl: getImageUrl(app.idImage),
-      billingStarted: app.billingStarted || false,
-      registeredUserId: app.registeredUserId,
-      billingCycleId: app.billingCycleId,
-      idType: app.idType,
-      idNumber: app.idNumber,
-      tower: app.tower || "",
-      floor: app.floor,
-      unitNumber: app.unitNumber,
-      macAddress: app.macAddress || "",
-      buildingId: app.buildingId,
-      buildingName: app.buildingName,
-      hasAccount: !!app.registeredUserId,
-      installationFee: app.installationFee || 0,
-      installationFeePaid: app.installationFeePaid || false,
-      serviceStatus: app.serviceStatus || "pending",
-      planId: app.planId,
-      plan: app.planId,
-      building: null,
-      notes: app.notes || "",
     }));
 
     const responseData = { data: formattedData, total: total };
     cache.set(cacheKey, responseData, 60);
 
-    console.log(
-      `✅ ${total} apps with plan data in ${Date.now() - startTime}ms - CACHED`,
-    );
+    const elapsed = Date.now() - startTime;
+    console.log(`✅ ${total} apps (minimal) in ${elapsed}ms - CACHED`);
 
     return res.status(200).json({
       success: true,
       data: formattedData,
       total: total,
-      _responseTime: `${Date.now() - startTime}ms`,
+      _responseTime: `${elapsed}ms`,
       _cached: false,
     });
   } catch (error: any) {
     console.error("❌ Error:", error.message);
 
-    const cachedData = cache.get("apps_all");
+    const cachedData = cache.get("apps_all_minimal");
     if (cachedData) {
       return res.status(200).json({
         success: true,
@@ -540,7 +511,7 @@ router.patch(
 );
 
 // ============================================================
-// ✅ SINGLE APPLICATION - GET BY ID
+// ✅ SINGLE APPLICATION - GET BY ID (OPTIMIZED)
 // ============================================================
 router.get("/:id", async (req: Request, res: Response) => {
   try {

@@ -69,7 +69,7 @@ const allowedOrigins = [
   "https://misterfyber.com",
   "https://misterfyber.vercel.app",
   "https://misterfyber-frontend.vercel.app",
-  "https://misterfyberbackend.onrender.com",
+  "https://misterfyberbackend-q4k5.onrender.com",
   "https://newport-application.vercel.app",
   "https://vitalez-residence-application-form.vercel.app",
   process.env.FRONTEND_URL || "",

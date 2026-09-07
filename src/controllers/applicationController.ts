@@ -1,4 +1,4 @@
-// controllers/applicationController.ts - COMPLETE FIXED WITH PROPER 409 HANDLING
+// controllers/applicationController.ts - COMPLETE OPTIMIZED WITH AGGREGATION
 import { Request, Response, NextFunction } from "express";
 import Application from "../models/Application";
 import Plan from "../models/Plan";
@@ -54,7 +54,7 @@ export const getImageUrl = (imagePath?: string): string => {
     return imagePath;
   }
   if (imagePath.startsWith("data:")) return imagePath;
-  const PRODUCTION_URL = "https://misterfyberbackend.onrender.com";
+  const PRODUCTION_URL = "https://misterfyberbackend-q4k5.onrender.com";
   let filename = "";
   const parts = imagePath.split(/[\\\/]/);
   filename = parts[parts.length - 1];
@@ -174,7 +174,7 @@ export const getBarangaysByCity = async (
 };
 
 // ============================================================
-// ✅ GET ALL APPLICATIONS - WITH SEARCH & BUILDING FILTERS
+// ✅ GET ALL APPLICATIONS - OPTIMIZED WITH AGGREGATION
 // ============================================================
 export const getAllApplications = async (
   req: Request,
@@ -198,6 +198,7 @@ export const getAllApplications = async (
       `🔄 getAllApplications - page: ${pageNum}, limit: ${limitNum}, status: ${status || "all"}, search: ${search || "none"}, buildingId: ${buildingId || "none"}`,
     );
 
+    // ✅ BUILD FILTER
     const filter: any = {};
 
     if (status && status !== "all" && status !== "") {
@@ -205,7 +206,7 @@ export const getAllApplications = async (
     }
 
     if (buildingId && buildingId !== "" && buildingId !== "all") {
-      filter.buildingId = buildingId;
+      filter.buildingId = new mongoose.Types.ObjectId(buildingId);
     }
 
     if (search && search.trim() !== "") {
@@ -222,56 +223,91 @@ export const getAllApplications = async (
 
     console.log("🔍 Final filter:", JSON.stringify(filter, null, 2));
 
-    const [applications, total] = await Promise.all([
-      Application.find(filter)
-        .select(
-          "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName installationFee installationFeePaid serviceStatus planId middleName notes",
-        )
-        .populate("planId", "name price speed")
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limitNum)
-        .lean()
-        .maxTimeMS(3000),
-      Application.countDocuments(filter),
-    ]);
+    // ✅ OPTIMIZED: SINGLE AGGREGATION QUERY
+    const pipeline: any[] = [];
+
+    // Match stage
+    if (Object.keys(filter).length > 0) {
+      pipeline.push({ $match: filter });
+    }
+
+    // ✅ Facet para sa data at total count (isang query lang!)
+    pipeline.push({
+      $facet: {
+        metadata: [{ $count: "total" }],
+        data: [
+          { $sort: { createdAt: -1 } },
+          { $skip: skip },
+          { $limit: limitNum },
+          // ✅ Lookup sa Plan (imbes na populate)
+          {
+            $lookup: {
+              from: "plans",
+              localField: "planId",
+              foreignField: "_id",
+              as: "plan",
+            },
+          },
+          { $unwind: { path: "$plan", preserveNullAndEmptyArrays: true } },
+          // ✅ Project para sa tamang format
+          {
+            $project: {
+              _id: 1,
+              applicationId: 1,
+              firstName: 1,
+              lastName: 1,
+              middleName: 1,
+              email: 1,
+              phoneNumber: 1,
+              status: 1,
+              createdAt: 1,
+              idImage: 1,
+              billingStarted: 1,
+              registeredUserId: 1,
+              billingCycleId: 1,
+              idType: 1,
+              idNumber: 1,
+              tower: 1,
+              floor: 1,
+              unitNumber: 1,
+              macAddress: 1,
+              buildingId: 1,
+              buildingName: 1,
+              installationFee: 1,
+              installationFeePaid: 1,
+              serviceStatus: 1,
+              notes: 1,
+              "plan._id": 1,
+              "plan.name": 1,
+              "plan.price": 1,
+              "plan.speed": 1,
+              hasAccount: {
+                $cond: [{ $ne: ["$registeredUserId", null] }, true, false],
+              },
+              idImageUrl: { $concat: ["/uploads/id-cards/", "$idImage"] },
+            },
+          },
+        ],
+      },
+    });
+
+    const result = await Application.aggregate(pipeline);
+
+    const total = result[0]?.metadata[0]?.total || 0;
+    const applications = result[0]?.data || [];
 
     const elapsed = Date.now() - startTime;
     console.log(
       `✅ Found ${applications.length} applications, Total: ${total} in ${elapsed}ms`,
     );
 
+    // ✅ Fix image URLs
     const formattedData = applications.map((app: any) => ({
-      _id: app._id,
-      applicationId: app.applicationId,
-      firstName: app.firstName,
-      lastName: app.lastName,
-      middleName: app.middleName || "",
-      email: app.email,
-      phoneNumber: app.phoneNumber,
-      status: app.status,
-      createdAt: app.createdAt,
-      idImage: app.idImage,
+      ...app,
       idImageUrl: getImageUrl(app.idImage),
-      billingStarted: app.billingStarted || false,
-      registeredUserId: app.registeredUserId,
-      billingCycleId: app.billingCycleId,
-      idType: app.idType,
-      idNumber: app.idNumber,
-      tower: app.tower || "",
-      floor: app.floor,
-      unitNumber: app.unitNumber,
-      macAddress: app.macAddress || "",
-      buildingId: app.buildingId,
-      buildingName: app.buildingName,
-      hasAccount: !!app.registeredUserId,
-      installationFee: app.installationFee || 0,
-      installationFeePaid: app.installationFeePaid || false,
-      serviceStatus: app.serviceStatus || "pending",
-      planId: app.planId,
-      plan: app.planId,
+      idImage: app.idImage,
+      plan: app.plan || null,
       building: null,
-      notes: app.notes || "",
     }));
 
     const responseData = {
@@ -306,7 +342,7 @@ export const getAllApplications = async (
 };
 
 // ============================================================
-// ✅ GET ALL APPLICATIONS - NO LIMIT
+// ✅ GET ALL APPLICATIONS - NO LIMIT (OPTIMIZED)
 // ============================================================
 export const getAllApplicationsNoLimit = async (
   req: Request,
@@ -328,14 +364,55 @@ export const getAllApplicationsNoLimit = async (
       });
     }
 
-    const applications = await Application.find()
-      .select(
-        "applicationId firstName lastName email phoneNumber status createdAt idImage billingStarted registeredUserId billingCycleId idType idNumber tower floor unitNumber macAddress buildingId buildingName installationFee installationFeePaid serviceStatus planId middleName notes",
-      )
-      .populate("planId", "name price speed")
-      .sort({ createdAt: -1 })
-      .lean()
-      .maxTimeMS(3000);
+    // ✅ OPTIMIZED: Use aggregation with lookup
+    const applications = await Application.aggregate([
+      { $sort: { createdAt: -1 } },
+      {
+        $lookup: {
+          from: "plans",
+          localField: "planId",
+          foreignField: "_id",
+          as: "plan",
+        },
+      },
+      { $unwind: { path: "$plan", preserveNullAndEmptyArrays: true } },
+      {
+        $project: {
+          _id: 1,
+          applicationId: 1,
+          firstName: 1,
+          lastName: 1,
+          middleName: 1,
+          email: 1,
+          phoneNumber: 1,
+          status: 1,
+          createdAt: 1,
+          idImage: 1,
+          billingStarted: 1,
+          registeredUserId: 1,
+          billingCycleId: 1,
+          idType: 1,
+          idNumber: 1,
+          tower: 1,
+          floor: 1,
+          unitNumber: 1,
+          macAddress: 1,
+          buildingId: 1,
+          buildingName: 1,
+          installationFee: 1,
+          installationFeePaid: 1,
+          serviceStatus: 1,
+          notes: 1,
+          "plan._id": 1,
+          "plan.name": 1,
+          "plan.price": 1,
+          "plan.speed": 1,
+          hasAccount: {
+            $cond: [{ $ne: ["$registeredUserId", null] }, true, false],
+          },
+        },
+      },
+    ]);
 
     const total = applications.length;
 
@@ -344,36 +421,10 @@ export const getAllApplicationsNoLimit = async (
     );
 
     const formattedData = applications.map((app: any) => ({
-      _id: app._id,
-      applicationId: app.applicationId,
-      firstName: app.firstName,
-      lastName: app.lastName,
-      middleName: app.middleName || "",
-      email: app.email,
-      phoneNumber: app.phoneNumber,
-      status: app.status,
-      createdAt: app.createdAt,
-      idImage: app.idImage,
+      ...app,
       idImageUrl: getImageUrl(app.idImage),
-      billingStarted: app.billingStarted || false,
-      registeredUserId: app.registeredUserId,
-      billingCycleId: app.billingCycleId,
-      idType: app.idType,
-      idNumber: app.idNumber,
-      tower: app.tower || "",
-      floor: app.floor,
-      unitNumber: app.unitNumber,
-      macAddress: app.macAddress || "",
-      buildingId: app.buildingId,
-      buildingName: app.buildingName,
-      hasAccount: !!app.registeredUserId,
-      installationFee: app.installationFee || 0,
-      installationFeePaid: app.installationFeePaid || false,
-      serviceStatus: app.serviceStatus || "pending",
-      planId: app.planId,
-      plan: app.planId,
+      plan: app.plan || null,
       building: null,
-      notes: app.notes || "",
     }));
 
     return res.status(200).json({
@@ -827,12 +878,28 @@ export const submitApplication = async (
 
     console.log(`✅ Application created with ID: ${application.applicationId}`);
 
-    // Populate for response
-    const populatedApplication = await Application.findById(application._id)
-      .populate("planId")
-      .populate("buildingId")
-      .session(session)
-      .lean();
+    // Populate for response - OPTIMIZED with aggregation
+    const populatedApplication = await Application.aggregate([
+      { $match: { _id: application._id } },
+      {
+        $lookup: {
+          from: "plans",
+          localField: "planId",
+          foreignField: "_id",
+          as: "plan",
+        },
+      },
+      { $unwind: { path: "$plan", preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: "buildings",
+          localField: "buildingId",
+          foreignField: "_id",
+          as: "building",
+        },
+      },
+      { $unwind: { path: "$building", preserveNullAndEmptyArrays: true } },
+    ]);
 
     await session.commitTransaction();
     session.endSession();
@@ -844,7 +911,7 @@ export const submitApplication = async (
 
     // Send emails asynchronously
     const fullImageUrl = getImageUrl(application.idImage);
-    const populatedPlan = populatedApplication?.planId as any;
+    const populatedPlan = populatedApplication[0]?.plan;
 
     setImmediate(() => {
       emailService
@@ -976,33 +1043,59 @@ export const getApplication = async (
   next: NextFunction,
 ) => {
   try {
-    const application = await Application.findById(req.params.id)
-      .select("-__v")
-      .populate("planId", "name price speed duration features")
-      .populate(
-        "buildingId",
-        "buildingName streetAddress region province city barangay zipCode isActive",
-      )
-      .populate("reviewedBy", "firstName lastName email")
-      .lean()
-      .exec();
+    // ✅ OPTIMIZED: Use aggregation
+    const applications = await Application.aggregate([
+      { $match: { _id: new mongoose.Types.ObjectId(req.params.id) } },
+      {
+        $lookup: {
+          from: "plans",
+          localField: "planId",
+          foreignField: "_id",
+          as: "plan",
+        },
+      },
+      { $unwind: { path: "$plan", preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: "buildings",
+          localField: "buildingId",
+          foreignField: "_id",
+          as: "building",
+        },
+      },
+      { $unwind: { path: "$building", preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: "admins",
+          localField: "reviewedBy",
+          foreignField: "_id",
+          as: "reviewedBy",
+        },
+      },
+      { $unwind: { path: "$reviewedBy", preserveNullAndEmptyArrays: true } },
+      {
+        $project: {
+          __v: 0,
+          idImageUrl: { $concat: ["/uploads/id-cards/", "$idImage"] },
+        },
+      },
+    ]);
 
-    if (!application) {
+    if (!applications || applications.length === 0) {
       return res
         .status(404)
         .json({ success: false, message: "Application not found" });
     }
 
-    const idImageUrl = getImageUrl(application.idImage);
+    const application = applications[0];
     res.status(200).json({
       success: true,
       data: {
         ...application,
-        idImageUrl,
         macAddress: application.macAddress || "",
         tower: application.tower || "",
         middleName: application.middleName || "",
-        building: application.buildingId,
+        building: application.building,
       },
     });
   } catch (error) {
