@@ -1,4 +1,4 @@
-// routes/applicationRoutes.ts - COMPLETE FINAL FIXED - WORKING!
+// routes/applicationRoutes.ts - COMPLETE FINAL FIXED - WITH _id
 import express, { Router, Request, Response, NextFunction } from "express";
 import { body } from "express-validator";
 import {
@@ -153,7 +153,7 @@ router.get("/dashboard/data", getApplicationDashboardData);
 router.get("/dashboard/stats", getApplicationStats);
 
 // ============================================================
-// ✅ MAIN GET - ULTRA FAST + MINIMAL FIELDS!
+// ✅ MAIN GET - ULTRA FAST + WITH _id
 // ============================================================
 router.get("/", async (req: Request, res: Response, next: NextFunction) => {
   const startTime = Date.now();
@@ -227,10 +227,10 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
       cache.set(totalCacheKey, total, 60);
     }
 
-    // ✅ GET DATA - MINIMAL FIELDS LANG PARA IWAS "Maximum response size reached"
+    // ✅ GET DATA - WITH _id included
     const applications = await Application.find(filter)
       .select(
-        "applicationId firstName lastName middleName email phoneNumber status createdAt buildingId buildingName tower floor unitNumber planId installationFee installationFeePaid serviceStatus billingStarted registeredUserId",
+        "_id applicationId firstName lastName middleName email phoneNumber status createdAt buildingId buildingName tower floor unitNumber planId installationFee installationFeePaid serviceStatus billingStarted registeredUserId idType idNumber macAddress notes adminNotes",
       )
       .populate("planId", "name price")
       .sort({ createdAt: -1 })
@@ -240,20 +240,23 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
 
     const elapsed = Date.now() - startTime;
 
-    // ✅ FORMATTED DATA - KONTI LANG ANG FIELDS!
+    // ✅ FORMATTED DATA - WITH _id included!
     const formattedData = applications.map((app: any) => ({
-      id: app.applicationId,
+      _id: app._id, // ✅ CRITICAL: Include _id for frontend operations
+      id: app._id, // Also include as id for backward compatibility
+      applicationId: app.applicationId,
       firstName: app.firstName,
       lastName: app.lastName,
       middleName: app.middleName || "",
       email: app.email,
-      phone: app.phoneNumber,
+      phoneNumber: app.phoneNumber,
       status: app.status,
-      building: app.buildingName,
       buildingId: app.buildingId,
+      buildingName: app.buildingName,
       tower: app.tower || "",
       floor: app.floor || "",
-      unit: app.unitNumber || "",
+      unitNumber: app.unitNumber || "",
+      planId: app.planId,
       plan: app.planId?.name || "N/A",
       price: app.planId?.price || 0,
       installationFee: app.installationFee || 0,
@@ -262,6 +265,12 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
       billingStarted: app.billingStarted || false,
       hasAccount: !!app.registeredUserId,
       createdAt: app.createdAt,
+      updatedAt: app.updatedAt,
+      idType: app.idType || "N/A",
+      idNumber: app.idNumber || "N/A",
+      macAddress: app.macAddress || "",
+      notes: app.notes || "",
+      adminNotes: app.adminNotes || "",
     }));
 
     console.log(
@@ -315,7 +324,7 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
 });
 
 // ============================================================
-// ✅ GET ALL - NO LIMIT (MINIMAL FIELDS LANG!)
+// ✅ GET ALL - NO LIMIT (WITH _id)
 // ============================================================
 router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
   const startTime = Date.now();
@@ -346,10 +355,9 @@ router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
       });
     }
 
-    // ✅ KONTI LANG ANG FIELDS!
     const applications = await Application.find()
       .select(
-        "applicationId firstName lastName email phoneNumber status createdAt buildingName tower floor unitNumber planId",
+        "_id applicationId firstName lastName email phoneNumber status createdAt buildingName tower floor unitNumber planId",
       )
       .populate("planId", "name price")
       .sort({ createdAt: -1 })
@@ -357,8 +365,8 @@ router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
 
     const total = applications.length;
 
-    // ✅ SUPER MINIMAL DATA!
     const formattedData = applications.map((app: any) => ({
+      _id: app._id,
       id: app.applicationId,
       name: `${app.firstName || ""} ${app.lastName || ""}`.trim(),
       email: app.email,
