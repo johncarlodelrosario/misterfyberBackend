@@ -1,4 +1,4 @@
-// routes/applicationRoutes.ts - COMPLETE FINAL FIXED - WITH _id
+// routes/applicationRoutes.ts - COMPLETE FINAL FIXED - WITH ID IMAGE
 import express, { Router, Request, Response, NextFunction } from "express";
 import { body } from "express-validator";
 import {
@@ -31,22 +31,34 @@ const cache = new NodeCache({ stdTTL: 60, checkperiod: 120 });
 
 console.log("🔥 ULTIMATE SPEED MODE - Application Routes");
 
+// ============================================================
+// ✅ FIXED: getImageUrl - returns the full URL for any image path
+// ============================================================
 function getImageUrl(imagePath?: string): string {
   if (!imagePath) return "";
+
+  // If it's already a full URL
   if (
-    imagePath.includes("cloudinary.com") ||
-    imagePath.startsWith("https://res.cloudinary.com")
+    imagePath.startsWith("http://") ||
+    imagePath.startsWith("https://") ||
+    imagePath.startsWith("data:")
   ) {
     return imagePath;
   }
-  if (imagePath.startsWith("data:")) return imagePath;
+
   const PRODUCTION_URL = "https://misterfyberbackend-q4k5.onrender.com";
+
+  // Extract filename from path
   let filename = "";
   const parts = imagePath.split(/[\\\/]/);
   filename = parts[parts.length - 1];
+
+  // If no filename or placeholder, use placeholder
   if (!filename || filename === "placeholder.jpg") {
     return `${PRODUCTION_URL}/uploads/id-cards/placeholder.jpg`;
   }
+
+  // Build the full URL
   return `${PRODUCTION_URL}/uploads/id-cards/${filename}`;
 }
 
@@ -153,7 +165,7 @@ router.get("/dashboard/data", getApplicationDashboardData);
 router.get("/dashboard/stats", getApplicationStats);
 
 // ============================================================
-// ✅ MAIN GET - ULTRA FAST + WITH _id
+// ✅ MAIN GET - ULTRA FAST + WITH ID IMAGE
 // ============================================================
 router.get("/", async (req: Request, res: Response, next: NextFunction) => {
   const startTime = Date.now();
@@ -227,10 +239,10 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
       cache.set(totalCacheKey, total, 60);
     }
 
-    // ✅ GET DATA - WITH _id included
+    // ✅ GET DATA - INCLUDING idImage!
     const applications = await Application.find(filter)
       .select(
-        "_id applicationId firstName lastName middleName email phoneNumber status createdAt buildingId buildingName tower floor unitNumber planId installationFee installationFeePaid serviceStatus billingStarted registeredUserId idType idNumber macAddress notes adminNotes",
+        "_id applicationId firstName lastName middleName email phoneNumber status createdAt buildingId buildingName tower floor unitNumber planId installationFee installationFeePaid serviceStatus billingStarted registeredUserId idType idNumber macAddress notes adminNotes idImage",
       )
       .populate("planId", "name price")
       .sort({ createdAt: -1 })
@@ -240,41 +252,57 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
 
     const elapsed = Date.now() - startTime;
 
-    // ✅ FORMATTED DATA - WITH _id included!
-    const formattedData = applications.map((app: any) => ({
-      _id: app._id, // ✅ CRITICAL: Include _id for frontend operations
-      id: app._id, // Also include as id for backward compatibility
-      applicationId: app.applicationId,
-      firstName: app.firstName,
-      lastName: app.lastName,
-      middleName: app.middleName || "",
-      email: app.email,
-      phoneNumber: app.phoneNumber,
-      status: app.status,
-      buildingId: app.buildingId,
-      buildingName: app.buildingName,
-      tower: app.tower || "",
-      floor: app.floor || "",
-      unitNumber: app.unitNumber || "",
-      planId: app.planId,
-      plan: app.planId?.name || "N/A",
-      price: app.planId?.price || 0,
-      installationFee: app.installationFee || 0,
-      installationFeePaid: app.installationFeePaid || false,
-      serviceStatus: app.serviceStatus || "pending",
-      billingStarted: app.billingStarted || false,
-      hasAccount: !!app.registeredUserId,
-      createdAt: app.createdAt,
-      updatedAt: app.updatedAt,
-      idType: app.idType || "N/A",
-      idNumber: app.idNumber || "N/A",
-      macAddress: app.macAddress || "",
-      notes: app.notes || "",
-      adminNotes: app.adminNotes || "",
-    }));
+    // ✅ FORMATTED DATA - WITH idImageUrl!
+    const formattedData = applications.map((app: any) => {
+      // Get the ID image URL
+      const idImageValue = app.idImage || "";
+      const idImageUrl = getImageUrl(idImageValue);
+
+      console.log(
+        `📸 App ${app.applicationId}: idImage="${idImageValue}", url="${idImageUrl}"`,
+      );
+
+      return {
+        _id: app._id,
+        id: app._id,
+        applicationId: app.applicationId,
+        firstName: app.firstName,
+        lastName: app.lastName,
+        middleName: app.middleName || "",
+        email: app.email,
+        phoneNumber: app.phoneNumber,
+        status: app.status,
+        buildingId: app.buildingId,
+        buildingName: app.buildingName,
+        tower: app.tower || "",
+        floor: app.floor || "",
+        unitNumber: app.unitNumber || "",
+        planId: app.planId,
+        plan: app.planId?.name || "N/A",
+        price: app.planId?.price || 0,
+        installationFee: app.installationFee || 0,
+        installationFeePaid: app.installationFeePaid || false,
+        serviceStatus: app.serviceStatus || "pending",
+        billingStarted: app.billingStarted || false,
+        hasAccount: !!app.registeredUserId,
+        createdAt: app.createdAt,
+        updatedAt: app.updatedAt,
+        idType: app.idType || "N/A",
+        idNumber: app.idNumber || "N/A",
+        macAddress: app.macAddress || "",
+        notes: app.notes || "",
+        adminNotes: app.adminNotes || "",
+        // ✅ CRITICAL: Include both idImage and idImageUrl
+        idImage: idImageValue,
+        idImageUrl: idImageUrl,
+      };
+    });
 
     console.log(
       `✅ ${applications.length} apps, Total: ${total} in ${elapsed}ms`,
+    );
+    console.log(
+      `📸 First app image: ${formattedData[0]?.idImageUrl || "none"}`,
     );
 
     const responseData = {
@@ -324,7 +352,7 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
 });
 
 // ============================================================
-// ✅ GET ALL - NO LIMIT (WITH _id)
+// ✅ GET ALL - NO LIMIT (WITH ID IMAGE)
 // ============================================================
 router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
   const startTime = Date.now();
@@ -357,7 +385,7 @@ router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
 
     const applications = await Application.find()
       .select(
-        "_id applicationId firstName lastName email phoneNumber status createdAt buildingName tower floor unitNumber planId",
+        "_id applicationId firstName lastName email phoneNumber status createdAt buildingName tower floor unitNumber planId idImage",
       )
       .populate("planId", "name price")
       .sort({ createdAt: -1 })
@@ -382,6 +410,8 @@ router.get("/all", async (req: Request, res: Response, next: NextFunction) => {
       plan: app.planId?.name || "N/A",
       price: app.planId?.price || 0,
       createdAt: app.createdAt,
+      idImage: app.idImage || "",
+      idImageUrl: getImageUrl(app.idImage),
     }));
 
     const responseData = { data: formattedData, total: total };
@@ -519,7 +549,7 @@ router.patch(
 );
 
 // ============================================================
-// ✅ SINGLE APPLICATION - GET BY ID (OPTIMIZED)
+// ✅ SINGLE APPLICATION - GET BY ID (WITH ID IMAGE)
 // ============================================================
 router.get("/:id", async (req: Request, res: Response) => {
   try {
@@ -535,9 +565,15 @@ router.get("/:id", async (req: Request, res: Response) => {
       });
     }
 
+    // Add idImageUrl
+    const result = {
+      ...application,
+      idImageUrl: getImageUrl(application.idImage),
+    };
+
     res.status(200).json({
       success: true,
-      data: application,
+      data: result,
     });
   } catch (error) {
     console.error("Error fetching application:", error);
@@ -698,13 +734,19 @@ router.get("/test/direct", async (req: Request, res: Response) => {
     const total = await Application.countDocuments();
     const apps = await Application.find()
       .limit(5)
-      .select("applicationId firstName lastName email status createdAt")
+      .select("applicationId firstName lastName email status createdAt idImage")
       .lean();
+
+    // Show image URLs for debugging
+    const appsWithImages = apps.map((app: any) => ({
+      ...app,
+      idImageUrl: getImageUrl(app.idImage),
+    }));
 
     res.status(200).json({
       success: true,
       total,
-      sample: apps,
+      sample: appsWithImages,
       message: "Direct query successful",
     });
   } catch (error) {
@@ -728,15 +770,20 @@ router.get("/test/simple", async (req: Request, res: Response) => {
         .skip(skip)
         .limit(limitNum)
         .select(
-          "applicationId firstName lastName email status createdAt buildingName",
+          "applicationId firstName lastName email status createdAt buildingName idImage",
         )
         .lean(),
       Application.countDocuments(),
     ]);
 
+    const appsWithImages = apps.map((app: any) => ({
+      ...app,
+      idImageUrl: getImageUrl(app.idImage),
+    }));
+
     res.status(200).json({
       success: true,
-      data: apps,
+      data: appsWithImages,
       total,
       page: pageNum,
       limit: limitNum,
