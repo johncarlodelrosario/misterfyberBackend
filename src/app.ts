@@ -10,7 +10,6 @@ import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 import path from "path";
 import { createServer } from "http";
-import { Server } from "socket.io";
 import cron from "node-cron";
 import fs from "fs";
 
@@ -81,10 +80,7 @@ const server = createServer(app);
 // ============================================================
 // WEBSOCKET - Using webSocketService
 // ============================================================
-// Initialize WebSocket service with the server
 webSocketService.initialize(server);
-
-// Also keep the raw io reference for backward compatibility
 const io = webSocketService.getIO();
 
 // ============================================================
@@ -99,10 +95,18 @@ app.use(
   }),
 );
 
+// ============================================================
+// CORS - SINGLE SOURCE OF TRUTH
+// Handles both normal requests AND preflight (OPTIONS) requests.
+// Do NOT add another app.options("*", ...) handler — cors() already
+// responds to preflight with status 204 and the correct headers.
+// ============================================================
 app.use(
   cors({
     origin: function (origin, callback) {
+      // Allow requests with no origin (mobile apps, curl, Postman)
       if (!origin) return callback(null, true);
+
       if (allowedOrigins.indexOf(origin) !== -1) {
         return callback(null, true);
       }
@@ -115,8 +119,9 @@ app.use(
       if (origin.includes("vercel.app")) {
         return callback(null, true);
       }
+
       console.log("🔴 CORS blocked origin:", origin);
-      callback(new Error("Not allowed by CORS"));
+      return callback(new Error("Not allowed by CORS"));
     },
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
@@ -135,38 +140,19 @@ app.use(
   }),
 );
 
-app.options("*", (req, res) => {
-  const origin = req.headers.origin;
-  if (origin && allowedOrigins.includes(origin)) {
-    res.header("Access-Control-Allow-Origin", origin);
-  } else if (origin) {
-    res.header("Access-Control-Allow-Origin", origin);
-  } else {
-    res.header("Access-Control-Allow-Origin", "*");
-  }
-  res.header(
-    "Access-Control-Allow-Methods",
-    "GET, POST, PUT, DELETE, OPTIONS, PATCH",
-  );
-  res.header(
-    "Access-Control-Allow-Headers",
-    "Content-Type, Authorization, Cookie, X-Requested-With",
-  );
-  res.header("Access-Control-Allow-Credentials", "true");
-  res.header("Access-Control-Max-Age", "86400");
-  res.sendStatus(204);
-});
-
 app.use(cookieParser());
 app.use(morgan("dev"));
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
-// Static files
+// ============================================================
+// STATIC FILES
+// ============================================================
 const uploadsPath = path.join(__dirname, "../uploads");
 if (!fs.existsSync(uploadsPath)) {
   fs.mkdirSync(uploadsPath, { recursive: true });
 }
+
 app.use(
   "/uploads",
   express.static(uploadsPath, {
@@ -200,7 +186,7 @@ const ensureUploadDirectories = () => {
 ensureUploadDirectories();
 
 // ============================================================
-// ROUTES
+// HEALTH / ROOT ROUTES
 // ============================================================
 app.get("/", (req: Request, res: Response) => {
   res.status(200).json({
@@ -305,7 +291,6 @@ const initializeDatabase = async () => {
     }
 
     await Database.connect();
-
     console.log("✅ MongoDB connected successfully");
 
     mongoose.connection.on("error", (err) => {
@@ -389,9 +374,6 @@ const start = async () => {
   await initializeDatabase();
   initializeScheduledJobs();
 
-  // ============================================================
-  // START THE EMAIL SCHEDULER
-  // ============================================================
   console.log("\n📧 Starting email scheduler...");
   try {
     startScheduler();
