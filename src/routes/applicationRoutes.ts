@@ -46,7 +46,7 @@ function getImageUrl(imagePath?: string): string {
     return imagePath;
   }
 
-  const PRODUCTION_URL = "https://misterfyberbackend-q4k5.onrender.com";
+  const PRODUCTION_URL = "https://misterfyberbackend-lvjd.onrender.com";
 
   // Extract filename from path
   let filename = "";

@@ -54,7 +54,7 @@ export const getImageUrl = (imagePath?: string): string => {
     return imagePath;
   }
   if (imagePath.startsWith("data:")) return imagePath;
-  const PRODUCTION_URL = "https://misterfyberbackend-q4k5.onrender.com";
+  const PRODUCTION_URL = "https://misterfyberbackend-lvjd.onrender.com";
   let filename = "";
   const parts = imagePath.split(/[\\\/]/);
   filename = parts[parts.length - 1];
