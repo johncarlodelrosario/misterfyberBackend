@@ -1,4 +1,4 @@
-// routes/applicationRoutes.ts - COMPLETE FINAL FIXED - WITH ID IMAGE
+// routes/applicationRoutes.ts - COMPLETE FINAL FIXED - WITH PRODUCTION SUPPORT
 import express, { Router, Request, Response, NextFunction } from "express";
 import { body } from "express-validator";
 import {
@@ -32,12 +32,20 @@ const cache = new NodeCache({ stdTTL: 60, checkperiod: 120 });
 console.log("🔥 ULTIMATE SPEED MODE - Application Routes");
 
 // ============================================================
+// ✅ PRODUCTION URL CONFIGURATION
+// ============================================================
+const PRODUCTION_URL =
+  process.env.BASE_URL || "https://misterfyberbackend-lvjd.onrender.com";
+
+console.log(`📸 Image URL base: ${PRODUCTION_URL}`);
+
+// ============================================================
 // ✅ FIXED: getImageUrl - returns the full URL for any image path
 // ============================================================
 function getImageUrl(imagePath?: string): string {
   if (!imagePath) return "";
 
-  // If it's already a full URL
+  // If it's already a full URL or data URL
   if (
     imagePath.startsWith("http://") ||
     imagePath.startsWith("https://") ||
@@ -46,15 +54,19 @@ function getImageUrl(imagePath?: string): string {
     return imagePath;
   }
 
-  const PRODUCTION_URL = "https://misterfyberbackend-lvjd.onrender.com";
-
   // Extract filename from path
   let filename = "";
+
+  // Handle Cloudinary URLs that might be stored as paths
+  if (imagePath.includes("cloudinary.com")) {
+    return imagePath.startsWith("http") ? imagePath : `https://${imagePath}`;
+  }
+
   const parts = imagePath.split(/[\\\/]/);
   filename = parts[parts.length - 1];
 
   // If no filename or placeholder, use placeholder
-  if (!filename || filename === "placeholder.jpg") {
+  if (!filename || filename === "placeholder.jpg" || filename === "") {
     return `${PRODUCTION_URL}/uploads/id-cards/placeholder.jpg`;
   }
 
@@ -257,10 +269,6 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
       // Get the ID image URL
       const idImageValue = app.idImage || "";
       const idImageUrl = getImageUrl(idImageValue);
-
-      console.log(
-        `📸 App ${app.applicationId}: idImage="${idImageValue}", url="${idImageUrl}"`,
-      );
 
       return {
         _id: app._id,
@@ -748,6 +756,7 @@ router.get("/test/direct", async (req: Request, res: Response) => {
       total,
       sample: appsWithImages,
       message: "Direct query successful",
+      productionUrl: PRODUCTION_URL,
     });
   } catch (error) {
     res.status(500).json({
@@ -788,6 +797,7 @@ router.get("/test/simple", async (req: Request, res: Response) => {
       page: pageNum,
       limit: limitNum,
       totalPages: Math.ceil(total / limitNum),
+      productionUrl: PRODUCTION_URL,
     });
   } catch (error) {
     res.status(500).json({

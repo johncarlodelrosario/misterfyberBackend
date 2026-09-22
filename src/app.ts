@@ -1,4 +1,4 @@
-// backend/src/app.ts - COMPLETE FIXED VERSION WITH WEBSOCKET & EMAIL SCHEDULER
+// backend/src/app.ts - COMPLETE FIXED VERSION WITH PRODUCTION SUPPORT
 
 import express, { Application, Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
@@ -53,9 +53,26 @@ console.log(
   "FRONTEND_URL:",
   process.env.FRONTEND_URL || "http://localhost:3000",
 );
+console.log("BASE_URL:", process.env.BASE_URL || "http://localhost:5000");
 
-// Allowed origins
+// ============================================================
+// PRODUCTION URL CONFIGURATION
+// ============================================================
+const PRODUCTION_BACKEND_URL =
+  process.env.BASE_URL || "https://misterfyberbackend-lvjd.onrender.com";
+
+const IS_PRODUCTION = process.env.NODE_ENV === "production";
+
+console.log(
+  `🌍 Running in ${IS_PRODUCTION ? "PRODUCTION" : "DEVELOPMENT"} mode`,
+);
+console.log(`🔗 Backend URL: ${PRODUCTION_BACKEND_URL}`);
+
+// ============================================================
+// ALLOWED ORIGINS - COMPREHENSIVE LIST
+// ============================================================
 const allowedOrigins = [
+  // Local development
   "http://localhost:3000",
   "http://localhost:3001",
   "http://localhost:3002",
@@ -64,6 +81,7 @@ const allowedOrigins = [
   "http://127.0.0.1:3000",
   "http://127.0.0.1:5173",
   "http://127.0.0.1:5000",
+  // Production domains
   "https://www.misterfyber.com",
   "https://misterfyber.com",
   "https://misterfyber.vercel.app",
@@ -71,8 +89,15 @@ const allowedOrigins = [
   "https://misterfyberbackend-lvjd.onrender.com",
   "https://newport-application.vercel.app",
   "https://vitalez-residence-application-form.vercel.app",
+  // Environment variable
   process.env.FRONTEND_URL || "",
-].filter(Boolean);
+  // Additional Vercel deployments
+  process.env.FRONTEND_URLS?.split(",") || [],
+]
+  .flat()
+  .filter(Boolean);
+
+console.log("✅ Allowed origins:", allowedOrigins);
 
 const app: Application = express();
 const server = createServer(app);
@@ -92,14 +117,12 @@ app.use(
   helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
     crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
+    contentSecurityPolicy: IS_PRODUCTION ? undefined : false,
   }),
 );
 
 // ============================================================
 // CORS - SINGLE SOURCE OF TRUTH
-// Handles both normal requests AND preflight (OPTIONS) requests.
-// Do NOT add another app.options("*", ...) handler — cors() already
-// responds to preflight with status 204 and the correct headers.
 // ============================================================
 app.use(
   cors({
@@ -107,17 +130,28 @@ app.use(
       // Allow requests with no origin (mobile apps, curl, Postman)
       if (!origin) return callback(null, true);
 
+      // Check exact match
       if (allowedOrigins.indexOf(origin) !== -1) {
         return callback(null, true);
       }
-      if (origin.includes("localhost") || origin.includes("127.0.0.1")) {
+
+      // Allow localhost in development
+      if (
+        !IS_PRODUCTION &&
+        (origin.includes("localhost") || origin.includes("127.0.0.1"))
+      ) {
         return callback(null, true);
       }
-      if (origin.includes("render.com")) {
-        return callback(null, true);
-      }
-      if (origin.includes("vercel.app")) {
-        return callback(null, true);
+
+      // Allow all vercel.app and render.com subdomains in production
+      if (IS_PRODUCTION) {
+        if (origin.includes("vercel.app") || origin.includes("render.com")) {
+          return callback(null, true);
+        }
+        // Allow misterfyber.com domains
+        if (origin.includes("misterfyber.com")) {
+          return callback(null, true);
+        }
       }
 
       console.log("🔴 CORS blocked origin:", origin);
@@ -132,8 +166,9 @@ app.use(
       "Accept",
       "Cookie",
       "Origin",
+      "X-Request-ID",
     ],
-    exposedHeaders: ["Content-Range", "X-Content-Range"],
+    exposedHeaders: ["Content-Range", "X-Content-Range", "X-Request-ID"],
     maxAge: 86400,
     preflightContinue: false,
     optionsSuccessStatus: 204,
@@ -141,7 +176,7 @@ app.use(
 );
 
 app.use(cookieParser());
-app.use(morgan("dev"));
+app.use(morgan(IS_PRODUCTION ? "combined" : "dev"));
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
@@ -160,6 +195,7 @@ app.use(
     etag: true,
     setHeaders: (res) => {
       res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
     },
   }),
 );
@@ -194,7 +230,8 @@ app.get("/", (req: Request, res: Response) => {
     message: "MisterFyber API",
     version: "1.0.0",
     status: "running",
-    environment: process.env.NODE_ENV,
+    environment: process.env.NODE_ENV || "development",
+    backendUrl: PRODUCTION_BACKEND_URL,
     timestamp: new Date().toISOString(),
   });
 });
@@ -386,19 +423,19 @@ const start = async () => {
   server.listen(PORT, () => {
     console.log(`\n🚀 Server running on port ${PORT}`);
     console.log(`🌍 Environment: ${process.env.NODE_ENV || "development"}`);
-    console.log(`🌐 Base URL: http://localhost:${PORT}`);
+    console.log(`🌐 Base URL: ${PRODUCTION_BACKEND_URL}`);
     console.log(
       `✅ CORS enabled for: ${allowedOrigins.filter((o) => o).join(", ")}`,
     );
-    console.log(`📡 API available at: http://localhost:${PORT}/api`);
-    console.log(`🩺 Health check: http://localhost:${PORT}/health`);
+    console.log(`📡 API available at: ${PRODUCTION_BACKEND_URL}/api`);
+    console.log(`🩺 Health check: ${PRODUCTION_BACKEND_URL}/health`);
     console.log(`📧 Manual email routes available at: /api/manual-email`);
     console.log(`📄 Invoice routes available at: /api/invoices`);
     console.log(`📁 Uploads directory: ${uploadsPath}`);
     console.log(`⏰ Email scheduler is running (checks every minute)`);
     console.log(`🔌 WebSocket server is running on path: /socket.io`);
     console.log(
-      `📡 WebSocket status: http://localhost:${PORT}/api/websocket/status`,
+      `📡 WebSocket status: ${PRODUCTION_BACKEND_URL}/api/websocket/status`,
     );
     console.log(`\n✅ All systems ready!\n`);
   });
