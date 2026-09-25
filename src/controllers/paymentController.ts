@@ -1,4 +1,4 @@
-// backend/src/controllers/paymentController.ts - COMPLETE WITH BULK DELETE AND FREE SUPPORT
+// backend/src/controllers/paymentController.ts - COMPLETE WITH FIXED FILTERING
 
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
@@ -129,7 +129,6 @@ export const createPayment = async (
     } = req.body;
     const userId = req.user._id;
 
-    // Allow zero amount for free payments
     if (amount === undefined || amount === null) {
       return res.status(400).json({ message: "Amount is required" });
     }
@@ -225,9 +224,7 @@ export const createPayment = async (
 
     const payment = await Payment.create(paymentData);
 
-    // If free payment, auto-confirm it
     if (isFree) {
-      // Create a fake request for auto-confirmation
       const confirmReq = {
         params: { id: payment._id },
         body: { notes: notes || "Auto-confirmed free payment" },
@@ -640,7 +637,6 @@ export const confirmPayment = async (
       }
     }
 
-    // Update payment status
     payment.status = "completed";
     payment.paidAt = new Date();
     payment.paymentDetails = {
@@ -660,7 +656,6 @@ export const confirmPayment = async (
     };
     await payment.save({ session });
 
-    // Update billing
     const billing = await Billing.findById(payment.billingId).session(session);
     if (billing) {
       billing.status = "paid";
@@ -702,7 +697,6 @@ export const confirmPayment = async (
       }
     }
 
-    // Update user
     if (payment.userId) {
       const user = await User.findById(payment.userId).session(session);
       if (user) {
@@ -740,9 +734,6 @@ export const confirmPayment = async (
 
     await session.commitTransaction();
 
-    // ============================================================
-    // SEND PAYMENT CONFIRMATION WITH INVOICE PDF ATTACHMENT
-    // ============================================================
     if (customerEmail) {
       try {
         console.log(`========================================`);
@@ -753,7 +744,6 @@ export const confirmPayment = async (
         console.log(`   Location: ${location || "NONE"}`);
         console.log(`========================================`);
 
-        // STEP 1: Find or create invoice
         let invoice = await Invoice.findOne({
           billingId: billing?._id,
           applicationId: payment.applicationId,
@@ -763,11 +753,9 @@ export const confirmPayment = async (
           `📄 Invoice found: ${invoice ? "YES (" + invoice.invoiceNumber + ")" : "NO"}`,
         );
 
-        // STEP 2: If no invoice exists, create one from billing data
         if (!invoice && billing) {
           console.log(`📄 Creating new invoice for payment ${payment._id}`);
 
-          // Get application and plan for invoice
           const app = await Application.findOne({
             applicationId: payment.applicationId,
           }).lean();
@@ -777,7 +765,6 @@ export const confirmPayment = async (
             plan = await Plan.findById(app.planId).lean();
           }
 
-          // Generate invoice number
           const date = new Date();
           const year = date.getFullYear();
           const month = (date.getMonth() + 1).toString().padStart(2, "0");
@@ -788,7 +775,6 @@ export const confirmPayment = async (
             .padStart(3, "0");
           const invoiceNumberGen = `INV-${year}${month}${day}-${timestamp}${random}`;
 
-          // Build items from billing
           const invoiceItems: any[] = [];
           let subtotal = 0;
 
@@ -804,10 +790,8 @@ export const confirmPayment = async (
               subtotal += item.amount;
             }
           } else {
-            // Create default items
             const monthlyRate = (plan as any)?.price || 0;
 
-            // Pro-rated
             if (billing.isProRated) {
               const proRatedDays = billing.proRatedDays || 0;
               const dailyRate = (monthlyRate * 12) / 365;
@@ -823,7 +807,6 @@ export const confirmPayment = async (
               subtotal += proRatedAmount;
             }
 
-            // Installation fee
             const installationFeeAmount = billing.installationFee || 0;
             if (installationFeeAmount > 0) {
               invoiceItems.push({
@@ -836,7 +819,6 @@ export const confirmPayment = async (
               subtotal += installationFeeAmount;
             }
 
-            // Monthly subscription
             if (!billing.isProRated) {
               invoiceItems.push({
                 description: `Monthly Subscription - ${billing.billingPeriod?.start ? new Date(billing.billingPeriod.start).toLocaleDateString() : "N/A"} to ${billing.billingPeriod?.end ? new Date(billing.billingPeriod.end).toLocaleDateString() : "N/A"}`,
@@ -849,7 +831,6 @@ export const confirmPayment = async (
             }
           }
 
-          // Determine invoice type
           let invoiceTypeFinal = "monthly";
           const isInstallationFee =
             billing.isInstallationBill || billing.installationFee > 0;
@@ -869,7 +850,6 @@ export const confirmPayment = async (
           const planName = (plan as any)?.name || "N/A";
           const collectionEmail = getCollectionEmailByLocation(location);
 
-          // Create invoice
           const invoiceData = {
             invoiceNumber: invoiceNumberGen,
             invoiceType: invoiceTypeFinal,
@@ -921,15 +901,12 @@ export const confirmPayment = async (
           console.log(`✅ Invoice created: ${invoice.invoiceNumber}`);
         }
 
-        // STEP 3: If we have an invoice, generate PDF and send email
         if (invoice) {
           console.log(`📄 Using invoice: ${invoice.invoiceNumber}`);
 
-          // Generate PDF for the invoice
           let pdfBuffer: Buffer;
           let pdfFileName = `${invoice.invoiceNumber}.pdf`;
 
-          // Check if PDF already exists
           if (invoice.pdfUrl) {
             const filePath = path.join(__dirname, "../..", invoice.pdfUrl);
             if (fs.existsSync(filePath)) {
@@ -968,20 +945,16 @@ export const confirmPayment = async (
             });
           }
 
-          // STEP 4: Send payment confirmation with PDF attachment
           console.log(`📧 Sending email with PDF attachment: ${pdfFileName}`);
           console.log(`📧 PDF size: ${pdfBuffer.length} bytes`);
 
-          // ================================================================
-          // Use sendPaidInvoiceEmail for PDF attachment
-          // ================================================================
           const emailSent = await emailService.sendPaidInvoiceEmail(
             invoice,
             pdfBuffer,
             pdfFileName,
             payment,
             location,
-            false, // useAdminSender
+            false,
           );
 
           if (emailSent) {
@@ -1030,11 +1003,11 @@ export const getPendingPayments = async (
     const payments = await Payment.find({ status: "pending" })
       .populate(
         "userId",
-        "firstName lastName email username phoneNumber status",
+        "firstName lastName email username phoneNumber status buildingId",
       )
       .populate(
         "billingId",
-        "invoiceNumber total dueDate isProRated isInstallationBill installationFee installationFeePaid billingPeriod",
+        "invoiceNumber total dueDate isProRated isInstallationBill installationFee installationFeePaid billingPeriod buildingId",
       )
       .sort({ createdAt: -1 })
       .lean();
@@ -1071,6 +1044,8 @@ export const getPendingPayments = async (
           installationFee: (app as any).installationFee || 0,
           installationFeePaid: (app as any).installationFeePaid || false,
           applicantName: `${app.firstName || ""} ${app.lastName || ""}`.trim(),
+          buildingId: (app as any).buildingId,
+          buildingName: (app as any).buildingName || "",
         };
         enriched.applicationId = app.applicationId;
 
@@ -1079,6 +1054,12 @@ export const getPendingPayments = async (
             `${app.firstName || ""} ${app.lastName || ""}`.trim();
           enriched.customerEmail = app.email || "";
           enriched.customerPhone = app.phoneNumber || "";
+        }
+        if ((app as any).buildingId && !enriched.buildingId) {
+          enriched.buildingId = (app as any).buildingId;
+        }
+        if ((app as any).buildingName && !enriched.buildingName) {
+          enriched.buildingName = (app as any).buildingName;
         }
       }
 
@@ -1100,12 +1081,16 @@ export const getPendingPayments = async (
           phoneNumber: user.phoneNumber,
           username: user.username,
           status: user.status,
+          buildingId: user.buildingId,
         };
         if (!enriched.customerName || enriched.customerName === "") {
           enriched.customerName =
             `${user.firstName || ""} ${user.lastName || ""}`.trim();
           enriched.customerEmail = user.email || "";
           enriched.customerPhone = user.phoneNumber || "";
+        }
+        if (user.buildingId && !enriched.buildingId) {
+          enriched.buildingId = user.buildingId;
         }
       }
 
@@ -1127,9 +1112,11 @@ export const getPendingPayments = async (
   }
 };
 
-// @desc    Get all payments with pagination (Admin)
+// ==================== GET ALL PAYMENTS ADMIN (FIXED FILTERING) ====================
+// @desc    Get all payments with pagination and proper filtering (Admin)
 // @route   GET /api/payments/admin/all
 // @access  Private/Admin
+// NOTE: Supports limit=all to fetch ALL matching payments without pagination
 export const getAllPaymentsAdmin = async (
   req: AuthRequest,
   res: Response,
@@ -1137,8 +1124,11 @@ export const getAllPaymentsAdmin = async (
 ) => {
   try {
     const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 100;
-    const skip = (page - 1) * limit;
+    const limitParam = req.query.limit as string;
+    // Support limit=all to fetch all records
+    const fetchAll = limitParam === "all" || limitParam === "0";
+    const limit = fetchAll ? 0 : parseInt(limitParam) || 100;
+    const skip = fetchAll ? 0 : (page - 1) * limit;
     const status = req.query.status as string;
     const paymentType = req.query.paymentType as string;
     const search = req.query.search as string;
@@ -1146,12 +1136,14 @@ export const getAllPaymentsAdmin = async (
     const startDate = req.query.startDate as string;
     const endDate = req.query.endDate as string;
 
-    let query: any = {};
+    // Build base query
+    let baseQuery: any = {};
+
     if (status && status !== "all" && status !== "") {
-      query.status = status;
+      baseQuery.status = status;
     }
     if (paymentType && paymentType !== "all" && paymentType !== "") {
-      query.paymentType = paymentType;
+      baseQuery.paymentType = paymentType;
     }
 
     // Date range filter
@@ -1160,19 +1152,19 @@ export const getAllPaymentsAdmin = async (
       start.setHours(0, 0, 0, 0);
       const end = new Date(endDate);
       end.setHours(23, 59, 59, 999);
-      query.createdAt = { $gte: start, $lte: end };
+      baseQuery.createdAt = { $gte: start, $lte: end };
     } else if (startDate) {
       const start = new Date(startDate);
       start.setHours(0, 0, 0, 0);
-      query.createdAt = { $gte: start };
+      baseQuery.createdAt = { $gte: start };
     } else if (endDate) {
       const end = new Date(endDate);
       end.setHours(23, 59, 59, 999);
-      query.createdAt = { $lte: end };
+      baseQuery.createdAt = { $lte: end };
     }
 
     if (search) {
-      query.$or = [
+      baseQuery.$or = [
         { referenceNumber: { $regex: search, $options: "i" } },
         { applicationId: { $regex: search, $options: "i" } },
         { customerName: { $regex: search, $options: "i" } },
@@ -1180,47 +1172,130 @@ export const getAllPaymentsAdmin = async (
       ];
     }
 
+    // ==================== BUILDING FILTER (ROBUST) ====================
+    // Collect ALL possible references to the building so we don't miss payments.
+    let buildingFilterClause: any = null;
+
+    if (buildingId && buildingId !== "all" && buildingId !== "") {
+      // Get all applications in this building
+      const buildingApps = await Application.find({ buildingId })
+        .select("applicationId")
+        .lean();
+      const buildingApplicationIds = buildingApps
+        .map((a) => a.applicationId)
+        .filter(Boolean);
+
+      // Get all users in this building
+      const buildingUsers = await User.find({ buildingId })
+        .select("_id")
+        .lean();
+      const buildingUserIds = buildingUsers.map((u) => u._id);
+
+      // Get all billings associated with this building (via applicationId OR direct buildingId)
+      const billingOrConditions: any[] = [];
+      if (buildingApplicationIds.length > 0) {
+        billingOrConditions.push({
+          applicationId: { $in: buildingApplicationIds },
+        });
+      }
+      billingOrConditions.push({ buildingId: buildingId });
+
+      const buildingBillings = await Billing.find({
+        $or: billingOrConditions,
+      })
+        .select("_id")
+        .lean();
+      const buildingBillingIds = buildingBillings.map((b) => b._id);
+
+      // Build combined $or clause
+      const orConditions: any[] = [];
+
+      // 1. Direct buildingId on Payment
+      orConditions.push({ buildingId: buildingId });
+
+      // 2. applicationId matches any building application
+      if (buildingApplicationIds.length > 0) {
+        orConditions.push({
+          applicationId: { $in: buildingApplicationIds },
+        });
+      }
+
+      // 3. userId matches any building user
+      if (buildingUserIds.length > 0) {
+        orConditions.push({ userId: { $in: buildingUserIds } });
+      }
+
+      // 4. billingId matches any building billing
+      if (buildingBillingIds.length > 0) {
+        orConditions.push({ billingId: { $in: buildingBillingIds } });
+      }
+
+      // 5. paymentDetails.gatewayResponse.applicationId matches
+      if (buildingApplicationIds.length > 0) {
+        orConditions.push({
+          "paymentDetails.gatewayResponse.applicationId": {
+            $in: buildingApplicationIds,
+          },
+        });
+      }
+
+      buildingFilterClause = { $or: orConditions };
+    }
+
+    // Compose final query — combine baseQuery with building filter using $and
+    let query: any;
+    if (buildingFilterClause) {
+      query = { $and: [baseQuery, buildingFilterClause] };
+    } else {
+      query = { ...baseQuery };
+    }
+
+    // Fetch payments and total count with filters
+    const findQuery = Payment.find(query)
+      .populate(
+        "userId",
+        "firstName lastName email username phoneNumber status buildingId",
+      )
+      .populate(
+        "billingId",
+        "invoiceNumber total dueDate isProRated isInstallationBill installationFee installationFeePaid billingPeriod buildingId",
+      )
+      .sort({ createdAt: -1 });
+
+    if (!fetchAll) {
+      findQuery.skip(skip).limit(limit);
+    }
+
     const [payments, total] = await Promise.all([
-      Payment.find(query)
-        .populate(
-          "userId",
-          "firstName lastName email username phoneNumber status buildingId",
-        )
-        .populate(
-          "billingId",
-          "invoiceNumber total dueDate isProRated isInstallationBill installationFee installationFeePaid billingPeriod",
-        )
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .lean(),
+      findQuery.lean(),
       Payment.countDocuments(query),
     ]);
 
-    // Get all building IDs from payments and users
-    const buildingIds = new Set<string>();
+    // Collect building IDs from payments / users / billings for name mapping
+    const buildingIdsSet = new Set<string>();
     for (const payment of payments) {
-      // Check userId.buildingId
+      if ((payment as any).buildingId) {
+        buildingIdsSet.add((payment as any).buildingId.toString());
+      }
       if (payment.userId && typeof payment.userId === "object") {
         const user = payment.userId as any;
         if (user.buildingId) {
-          buildingIds.add(user.buildingId);
+          buildingIdsSet.add(user.buildingId.toString());
         }
       }
-      // Check billingId for building info
       if (payment.billingId && typeof payment.billingId === "object") {
         const billing = payment.billingId as any;
         if (billing.buildingId) {
-          buildingIds.add(billing.buildingId);
+          buildingIdsSet.add(billing.buildingId.toString());
         }
       }
     }
 
-    // Fetch building details
+    // Fetch building details (name) for those ids
     let buildingMap = new Map();
-    if (buildingIds.size > 0) {
+    if (buildingIdsSet.size > 0) {
       const buildings = await Application.aggregate([
-        { $match: { buildingId: { $in: Array.from(buildingIds) } } },
+        { $match: { buildingId: { $in: Array.from(buildingIdsSet) } } },
         {
           $group: {
             _id: "$buildingId",
@@ -1233,89 +1308,8 @@ export const getAllPaymentsAdmin = async (
       });
     }
 
-    // If building filter is applied, filter payments by building
-    let filteredPayments = payments;
-    if (buildingId && buildingId !== "all" && buildingId !== "") {
-      filteredPayments = payments.filter((payment) => {
-        // Check if user has buildingId
-        if (payment.userId && typeof payment.userId === "object") {
-          const user = payment.userId as any;
-          if (user.buildingId === buildingId) return true;
-        }
-        // Check if billing has buildingId
-        if (payment.billingId && typeof payment.billingId === "object") {
-          const billing = payment.billingId as any;
-          if (billing.buildingId === buildingId) return true;
-        }
-        return false;
-      });
-    }
-
-    const [
-      totalStats,
-      monthlyStats,
-      subscriptionStats,
-      installationStats,
-      pendingStats,
-    ] = await Promise.all([
-      Payment.aggregate([
-        { $match: { status: "completed" } },
-        {
-          $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } },
-        },
-      ]),
-      Payment.aggregate([
-        {
-          $match: {
-            status: "completed",
-            createdAt: {
-              $gte: new Date(
-                new Date().getFullYear(),
-                new Date().getMonth(),
-                1,
-              ),
-            },
-          },
-        },
-        {
-          $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } },
-        },
-      ]),
-      Payment.aggregate([
-        {
-          $match: {
-            status: "completed",
-            paymentType: "subscription",
-          },
-        },
-        {
-          $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } },
-        },
-      ]),
-      Payment.aggregate([
-        {
-          $match: {
-            status: "completed",
-            paymentType: "installation",
-          },
-        },
-        {
-          $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } },
-        },
-      ]),
-      Payment.aggregate([
-        {
-          $match: {
-            status: "pending",
-          },
-        },
-        {
-          $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } },
-        },
-      ]),
-    ]);
-
-    const applicationIds = filteredPayments
+    // Get application details for payments
+    const applicationIds = payments
       .filter((p) => p.applicationId)
       .map((p) => p.applicationId)
       .filter((value, index, self) => self.indexOf(value) === index);
@@ -1331,14 +1325,22 @@ export const getAllPaymentsAdmin = async (
       });
     }
 
+    // Enrich payments
     const enrichPaymentWithAppData = (payment: any) => {
       const enriched: any = { ...payment };
 
-      // Add building name if available
+      // If we know the buildingId directly on the payment, use it
+      if (
+        payment.buildingId &&
+        buildingMap.has(payment.buildingId.toString())
+      ) {
+        enriched.buildingName = buildingMap.get(payment.buildingId.toString());
+      }
+
       if (payment.userId && typeof payment.userId === "object") {
         const user = payment.userId as any;
-        if (user.buildingId && buildingMap.has(user.buildingId)) {
-          enriched.buildingName = buildingMap.get(user.buildingId);
+        if (user.buildingId && buildingMap.has(user.buildingId.toString())) {
+          enriched.buildingName = buildingMap.get(user.buildingId.toString());
         }
       }
 
@@ -1367,9 +1369,13 @@ export const getAllPaymentsAdmin = async (
           enriched.customerEmail = app.email || "";
           enriched.customerPhone = app.phoneNumber || "";
         }
-        // Get building name from application
         if ((app as any).buildingName) {
           enriched.buildingName = (app as any).buildingName;
+        }
+        // IMPORTANT: propagate buildingId to the payment object so the frontend
+        // can match by building without extra API calls
+        if ((app as any).buildingId && !enriched.buildingId) {
+          enriched.buildingId = (app as any).buildingId;
         }
       }
 
@@ -1395,9 +1401,12 @@ export const getAllPaymentsAdmin = async (
           enriched.customerEmail = user.email || "";
           enriched.customerPhone = user.phoneNumber || "";
         }
-        // Get building name from user's buildingId
-        if (user.buildingId && buildingMap.has(user.buildingId)) {
-          enriched.buildingName = buildingMap.get(user.buildingId);
+        if (user.buildingId && buildingMap.has(user.buildingId.toString())) {
+          enriched.buildingName = buildingMap.get(user.buildingId.toString());
+        }
+        // Propagate buildingId from user
+        if (user.buildingId && !enriched.buildingId) {
+          enriched.buildingId = user.buildingId;
         }
       }
 
@@ -1414,14 +1423,92 @@ export const getAllPaymentsAdmin = async (
       return enriched;
     };
 
-    const enrichedPayments = filteredPayments.map(enrichPaymentWithAppData);
+    const enrichedPayments = payments.map(enrichPaymentWithAppData);
+
+    // ==================== STATS (USE SAME QUERY) ====================
+    const statsQuery = query;
+
+    const completedQuery = {
+      $and: [...(statsQuery.$and || [statsQuery]), { status: "completed" }],
+    };
+
+    const pendingQuery = {
+      $and: [...(statsQuery.$and || [statsQuery]), { status: "pending" }],
+    };
+
+    const subscriptionQuery = {
+      $and: [
+        ...(statsQuery.$and || [statsQuery]),
+        { status: "completed" },
+        { paymentType: "subscription" },
+      ],
+    };
+
+    const installationQuery = {
+      $and: [
+        ...(statsQuery.$and || [statsQuery]),
+        { status: "completed" },
+        { paymentType: "installation" },
+      ],
+    };
+
+    const monthlyQuery = {
+      $and: [
+        ...(statsQuery.$and || [statsQuery]),
+        { status: "completed" },
+        {
+          createdAt: {
+            $gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
+          },
+        },
+      ],
+    };
+
+    const [
+      totalStats,
+      monthlyStats,
+      subscriptionStats,
+      installationStats,
+      pendingStats,
+    ] = await Promise.all([
+      Payment.aggregate([
+        { $match: completedQuery },
+        {
+          $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } },
+        },
+      ]),
+      Payment.aggregate([
+        { $match: monthlyQuery },
+        {
+          $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } },
+        },
+      ]),
+      Payment.aggregate([
+        { $match: subscriptionQuery },
+        {
+          $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } },
+        },
+      ]),
+      Payment.aggregate([
+        { $match: installationQuery },
+        {
+          $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } },
+        },
+      ]),
+      Payment.aggregate([
+        { $match: pendingQuery },
+        {
+          $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } },
+        },
+      ]),
+    ]);
 
     res.status(200).json({
       success: true,
       data: enrichedPayments,
-      total: filteredPayments.length,
-      page,
-      totalPages: Math.ceil(filteredPayments.length / limit),
+      total: total,
+      page: fetchAll ? 1 : page,
+      totalPages: fetchAll ? 1 : Math.ceil(total / limit),
       stats: {
         total: totalStats[0]?.total || 0,
         totalCount: totalStats[0]?.count || 0,
@@ -1528,7 +1615,6 @@ export const rejectPayment = async (
 
     const updatedPayment = await Payment.findById(id).lean();
 
-    // Send rejection email
     if (customerEmail) {
       try {
         const isInstallationPayment =
@@ -1680,7 +1766,6 @@ export const deletePayment = async (
       return res.status(404).json({ message: "Payment not found" });
     }
 
-    // Check if payment is already completed - warn but allow deletion
     const isCompleted = payment.status === "completed";
 
     const paymentData = {
@@ -1694,7 +1779,6 @@ export const deletePayment = async (
       createdAt: payment.createdAt,
     };
 
-    // If payment is completed, also remove the payment reference from billing
     if (isCompleted && payment.billingId) {
       try {
         const billing = await Billing.findById(payment.billingId);
@@ -1745,7 +1829,6 @@ export const bulkDeleteCustomerPayments = async (
       return res.status(400).json({ message: "Customer ID is required" });
     }
 
-    // Build query to find all payments for this customer
     const query: any = {
       $or: [
         { applicationId: customerId },
@@ -1754,8 +1837,6 @@ export const bulkDeleteCustomerPayments = async (
       ],
     };
 
-    // If deleteAll is true, delete all payments regardless of status
-    // Otherwise, only delete pending payments
     if (!deleteAll) {
       query.status = "pending";
     }
@@ -1776,12 +1857,10 @@ export const bulkDeleteCustomerPayments = async (
     const paymentIds = payments.map((p) => p._id);
     const paymentRefs = payments.map((p) => p.referenceNumber);
 
-    // Delete all payments
     const result = await Payment.deleteMany({ _id: { $in: paymentIds } });
 
     console.log(`✅ Deleted ${result.deletedCount} payments`);
 
-    // Also update any billing records that reference these payments
     for (const payment of payments) {
       if (payment.billingId) {
         try {

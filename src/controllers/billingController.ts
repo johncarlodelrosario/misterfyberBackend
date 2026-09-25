@@ -23,9 +23,6 @@ import eventService from "../services/eventService";
 
 type AuthRequest = Request & { user?: any };
 
-// ==================== CACHE SYSTEM - TOTALLY REMOVED ====================
-// WALANG CACHE! LAHAT DIRECT SA DATABASE!
-
 // ==================== RETRY HELPER FOR WRITE CONFLICTS ====================
 async function withRetry<T>(
   operation: () => Promise<T>,
@@ -38,7 +35,6 @@ async function withRetry<T>(
       return await operation();
     } catch (error: any) {
       lastError = error;
-      // Check if it's a write conflict error
       if (
         error.code === 112 ||
         error.codeName === "WriteConflict" ||
@@ -50,41 +46,6 @@ async function withRetry<T>(
             `⚠️ Write conflict detected, retrying... (${attempt}/${maxRetries})`,
           );
           await new Promise((resolve) => setTimeout(resolve, delay * attempt));
-          continue;
-        }
-      }
-      throw error;
-    }
-  }
-  throw lastError;
-}
-
-async function withTransactionRetry<T>(
-  session: mongoose.ClientSession,
-  operation: (session: mongoose.ClientSession) => Promise<T>,
-  maxRetries: number = 3,
-): Promise<T> {
-  let lastError: any;
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      return await operation(session);
-    } catch (error: any) {
-      lastError = error;
-      // Check if it's a write conflict error
-      if (
-        error.code === 112 ||
-        error.codeName === "WriteConflict" ||
-        (error.message && error.message.includes("Write conflict")) ||
-        (error.message && error.message.includes("yielding is disabled"))
-      ) {
-        if (attempt < maxRetries) {
-          console.log(
-            `⚠️ Write conflict in transaction, retrying... (${attempt}/${maxRetries})`,
-          );
-          // Abort and restart transaction
-          await session.abortTransaction();
-          session.startTransaction();
-          await new Promise((resolve) => setTimeout(resolve, 100 * attempt));
           continue;
         }
       }
@@ -114,10 +75,6 @@ function generateInstallationInvoiceNumber(): string {
     .toString()
     .padStart(3, "0");
   return `INST-${year}${month}-${timestamp}${random}`;
-}
-
-function clearAllCache(): void {
-  console.log("🗑️ Cache cleared (but there is no cache!)");
 }
 
 async function getOrCreateSettings(): Promise<any> {
@@ -151,7 +108,7 @@ async function getBuildingForApplication(application: any): Promise<any> {
   try {
     if (!application) return null;
     if (application.buildingId) {
-      return await Building.findById(application.buildingId);
+      return await Building.findById(application.buildingId).lean();
     }
     return null;
   } catch (error) {
@@ -260,16 +217,15 @@ function checkAdmin(req: AuthRequest, res: Response): boolean {
   return true;
 }
 
-// ==================== CHECK IF EMAIL ALERTS ARE ENABLED ====================
 async function areCustomerEmailAlertsEnabled(
   adminId?: string,
 ): Promise<boolean> {
   if (!adminId) return false;
 
   try {
-    const admin = await Admin.findById(adminId).select(
-      "customerEmailAlertsEnabled",
-    );
+    const admin = await Admin.findById(adminId)
+      .select("customerEmailAlertsEnabled")
+      .lean();
     if (!admin) return false;
     return admin.customerEmailAlertsEnabled === true;
   } catch (error) {
@@ -319,7 +275,6 @@ async function sendInvoiceToApplication(
   }
 }
 
-// ==================== CREATE INVOICE FROM BILLING ====================
 async function createInvoiceFromBilling(
   billing: any,
   application: any,
@@ -328,7 +283,7 @@ async function createInvoiceFromBilling(
   try {
     const existingInvoice = await Invoice.findOne({
       billingId: billing._id,
-    });
+    }).lean();
 
     if (existingInvoice) {
       return existingInvoice;
@@ -537,7 +492,6 @@ async function sendInvoiceWithPDFAttachment(
   }
 }
 
-// ==================== CREATE SEPARATE INSTALLATION BILL ====================
 async function createInstallationBill(
   application: any,
   billingCycleId: mongoose.Types.ObjectId,
@@ -620,7 +574,6 @@ async function createInstallationBill(
   return installationBill[0];
 }
 
-// ==================== CREATE REGULAR MONTHLY BILL ====================
 async function createMonthlyBill(
   application: any,
   billingCycleId: mongoose.Types.ObjectId,
@@ -691,7 +644,6 @@ async function createMonthlyBill(
   return createdBill;
 }
 
-// ==================== CREATE PRO-RATED BILL ====================
 async function createProRatedBill(
   application: any,
   billingCycleId: mongoose.Types.ObjectId,
@@ -777,7 +729,7 @@ async function createProRatedBill(
 }
 
 // ============================================================
-// EXPORTED FUNCTIONS - LAHAT IDINAGDAG!
+// EXPORTED FUNCTIONS
 // ============================================================
 
 // ==================== GET BILLING SETTINGS ====================
@@ -1055,24 +1007,29 @@ export const getAllBillingCycles = async (
       .sort({ createdAt: -1 })
       .lean();
 
-    const enrichedCycles = await Promise.all(
-      cycles.map(async (cycle) => {
-        const c = { ...cycle };
-        if (c.applicationId) {
-          const application = await Application.findOne({
-            applicationId: c.applicationId,
+    const applicationIds = cycles
+      .map((c) => c.applicationId)
+      .filter((id) => id);
+
+    const applications =
+      applicationIds.length > 0
+        ? await Application.find({
+            applicationId: { $in: applicationIds },
           })
             .select(
               "firstName lastName email applicationId phoneNumber location buildingName",
             )
-            .lean();
-          if (application) {
-            (c as any).applicationData = application;
-          }
-        }
-        return c;
-      }),
+            .lean()
+        : [];
+
+    const applicationMap = new Map(
+      applications.map((a) => [a.applicationId, a]),
     );
+
+    const enrichedCycles = cycles.map((cycle) => ({
+      ...cycle,
+      applicationData: applicationMap.get(cycle.applicationId) || null,
+    }));
 
     res.status(200).json({ success: true, data: enrichedCycles });
   } catch (error) {
@@ -1102,24 +1059,27 @@ export const getAllBills = async (
       .sort({ dueDate: -1 })
       .lean();
 
-    const enrichedBills = await Promise.all(
-      bills.map(async (bill) => {
-        const b = { ...bill };
-        if (b.applicationId) {
-          const application = await Application.findOne({
-            applicationId: b.applicationId,
+    const applicationIds = bills.map((b) => b.applicationId).filter((id) => id);
+
+    const applications =
+      applicationIds.length > 0
+        ? await Application.find({
+            applicationId: { $in: applicationIds },
           })
             .select(
               "firstName lastName email applicationId phoneNumber location buildingName",
             )
-            .lean();
-          if (application) {
-            (b as any).applicationData = application;
-          }
-        }
-        return b;
-      }),
+            .lean()
+        : [];
+
+    const applicationMap = new Map(
+      applications.map((a) => [a.applicationId, a]),
     );
+
+    const enrichedBills = bills.map((bill) => ({
+      ...bill,
+      applicationData: applicationMap.get(bill.applicationId) || null,
+    }));
 
     res.status(200).json({ success: true, data: enrichedBills });
   } catch (error) {
@@ -1144,24 +1104,29 @@ export const getPendingProRatedBills = async (
       .sort({ createdAt: -1 })
       .lean();
 
-    const enrichedBills = await Promise.all(
-      pendingBills.map(async (bill) => {
-        const b = { ...bill };
-        if (b.applicationId) {
-          const application = await Application.findOne({
-            applicationId: b.applicationId,
+    const applicationIds = pendingBills
+      .map((b) => b.applicationId)
+      .filter((id) => id);
+
+    const applications =
+      applicationIds.length > 0
+        ? await Application.find({
+            applicationId: { $in: applicationIds },
           })
             .select(
               "firstName lastName email applicationId phoneNumber location buildingName",
             )
-            .lean();
-          if (application) {
-            (b as any).applicationData = application;
-          }
-        }
-        return b;
-      }),
+            .lean()
+        : [];
+
+    const applicationMap = new Map(
+      applications.map((a) => [a.applicationId, a]),
     );
+
+    const enrichedBills = pendingBills.map((bill) => ({
+      ...bill,
+      applicationData: applicationMap.get(bill.applicationId) || null,
+    }));
 
     res.status(200).json({ success: true, data: enrichedBills });
   } catch (error) {
@@ -1186,24 +1151,29 @@ export const getPendingInstallationBills = async (
       .sort({ dueDate: 1 })
       .lean();
 
-    const enrichedBills = await Promise.all(
-      pendingInstallationBills.map(async (bill) => {
-        const b = { ...bill };
-        if (b.applicationId) {
-          const application = await Application.findOne({
-            applicationId: b.applicationId,
+    const applicationIds = pendingInstallationBills
+      .map((b) => b.applicationId)
+      .filter((id) => id);
+
+    const applications =
+      applicationIds.length > 0
+        ? await Application.find({
+            applicationId: { $in: applicationIds },
           })
             .select(
               "firstName lastName email applicationId phoneNumber location buildingName",
             )
-            .lean();
-          if (application) {
-            (b as any).applicationData = application;
-          }
-        }
-        return b;
-      }),
+            .lean()
+        : [];
+
+    const applicationMap = new Map(
+      applications.map((a) => [a.applicationId, a]),
     );
+
+    const enrichedBills = pendingInstallationBills.map((bill) => ({
+      ...bill,
+      applicationData: applicationMap.get(bill.applicationId) || null,
+    }));
 
     res.status(200).json({ success: true, data: enrichedBills });
   } catch (error) {
@@ -1229,24 +1199,29 @@ export const getPendingActivations = async (
       .sort({ proRatedPaidAt: -1 })
       .lean();
 
-    const enrichedCycles = await Promise.all(
-      pendingCycles.map(async (cycle) => {
-        const c = { ...cycle };
-        if (c.applicationId) {
-          const application = await Application.findOne({
-            applicationId: c.applicationId,
+    const applicationIds = pendingCycles
+      .map((c) => c.applicationId)
+      .filter((id) => id);
+
+    const applications =
+      applicationIds.length > 0
+        ? await Application.find({
+            applicationId: { $in: applicationIds },
           })
             .select(
               "firstName lastName email applicationId phoneNumber location buildingName",
             )
-            .lean();
-          if (application) {
-            (c as any).applicationData = application;
-          }
-        }
-        return c;
-      }),
+            .lean()
+        : [];
+
+    const applicationMap = new Map(
+      applications.map((a) => [a.applicationId, a]),
     );
+
+    const enrichedCycles = pendingCycles.map((cycle) => ({
+      ...cycle,
+      applicationData: applicationMap.get(cycle.applicationId) || null,
+    }));
 
     res.status(200).json({ success: true, data: enrichedCycles });
   } catch (error) {
@@ -1280,43 +1255,25 @@ export const getApplicationCurrentBilling = async (
       return res.status(200).json({ success: true, data: null });
     }
 
-    const currentMonthlyBill = await Billing.findOne({
-      applicationId: applicationId,
-      billingCycleId: billingCycle._id,
-      status: { $in: ["sent", "overdue", "pending_confirmation"] },
-      isInstallationBill: false,
-    })
-      .sort({ dueDate: 1 })
-      .lean();
-
-    const pendingInstallationBill = await Billing.findOne({
-      applicationId: applicationId,
-      billingCycleId: billingCycle._id,
-      isInstallationBill: true,
-      installationFeePaid: false,
-      status: { $in: ["sent", "overdue"] },
-    }).lean();
+    const [currentMonthlyBill, pendingInstallationBill] = await Promise.all([
+      Billing.findOne({
+        applicationId: applicationId,
+        billingCycleId: billingCycle._id,
+        status: { $in: ["sent", "overdue", "pending_confirmation"] },
+        isInstallationBill: false,
+      })
+        .sort({ dueDate: 1 })
+        .lean(),
+      Billing.findOne({
+        applicationId: applicationId,
+        billingCycleId: billingCycle._id,
+        isInstallationBill: true,
+        installationFeePaid: false,
+        status: { $in: ["sent", "overdue"] },
+      }).lean(),
+    ]);
 
     const needsFirstPayment = billingCycle.proRatedPaid === false;
-
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const nextMonthStart = getStartOfNextMonth(today);
-    const nextMonthYear = nextMonthStart.getFullYear();
-    const nextMonthMonth = nextMonthStart.getMonth();
-
-    const nextMonthBill = await Billing.findOne({
-      applicationId: applicationId,
-      billingCycleId: billingCycle._id,
-      isProRated: false,
-      isInstallationBill: false,
-      $expr: {
-        $and: [
-          { $eq: [{ $year: "$billingPeriod.start" }, nextMonthYear] },
-          { $eq: [{ $month: "$billingPeriod.start" }, nextMonthMonth + 1] },
-        ],
-      },
-    }).lean();
 
     res.status(200).json({
       success: true,
@@ -1324,7 +1281,6 @@ export const getApplicationCurrentBilling = async (
         billingCycle,
         currentMonthlyBill,
         pendingInstallationBill,
-        nextMonthBill,
         needsFirstPayment,
         isAfterCutoff: billingCycle.isAfterCutoff || false,
         hasUnpaidInstallation: pendingInstallationBill !== null,
@@ -1348,8 +1304,12 @@ export const getApplicationBillingHistory = async (
     const { limit = 50, page = 1 } = req.query;
     const skip = (Number(page) - 1) * Number(limit);
 
-    const [bills, total] = await Promise.all([
-      Billing.find({ applicationId, status: "paid", isInstallationBill: false })
+    const [bills, total, installationBills] = await Promise.all([
+      Billing.find({
+        applicationId,
+        status: "paid",
+        isInstallationBill: false,
+      })
         .sort({ updatedAt: -1 })
         .skip(skip)
         .limit(Number(limit))
@@ -1360,12 +1320,11 @@ export const getApplicationBillingHistory = async (
         status: "paid",
         isInstallationBill: false,
       }),
+      Billing.find({
+        applicationId,
+        isInstallationBill: true,
+      }).lean(),
     ]);
-
-    const installationBills = await Billing.find({
-      applicationId,
-      isInstallationBill: true,
-    }).lean();
 
     res.status(200).json({
       success: true,
@@ -1402,23 +1361,23 @@ export const getApplicationBillingStatus = async (
         .json({ success: false, message: "Application not found" });
     }
 
-    const billingCycle = await BillingCycle.findOne({
-      applicationId: application.applicationId,
-    })
-      .populate("planId")
-      .lean();
-
-    const monthlyBills = await Billing.find({
-      applicationId: application.applicationId,
-      isInstallationBill: false,
-    })
-      .sort({ createdAt: -1 })
-      .lean();
-
-    const installationBills = await Billing.find({
-      applicationId: application.applicationId,
-      isInstallationBill: true,
-    }).lean();
+    const [billingCycle, monthlyBills, installationBills] = await Promise.all([
+      BillingCycle.findOne({
+        applicationId: application.applicationId,
+      })
+        .populate("planId")
+        .lean(),
+      Billing.find({
+        applicationId: application.applicationId,
+        isInstallationBill: false,
+      })
+        .sort({ createdAt: -1 })
+        .lean(),
+      Billing.find({
+        applicationId: application.applicationId,
+        isInstallationBill: true,
+      }).lean(),
+    ]);
 
     const location = await getLocationFromEntity(application);
     const collectionEmail = getCollectionEmailByLocation(location);
@@ -1494,7 +1453,9 @@ export const recoverMissingBills = async (
         status: "paid",
         isProRated: false,
         isInstallationBill: false,
-      }).sort({ "billingPeriod.end": -1 });
+      })
+        .sort({ "billingPeriod.end": -1 })
+        .lean();
 
       if (lastPaidBill) {
         startDate = new Date(lastPaidBill.billingPeriod.end);
@@ -1522,7 +1483,7 @@ export const recoverMissingBills = async (
         billingCycleId: billingCycle._id,
         "billingPeriod.start": billingStart,
         isInstallationBill: false,
-      });
+      }).lean();
 
       if (!existingBill) {
         const monthlyBill = await createMonthlyBill(
@@ -2190,42 +2151,46 @@ export const getUnpaidBillsReport = async (
       query.status = { $in: ["sent", "overdue", "pending_confirmation"] };
     }
 
-    const unpaidMonthlyBills = await Billing.find({
-      ...query,
-      isInstallationBill: false,
-    })
-      .sort({ dueDate: 1 })
-      .lean();
-    const unpaidInstallationBills = await Billing.find({
-      ...query,
-      isInstallationBill: true,
-      installationFeePaid: false,
-    })
-      .sort({ dueDate: 1 })
-      .lean();
+    const [unpaidMonthlyBills, unpaidInstallationBills] = await Promise.all([
+      Billing.find({
+        ...query,
+        isInstallationBill: false,
+      })
+        .sort({ dueDate: 1 })
+        .lean(),
+      Billing.find({
+        ...query,
+        isInstallationBill: true,
+        installationFeePaid: false,
+      })
+        .sort({ dueDate: 1 })
+        .lean(),
+    ]);
 
     const allUnpaidBills = [...unpaidMonthlyBills, ...unpaidInstallationBills];
+    const applicationIds = allUnpaidBills
+      .map((b) => b.applicationId)
+      .filter((id) => id);
 
-    const enrichedBills = await Promise.all(
-      allUnpaidBills.map(async (bill) => {
-        const b = { ...bill };
-        if (b.applicationId) {
-          const application = await Application.findOne({
-            applicationId: b.applicationId,
+    const applications =
+      applicationIds.length > 0
+        ? await Application.find({
+            applicationId: { $in: applicationIds },
           })
             .select(
               "firstName lastName email applicationId phoneNumber location buildingName",
             )
-            .lean();
-          if (application) {
-            (b as any).applicationData = application;
-            const location = await getLocationFromEntity(application);
-            (b as any).location = location || "";
-          }
-        }
-        return b;
-      }),
+            .lean()
+        : [];
+
+    const applicationMap = new Map(
+      applications.map((a) => [a.applicationId, a]),
     );
+
+    const enrichedBills = allUnpaidBills.map((bill) => ({
+      ...bill,
+      applicationData: applicationMap.get(bill.applicationId) || null,
+    }));
 
     const summary = {
       totalUnpaidBills: enrichedBills.length,
@@ -2259,7 +2224,7 @@ export const getUnpaidBillsReport = async (
           installationFees: 0,
           monthlyBills: 0,
           bills: [],
-          location: (bill as any).location || "",
+          location: "",
         };
       }
       summary.byMonth[monthKey].count++;
@@ -2275,7 +2240,6 @@ export const getUnpaidBillsReport = async (
         status: bill.status,
         dueDate: bill.dueDate,
         isInstallationBill: bill.isInstallationBill,
-        location: (bill as any).location || "",
       });
     });
 
@@ -2526,7 +2490,7 @@ export const getBuildingInstallationFee = async (
   }
 };
 
-// ==================== GET DASHBOARD DATA - NO CACHE! ====================
+// ==================== GET DASHBOARD DATA - OPTIMIZED NO N+1 ====================
 export const getDashboardData = async (
   req: AuthRequest,
   res: Response,
@@ -2534,10 +2498,11 @@ export const getDashboardData = async (
 ) => {
   try {
     console.log("🔄 Fetching dashboard data DIRECTLY from database...");
+    const startTime = Date.now();
 
-    const buildings = await Building.find({}).lean();
-
+    // Fetch all base data in parallel
     const [
+      buildings,
       billingCycles,
       bills,
       users,
@@ -2548,6 +2513,8 @@ export const getDashboardData = async (
       pendingProRated,
       pendingActivations,
     ] = await Promise.all([
+      Building.find({}).lean(),
+
       BillingCycle.find({})
         .populate("planId", "name price")
         .sort({ createdAt: -1 })
@@ -2625,101 +2592,69 @@ export const getDashboardData = async (
         .lean(),
     ]);
 
-    const enrichedCycles = await Promise.all(
-      billingCycles.map(async (cycle) => {
-        const c = { ...cycle };
-        if (c.applicationId) {
-          const application = await Application.findOne({
-            applicationId: c.applicationId,
+    // Collect all application IDs from all sources
+    const allAppIds = new Set<string>();
+    billingCycles.forEach(
+      (c) => c.applicationId && allAppIds.add(c.applicationId),
+    );
+    bills.forEach((b) => b.applicationId && allAppIds.add(b.applicationId));
+    pendingInstallationBills.forEach(
+      (b) => b.applicationId && allAppIds.add(b.applicationId),
+    );
+    pendingProRated.forEach(
+      (b) => b.applicationId && allAppIds.add(b.applicationId),
+    );
+    pendingActivations.forEach(
+      (c) => c.applicationId && allAppIds.add(c.applicationId),
+    );
+
+    // Fetch ALL applications in ONE query
+    const applicationIdsArray = Array.from(allAppIds);
+    const allApplications =
+      applicationIdsArray.length > 0
+        ? await Application.find({
+            applicationId: { $in: applicationIdsArray },
           })
             .select(
-              "firstName lastName email applicationId phoneNumber buildingName",
+              "firstName lastName email applicationId phoneNumber buildingName location",
             )
-            .lean();
-          if (application) {
-            (c as any).applicationData = application;
-          }
-        }
-        return c;
+            .lean()
+        : [];
+
+    // Create lookup map for O(1) access
+    const applicationMap = new Map(
+      allApplications.map((a) => [a.applicationId, a]),
+    );
+
+    // Enrich all data using the map (no more N+1 queries)
+    const enrichedCycles = billingCycles.map((cycle) => ({
+      ...cycle,
+      applicationData: applicationMap.get(cycle.applicationId) || null,
+    }));
+
+    const enrichedBills = bills.map((bill) => ({
+      ...bill,
+      applicationData: applicationMap.get(bill.applicationId) || null,
+    }));
+
+    const enrichedPendingInstallation = pendingInstallationBills.map(
+      (bill) => ({
+        ...bill,
+        applicationData: applicationMap.get(bill.applicationId) || null,
       }),
     );
 
-    const enrichedBills = await Promise.all(
-      bills.map(async (bill) => {
-        const b = { ...bill };
-        if (b.applicationId) {
-          const application = await Application.findOne({
-            applicationId: b.applicationId,
-          })
-            .select(
-              "firstName lastName email applicationId phoneNumber buildingName",
-            )
-            .lean();
-          if (application) {
-            (b as any).applicationData = application;
-          }
-        }
-        return b;
-      }),
-    );
+    const enrichedPendingProRated = pendingProRated.map((bill) => ({
+      ...bill,
+      applicationData: applicationMap.get(bill.applicationId) || null,
+    }));
 
-    const enrichedPendingInstallation = await Promise.all(
-      pendingInstallationBills.map(async (bill) => {
-        const b = { ...bill };
-        if (b.applicationId) {
-          const application = await Application.findOne({
-            applicationId: b.applicationId,
-          })
-            .select(
-              "firstName lastName email applicationId phoneNumber buildingName",
-            )
-            .lean();
-          if (application) {
-            (b as any).applicationData = application;
-          }
-        }
-        return b;
-      }),
-    );
+    const enrichedPendingActivations = pendingActivations.map((cycle) => ({
+      ...cycle,
+      applicationData: applicationMap.get(cycle.applicationId) || null,
+    }));
 
-    const enrichedPendingProRated = await Promise.all(
-      pendingProRated.map(async (bill) => {
-        const b = { ...bill };
-        if (b.applicationId) {
-          const application = await Application.findOne({
-            applicationId: b.applicationId,
-          })
-            .select(
-              "firstName lastName email applicationId phoneNumber buildingName",
-            )
-            .lean();
-          if (application) {
-            (b as any).applicationData = application;
-          }
-        }
-        return b;
-      }),
-    );
-
-    const enrichedPendingActivations = await Promise.all(
-      pendingActivations.map(async (cycle) => {
-        const c = { ...cycle };
-        if (c.applicationId) {
-          const application = await Application.findOne({
-            applicationId: c.applicationId,
-          })
-            .select(
-              "firstName lastName email applicationId phoneNumber buildingName",
-            )
-            .lean();
-          if (application) {
-            (c as any).applicationData = application;
-          }
-        }
-        return c;
-      }),
-    );
-
+    // Build customer list
     const userCustomers = users.map((user: any) => {
       const userBills = enrichedBills.filter(
         (bill) => bill.userId?._id === user._id || bill.userId === user._id,
@@ -2900,7 +2835,10 @@ export const getDashboardData = async (
       stats: stats,
     };
 
-    console.log(`✅ Dashboard data fetched: ${allCustomers.length} customers`);
+    const elapsed = Date.now() - startTime;
+    console.log(
+      `✅ Dashboard data fetched in ${elapsed}ms: ${allCustomers.length} customers`,
+    );
 
     res.status(200).json({
       success: true,
@@ -4676,10 +4614,42 @@ export const autoGenerateMonthlyBills = async (
       .populate("planId")
       .lean();
 
+    // Collect application IDs
+    const appIds = billingCycles.map((c) => c.applicationId).filter((id) => id);
+
+    // Fetch all applications in ONE query
+    const applications = await Application.find({
+      applicationId: { $in: appIds },
+    }).lean();
+
+    const applicationMap = new Map(
+      applications.map((a) => [a.applicationId, a]),
+    );
+
     let generatedCount = 0;
     let skippedCount = 0;
     let alreadyGeneratedCount = 0;
     const generatedBills = [];
+
+    // Check existing bills for next month in one query
+    const nextMonthYear = nextMonth.getFullYear();
+    const nextMonthMonth = nextMonth.getMonth();
+
+    const existingBills = await Billing.find({
+      billingCycleId: { $in: billingCycles.map((c) => c._id) },
+      isProRated: false,
+      isInstallationBill: false,
+      $expr: {
+        $and: [
+          { $eq: [{ $year: "$billingPeriod.start" }, nextMonthYear] },
+          { $eq: [{ $month: "$billingPeriod.start" }, nextMonthMonth + 1] },
+        ],
+      },
+    }).lean();
+
+    const existingBillingCycleIds = new Set(
+      existingBills.map((b) => b.billingCycleId.toString()),
+    );
 
     for (const cycle of billingCycles) {
       if (!cycle.applicationId) {
@@ -4687,10 +4657,7 @@ export const autoGenerateMonthlyBills = async (
         continue;
       }
 
-      const application = await Application.findOne({
-        applicationId: cycle.applicationId,
-      }).lean();
-
+      const application = applicationMap.get(cycle.applicationId);
       if (!application) {
         skippedCount++;
         continue;
@@ -4702,44 +4669,29 @@ export const autoGenerateMonthlyBills = async (
         continue;
       }
 
-      const nextMonthYear = nextMonth.getFullYear();
-      const nextMonthMonth = nextMonth.getMonth();
-
-      const existingBill = await Billing.findOne({
-        applicationId: cycle.applicationId,
-        billingCycleId: cycle._id,
-        isProRated: false,
-        isInstallationBill: false,
-        $expr: {
-          $and: [
-            { $eq: [{ $year: "$billingPeriod.start" }, nextMonthYear] },
-            { $eq: [{ $month: "$billingPeriod.start" }, nextMonthMonth + 1] },
-          ],
-        },
-      }).lean();
-
-      if (!existingBill) {
-        const newBill = await createMonthlyBill(
-          application,
-          cycle._id,
-          nextMonth,
-          nextMonthEnd,
-          plan.price,
-          settings,
-          undefined,
-          req,
-        );
-        generatedCount++;
-        generatedBills.push(newBill);
-        console.log(
-          `✅ Generated bill for ${application.firstName} ${application.lastName} - ${plan.price} for ${formatDateForDisplay(nextMonth)}`,
-        );
-      } else {
+      if (existingBillingCycleIds.has(cycle._id.toString())) {
         alreadyGeneratedCount++;
         console.log(
           `⏭️ Bill already exists for ${application.firstName} ${application.lastName} for ${formatDateForDisplay(nextMonth)}`,
         );
+        continue;
       }
+
+      const newBill = await createMonthlyBill(
+        application,
+        cycle._id,
+        nextMonth,
+        nextMonthEnd,
+        plan.price,
+        settings,
+        undefined,
+        req,
+      );
+      generatedCount++;
+      generatedBills.push(newBill);
+      console.log(
+        `✅ Generated bill for ${application.firstName} ${application.lastName} - ${plan.price} for ${formatDateForDisplay(nextMonth)}`,
+      );
     }
 
     if (generatedCount > 0) {
@@ -5130,7 +5082,10 @@ export const markInstallationBillAsPaid = async (
       if (installationBill.applicationId) {
         application = await Application.findOne({
           applicationId: installationBill.applicationId,
-        }).session(session);
+        })
+          .select("firstName lastName email phoneNumber applicationId")
+          .session(session)
+          .lean();
       }
 
       const paymentData: any = {
@@ -5787,7 +5742,10 @@ export const markInstallationBillAsFree = async (
       if (installationBill.applicationId) {
         application = await Application.findOne({
           applicationId: installationBill.applicationId,
-        }).session(session);
+        })
+          .select("firstName lastName email phoneNumber applicationId")
+          .session(session)
+          .lean();
       }
 
       const paymentData: any = {
@@ -6027,6 +5985,38 @@ export const autoGenerateEarlyBills = async (
       .populate("planId")
       .lean();
 
+    // Collect application IDs
+    const appIds = billingCycles.map((c) => c.applicationId).filter((id) => id);
+
+    // Fetch all applications in ONE query
+    const applications = await Application.find({
+      applicationId: { $in: appIds },
+    }).lean();
+
+    const applicationMap = new Map(
+      applications.map((a) => [a.applicationId, a]),
+    );
+
+    // Check existing bills for next month
+    const nextMonthYear = nextMonthStart.getFullYear();
+    const nextMonthMonth = nextMonthStart.getMonth();
+
+    const existingBills = await Billing.find({
+      billingCycleId: { $in: billingCycles.map((c) => c._id) },
+      isProRated: false,
+      isInstallationBill: false,
+      $expr: {
+        $and: [
+          { $eq: [{ $year: "$billingPeriod.start" }, nextMonthYear] },
+          { $eq: [{ $month: "$billingPeriod.start" }, nextMonthMonth + 1] },
+        ],
+      },
+    }).lean();
+
+    const existingBillingCycleIds = new Set(
+      existingBills.map((b) => b.billingCycleId.toString()),
+    );
+
     let generatedCount = 0;
     let skippedCount = 0;
     const generatedBills = [];
@@ -6037,10 +6027,7 @@ export const autoGenerateEarlyBills = async (
         continue;
       }
 
-      const application = await Application.findOne({
-        applicationId: cycle.applicationId,
-      }).lean();
-
+      const application = applicationMap.get(cycle.applicationId);
       if (!application) {
         skippedCount++;
         continue;
@@ -6052,42 +6039,27 @@ export const autoGenerateEarlyBills = async (
         continue;
       }
 
-      const nextMonthYear = nextMonthStart.getFullYear();
-      const nextMonthMonth = nextMonthStart.getMonth();
-
-      const existingBill = await Billing.findOne({
-        applicationId: cycle.applicationId,
-        billingCycleId: cycle._id,
-        isProRated: false,
-        isInstallationBill: false,
-        $expr: {
-          $and: [
-            { $eq: [{ $year: "$billingPeriod.start" }, nextMonthYear] },
-            { $eq: [{ $month: "$billingPeriod.start" }, nextMonthMonth + 1] },
-          ],
-        },
-      }).lean();
-
-      if (!existingBill) {
-        const nextMonthEnd = getEndOfMonth(nextMonthStart);
-        const newBill = await createMonthlyBill(
-          application,
-          cycle._id,
-          nextMonthStart,
-          nextMonthEnd,
-          plan.price,
-          settings,
-          undefined,
-          req,
-        );
-        generatedCount++;
-        generatedBills.push(newBill);
-        console.log(
-          `✅ Generated early bill for ${application.firstName} ${application.lastName} for ${formatDateForDisplay(nextMonthStart)}`,
-        );
-      } else {
+      if (existingBillingCycleIds.has(cycle._id.toString())) {
         skippedCount++;
+        continue;
       }
+
+      const nextMonthEnd = getEndOfMonth(nextMonthStart);
+      const newBill = await createMonthlyBill(
+        application,
+        cycle._id,
+        nextMonthStart,
+        nextMonthEnd,
+        plan.price,
+        settings,
+        undefined,
+        req,
+      );
+      generatedCount++;
+      generatedBills.push(newBill);
+      console.log(
+        `✅ Generated early bill for ${application.firstName} ${application.lastName} for ${formatDateForDisplay(nextMonthStart)}`,
+      );
     }
 
     if (generatedCount > 0) {
@@ -6159,7 +6131,6 @@ export const updateBillPrice = async (
       });
     }
 
-    // Update the bill with new price
     const updateData: any = {};
 
     if (total !== undefined) {
@@ -6173,7 +6144,6 @@ export const updateBillPrice = async (
 
     if (items !== undefined && Array.isArray(items) && items.length > 0) {
       updateData.items = items;
-      // Recalculate totals from items
       const newSubtotal = items.reduce(
         (sum, item) => sum + (item.amount || 0),
         0,
@@ -6184,11 +6154,9 @@ export const updateBillPrice = async (
       }
     }
 
-    // If only total is provided, update items too
     if (total !== undefined && (!items || items.length === 0)) {
       const existingItems = bill.items || [];
       if (existingItems.length > 0) {
-        // Update the first item's rate and amount
         const updatedItems = [...existingItems];
         const firstItem = updatedItems[0];
         if (firstItem) {
@@ -6200,7 +6168,6 @@ export const updateBillPrice = async (
             amount: newRate * newQuantity,
           };
           updateData.items = updatedItems;
-          // Recalculate subtotal
           const newSubtotal = updatedItems.reduce(
             (sum, item) => sum + (item.amount || 0),
             0,
@@ -6209,7 +6176,6 @@ export const updateBillPrice = async (
           updateData.total = newSubtotal;
         }
       } else {
-        // Create a default item
         updateData.items = [
           {
             description: "Monthly Subscription (Updated)",
@@ -6223,14 +6189,12 @@ export const updateBillPrice = async (
       }
     }
 
-    // Update the bill
     const updatedBill = await Billing.findByIdAndUpdate(
       billId,
       { $set: updateData },
       { new: true, runValidators: true },
     ).lean();
 
-    // Update corresponding invoice if exists
     const invoice = await Invoice.findOne({ billingId: billId });
     if (invoice) {
       await Invoice.findByIdAndUpdate(invoice._id, {
@@ -6242,12 +6206,10 @@ export const updateBillPrice = async (
       });
     }
 
-    // Log the price change
     console.log(
       `💰 Bill ${bill.invoiceNumber} price updated from ₱${bill.total} to ₱${updatedBill.total}`,
     );
 
-    // Emit event for real-time updates
     eventService.emitBillingUpdated({
       billId: billId,
     });
