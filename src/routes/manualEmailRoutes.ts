@@ -1,4 +1,4 @@
-// backend/src/routes/manualEmailRoutes.ts
+// backend/src/routes/manualEmailRoutes.ts - COMPLETE FIXED VERSION
 
 import { Router } from "express";
 import {
@@ -22,36 +22,52 @@ import {
   getScheduleStats,
   forceProcessSchedules,
 } from "../controllers/emailController";
-import { authMiddleware } from "../middleware/auth";
+
+import { protect, adminOnly } from "../middleware/auth";
 
 const router = Router();
 
-// All routes require authentication and admin access
-router.use(authMiddleware);
+// ============================================================
+// ALL ROUTES REQUIRE AUTHENTICATION + ADMIN ACCESS
+// ============================================================
+router.use(protect);
+router.use(adminOnly);
 
-// Customer routes
+// ============================================================
+// CUSTOMER ROUTES
+// ============================================================
 router.get("/customers", getCustomersForEmail);
 router.get("/customers/:applicationId/bills", getCustomerBills);
 
-// Send email routes
+// ============================================================
+// SEND EMAIL ROUTES
+// ============================================================
 router.post("/send", sendManualEmail);
 router.post("/send-bulk", sendBulkEmails);
 router.post("/send-reminder-unpaid", sendReminderToUnpaid);
 
-// Template routes
+// ============================================================
+// TEMPLATE ROUTES
+// ============================================================
 router.get("/templates", getEmailTemplates);
 router.post("/templates", saveEmailTemplate);
 router.put("/templates/:templateId", updateEmailTemplate);
 router.delete("/templates/:templateId", deleteEmailTemplate);
 
-// Preview route
+// ============================================================
+// PREVIEW ROUTE
+// ============================================================
 router.post("/preview", previewEmail);
 
-// Sent records routes
+// ============================================================
+// SENT RECORDS ROUTES
+// ============================================================
 router.get("/sent-records", getSentRecords);
 router.delete("/sent-records/:recordId", deleteSentRecord);
 
-// Scheduling routes
+// ============================================================
+// SCHEDULING ROUTES
+// ============================================================
 router.post("/schedule", scheduleEmail);
 router.get("/schedules", getScheduledEmails);
 router.put("/schedules/:scheduleId", updateScheduledEmail);

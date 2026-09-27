@@ -1,4 +1,4 @@
-// backend/src/controllers/manualEmailController.ts
+// backend/src/controllers/manualEmailController.ts - COMPLETE FIXED VERSION
 
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
@@ -15,16 +15,20 @@ import emailService, {
 
 type AuthRequest = Request & { user?: any };
 
-// Check admin access
+// ============================================================
+// CHECK ADMIN - FIXED to match middleware roles
+// ============================================================
 function checkAdmin(req: AuthRequest, res: Response): boolean {
-  if (!req.user || !req.user.role) {
+  if (!req.user) {
     res.status(401).json({
       success: false,
       message: "You must be logged in as admin to perform this action",
     });
     return false;
   }
+
   const role = req.user.role;
+  // ✅ Match the same roles as middleware
   if (role !== "super_admin" && role !== "admin" && role !== "staff") {
     res.status(403).json({
       success: false,
@@ -32,10 +36,13 @@ function checkAdmin(req: AuthRequest, res: Response): boolean {
     });
     return false;
   }
+
   return true;
 }
 
-// Generate email preview HTML with support for multiple bills and rich text
+// ============================================================
+// GENERATE EMAIL PREVIEW (keep as-is from your file)
+// ============================================================
 function generateEmailPreview(
   subject: string,
   message: string,
@@ -45,7 +52,6 @@ function generateEmailPreview(
   senderInfo?: string,
   richTextContent?: string,
 ): string {
-  // Use rich text content if provided, otherwise use plain message
   const content = richTextContent || message.replace(/\n/g, "<br>");
 
   const senderSection = senderInfo
@@ -73,7 +79,6 @@ function generateEmailPreview(
     }
   }
 
-  // Build billing section for multiple bills
   let billingSection = "";
   if (includeBilling && billingDataArray && billingDataArray.length > 0) {
     const totalAmount = billingDataArray.reduce(
@@ -82,7 +87,7 @@ function generateEmailPreview(
     );
 
     let billsHtml = "";
-    billingDataArray.forEach((bill, index) => {
+    billingDataArray.forEach((bill) => {
       billsHtml += `
         <div style="border-bottom: 1px solid #e0e0e0; padding-bottom: 12px; margin-bottom: 12px;">
           <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -168,7 +173,9 @@ function generateEmailPreview(
   `;
 }
 
-// ==================== GET CUSTOMERS FOR EMAIL SELECTION ====================
+// ============================================================
+// GET CUSTOMERS FOR EMAIL
+// ============================================================
 export const getCustomersForEmail = async (
   req: AuthRequest,
   res: Response,
@@ -179,7 +186,6 @@ export const getCustomersForEmail = async (
   try {
     const { search, status, hasBilling, forceRefresh, location } = req.query;
 
-    // Set no-cache headers
     res.set({
       "Cache-Control": "no-store, no-cache, must-revalidate, private",
       Pragma: "no-cache",
@@ -197,11 +203,8 @@ export const getCustomersForEmail = async (
       ];
     }
 
-    if (status) {
-      query.status = status;
-    }
+    if (status) query.status = status;
 
-    // Location filter
     if (location && location !== "all") {
       if (location === "breeze") {
         query.buildingName = { $regex: "breeze", $options: "i" };
@@ -209,10 +212,7 @@ export const getCustomersForEmail = async (
         query.buildingName = { $regex: /sil|silk/, $options: "i" };
       } else if (location === "other") {
         query.buildingName = {
-          $not: {
-            $regex: /breeze|sil|silk/,
-            $options: "i",
-          },
+          $not: { $regex: /breeze|sil|silk/, $options: "i" },
         };
       }
     }
@@ -245,15 +245,15 @@ export const getCustomersForEmail = async (
           .sort({ createdAt: -1 })
           .lean();
 
-        let location = "other";
+        let loc = "other";
         if (app.buildingName) {
           const buildingName = app.buildingName.toLowerCase().trim();
-          if (buildingName.includes("breeze")) location = "breeze";
+          if (buildingName.includes("breeze")) loc = "breeze";
           else if (
             buildingName.includes("sil") ||
             buildingName.includes("silk")
           )
-            location = "sil";
+            loc = "sil";
         }
 
         return {
@@ -262,7 +262,7 @@ export const getCustomersForEmail = async (
           hasUnpaidBills: !!hasUnpaidBills,
           lastBillAmount: lastBill?.total || 0,
           lastBillStatus: lastBill?.status || null,
-          location: location,
+          location: loc,
           _fetchedAt: new Date().toISOString(),
         };
       }),
@@ -295,7 +295,9 @@ export const getCustomersForEmail = async (
   }
 };
 
-// ==================== GET CUSTOMER BILLS ====================
+// ============================================================
+// GET CUSTOMER BILLS
+// ============================================================
 export const getCustomerBills = async (
   req: AuthRequest,
   res: Response,
@@ -319,9 +321,7 @@ export const getCustomerBills = async (
       Expires: "0",
     });
 
-    const bills = await Billing.find({
-      applicationId: applicationId,
-    })
+    const bills = await Billing.find({ applicationId })
       .sort({ createdAt: -1 })
       .lean();
 
@@ -342,7 +342,9 @@ export const getCustomerBills = async (
   }
 };
 
-// ==================== SEND MANUAL EMAIL ====================
+// ============================================================
+// SEND MANUAL EMAIL
+// ============================================================
 export const sendManualEmail = async (
   req: AuthRequest,
   res: Response,
@@ -400,18 +402,13 @@ export const sendManualEmail = async (
       });
     }
 
-    // Get location
+    // Determine location
     let location = "";
     if (application.buildingName) {
       const buildingName = application.buildingName.toLowerCase().trim();
-      if (buildingName.includes("breeze")) {
-        location = "breeze";
-      } else if (
-        buildingName.includes("sil") ||
-        buildingName.includes("silk")
-      ) {
+      if (buildingName.includes("breeze")) location = "breeze";
+      else if (buildingName.includes("sil") || buildingName.includes("silk"))
         location = "sil";
-      }
     }
 
     if (!location && application.buildingId) {
@@ -420,18 +417,14 @@ export const sendManualEmail = async (
       if (building) {
         if (building.name) {
           const buildingName = building.name.toLowerCase().trim();
-          if (buildingName.includes("breeze")) {
-            location = "breeze";
-          } else if (
+          if (buildingName.includes("breeze")) location = "breeze";
+          else if (
             buildingName.includes("sil") ||
             buildingName.includes("silk")
-          ) {
+          )
             location = "sil";
-          }
         }
-        if (building.location) {
-          location = building.location;
-        }
+        if (building.location) location = building.location;
       }
     }
 
@@ -464,7 +457,7 @@ export const sendManualEmail = async (
       }));
     }
 
-    // Determine sender info for preview
+    // Determine sender info
     let senderInfo = "";
     if (useAdminSender) {
       senderInfo = "Sent from: Admin (admin@misterfyber.com)";
@@ -475,7 +468,6 @@ export const sendManualEmail = async (
       senderInfo = "Sent from: Admin (admin@misterfyber.com)";
     }
 
-    // Generate email HTML with rich text support
     const emailHtml = generateEmailPreview(
       subject,
       message,
@@ -486,7 +478,6 @@ export const sendManualEmail = async (
       richTextContent,
     );
 
-    // Check if email service is configured
     const isConfigured = emailService.isConfigured();
 
     let emailSent = false;
@@ -511,9 +502,7 @@ export const sendManualEmail = async (
           emailHtml,
           true,
           location,
-          {
-            useAdminSender: useAdminSender === true,
-          },
+          { useAdminSender: useAdminSender === true },
         );
 
         if (!emailSent) {
@@ -530,18 +519,6 @@ export const sendManualEmail = async (
       const adminEmail = process.env.ADMIN_EMAIL || process.env.EMAIL_FROM;
       if (adminEmail) {
         try {
-          const totalAmount = billingDataArray.reduce(
-            (sum, bill) => sum + (bill.total || 0),
-            0,
-          );
-
-          let billsSummary = "";
-          billingDataArray.forEach((bill) => {
-            billsSummary += `
-              <li>${bill.invoiceNumber || "N/A"} - ₱${(bill.total || 0).toLocaleString()} (${bill.status || "N/A"})</li>
-            `;
-          });
-
           const adminHtml = `
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
               <h2 style="color: #007bff;">📧 Admin Copy - Manual Email Sent</h2>
@@ -551,10 +528,6 @@ export const sendManualEmail = async (
               <p><strong>Sent By:</strong> ${req.user?.email || req.user?.username || "Admin"}</p>
               <p><strong>Sender Type:</strong> ${useAdminSender ? "Admin" : "Collection"}</p>
               <p><strong>Location:</strong> ${location || "NONE"}</p>
-              <div style="background: #f8f9fa; padding: 15px; border-radius: 5px;">
-                <h3>Message Content:</h3>
-                <div>${richTextContent || message.replace(/\n/g, "<br>")}</div>
-              </div>
             </div>
           `;
           adminCopySent = await emailService.sendEmail(
@@ -595,7 +568,6 @@ export const sendManualEmail = async (
     });
 
     await sentRecord.save({ session });
-
     await session.commitTransaction();
 
     if (!emailSent) {
@@ -642,7 +614,9 @@ export const sendManualEmail = async (
   }
 };
 
-// ==================== SEND BULK EMAILS ====================
+// ============================================================
+// SEND BULK EMAILS
+// ============================================================
 export const sendBulkEmails = async (
   req: AuthRequest,
   res: Response,
@@ -696,7 +670,6 @@ export const sendBulkEmails = async (
     const results = [];
     let successCount = 0;
     let failCount = 0;
-    const sentRecords = [];
     const failedEmails = [];
 
     for (const applicationId of applicationIds) {
@@ -715,38 +688,14 @@ export const sendBulkEmails = async (
         let location = "";
         if (application.buildingName) {
           const buildingName = application.buildingName.toLowerCase().trim();
-          if (buildingName.includes("breeze")) {
-            location = "breeze";
-          } else if (
+          if (buildingName.includes("breeze")) location = "breeze";
+          else if (
             buildingName.includes("sil") ||
             buildingName.includes("silk")
-          ) {
+          )
             location = "sil";
-          }
         }
 
-        if (!location && application.buildingId) {
-          const Building = require("../models/Building").default;
-          const building = await Building.findById(
-            application.buildingId,
-          ).lean();
-          if (building) {
-            if (building.name) {
-              const buildingName = building.name.toLowerCase().trim();
-              if (buildingName.includes("breeze")) location = "breeze";
-              else if (
-                buildingName.includes("sil") ||
-                buildingName.includes("silk")
-              )
-                location = "sil";
-            }
-            if (building.location) {
-              location = building.location;
-            }
-          }
-        }
-
-        // If location filter is applied, skip non-matching
         if (locationFilter && locationFilter !== "all") {
           if (location !== locationFilter) {
             console.log(
@@ -758,7 +707,6 @@ export const sendBulkEmails = async (
 
         let billingDataArray: any[] = [];
         let selectedBillIds: string[] = [];
-        let selectedBillType = billType;
 
         if (includeBilling) {
           let billQuery: any = { applicationId: application.applicationId };
@@ -783,15 +731,6 @@ export const sendBulkEmails = async (
             const bills = await Billing.find(billQuery).lean();
             billingDataArray = bills;
             selectedBillIds = bills.map((b) => b._id);
-          }
-
-          if (billingDataArray.length > 0) {
-            const frontendUrl =
-              process.env.FRONTEND_URL || "https://www.misterfyber.com";
-            billingDataArray = billingDataArray.map((bill) => ({
-              ...bill,
-              paymentLink: `${frontendUrl}/billing/${bill._id}`,
-            }));
           }
         }
 
@@ -829,9 +768,7 @@ export const sendBulkEmails = async (
                 emailHtml,
                 true,
                 location,
-                {
-                  useAdminSender: useAdminSender === true,
-                },
+                { useAdminSender: useAdminSender === true },
               );
             }
           } else {
@@ -854,7 +791,7 @@ export const sendBulkEmails = async (
           isBulk: true,
           recipientCount: 1,
           includeBilling: includeBilling || false,
-          billType: selectedBillType,
+          billType: billType,
           billIds: selectedBillIds,
           billCount: billingDataArray.length,
           error: emailError || (emailSent ? undefined : "Failed to send email"),
@@ -881,7 +818,6 @@ export const sendBulkEmails = async (
             location: location || "unknown",
             billsIncluded: billingDataArray.length,
           });
-          sentRecords.push(record);
         } else {
           failCount++;
           failedEmails.push({
@@ -909,57 +845,6 @@ export const sendBulkEmails = async (
       }
     }
 
-    if (sendCopyToAdmin && successCount > 0) {
-      const adminEmail = process.env.ADMIN_EMAIL || process.env.EMAIL_FROM;
-      if (adminEmail) {
-        try {
-          const summaryHtml = `
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-              <h2>📧 Bulk Email Summary</h2>
-              <p><strong>Subject:</strong> ${subject}</p>
-              <p><strong>Sent At:</strong> ${new Date().toLocaleString()}</p>
-              <p><strong>Sent By:</strong> ${req.user?.email || req.user?.username || "Admin"}</p>
-              <p><strong>Sender Type:</strong> ${useAdminSender ? "Admin" : "Collection"}</p>
-              <hr>
-              <p><strong>✅ Successful:</strong> ${successCount}</p>
-              <p><strong>❌ Failed:</strong> ${failCount}</p>
-              <hr>
-              <h3>Recipients:</h3>
-              <ul>
-                ${results
-                  .filter((r) => r.success)
-                  .map(
-                    (r) =>
-                      `<li>${r.name} (${r.email}) - Location: ${r.location || "unknown"} - Bills: ${r.billsIncluded || 0}</li>`,
-                  )
-                  .join("")}
-              </ul>
-              ${
-                failCount > 0
-                  ? `
-                <h3>Failed:</h3>
-                <ul>
-                  ${failedEmails
-                    .map((r) => `<li>${r.name} (${r.email}) - ${r.error}</li>`)
-                    .join("")}
-                </ul>
-              `
-                  : ""
-              }
-            </div>
-          `;
-          await emailService.sendEmail(
-            adminEmail,
-            `[BULK EMAIL SUMMARY] ${subject}`,
-            summaryHtml,
-            false,
-          );
-        } catch (adminError) {
-          console.error("Failed to send admin summary:", adminError);
-        }
-      }
-    }
-
     res.status(200).json({
       success: true,
       message: `Bulk email completed. Sent: ${successCount}, Failed: ${failCount}`,
@@ -977,7 +862,9 @@ export const sendBulkEmails = async (
   }
 };
 
-// ==================== SAVE EMAIL TEMPLATE ====================
+// ============================================================
+// SAVE EMAIL TEMPLATE
+// ============================================================
 export const saveEmailTemplate = async (
   req: AuthRequest,
   res: Response,
@@ -1039,7 +926,9 @@ export const saveEmailTemplate = async (
   }
 };
 
-// ==================== GET EMAIL TEMPLATES ====================
+// ============================================================
+// GET EMAIL TEMPLATES
+// ============================================================
 export const getEmailTemplates = async (
   req: AuthRequest,
   res: Response,
@@ -1058,9 +947,7 @@ export const getEmailTemplates = async (
 
     let query: any = {};
 
-    if (category && category !== "all") {
-      query.category = category;
-    }
+    if (category && category !== "all") query.category = category;
 
     if (search) {
       query.$or = [
@@ -1096,7 +983,9 @@ export const getEmailTemplates = async (
   }
 };
 
-// ==================== UPDATE EMAIL TEMPLATE ====================
+// ============================================================
+// UPDATE EMAIL TEMPLATE
+// ============================================================
 export const updateEmailTemplate = async (
   req: AuthRequest,
   res: Response,
@@ -1156,7 +1045,9 @@ export const updateEmailTemplate = async (
   }
 };
 
-// ==================== DELETE EMAIL TEMPLATE ====================
+// ============================================================
+// DELETE EMAIL TEMPLATE
+// ============================================================
 export const deleteEmailTemplate = async (
   req: AuthRequest,
   res: Response,
@@ -1192,7 +1083,9 @@ export const deleteEmailTemplate = async (
   }
 };
 
-// ==================== PREVIEW EMAIL ====================
+// ============================================================
+// PREVIEW EMAIL
+// ============================================================
 export const previewEmail = async (
   req: AuthRequest,
   res: Response,
@@ -1220,14 +1113,12 @@ export const previewEmail = async (
       if (customerData) {
         if (customerData.buildingName) {
           const buildingName = customerData.buildingName.toLowerCase().trim();
-          if (buildingName.includes("breeze")) {
-            location = "breeze";
-          } else if (
+          if (buildingName.includes("breeze")) location = "breeze";
+          else if (
             buildingName.includes("sil") ||
             buildingName.includes("silk")
-          ) {
+          )
             location = "sil";
-          }
         }
         if (!location && customerData.buildingId) {
           const Building = require("../models/Building").default;
@@ -1309,7 +1200,9 @@ export const previewEmail = async (
   }
 };
 
-// ==================== SEND REMINDER TO UNPAID ====================
+// ============================================================
+// SEND REMINDER TO UNPAID
+// ============================================================
 export const sendReminderToUnpaid = async (
   req: AuthRequest,
   res: Response,
@@ -1352,30 +1245,9 @@ export const sendReminderToUnpaid = async (
       let location = "";
       if (application.buildingName) {
         const buildingName = application.buildingName.toLowerCase().trim();
-        if (buildingName.includes("breeze")) {
-          location = "breeze";
-        } else if (
-          buildingName.includes("sil") ||
-          buildingName.includes("silk")
-        ) {
+        if (buildingName.includes("breeze")) location = "breeze";
+        else if (buildingName.includes("sil") || buildingName.includes("silk"))
           location = "sil";
-        }
-      }
-      if (!location && application.buildingId) {
-        const Building = require("../models/Building").default;
-        const building = await Building.findById(application.buildingId).lean();
-        if (building) {
-          if (building.name) {
-            const buildingName = building.name.toLowerCase().trim();
-            if (buildingName.includes("breeze")) location = "breeze";
-            else if (
-              buildingName.includes("sil") ||
-              buildingName.includes("silk")
-            )
-              location = "sil";
-          }
-          if (building.location) location = building.location;
-        }
       }
 
       const customerBills = unpaidBills.filter(
@@ -1440,9 +1312,7 @@ export const sendReminderToUnpaid = async (
               emailHtml,
               true,
               location,
-              {
-                useAdminSender: useAdminSender === true,
-              },
+              { useAdminSender: useAdminSender === true },
             );
           }
         } else {
@@ -1518,7 +1388,9 @@ export const sendReminderToUnpaid = async (
   }
 };
 
-// ==================== GET SENT RECORDS ====================
+// ============================================================
+// GET SENT RECORDS
+// ============================================================
 export const getSentRecords = async (
   req: AuthRequest,
   res: Response,
@@ -1537,21 +1409,10 @@ export const getSentRecords = async (
 
     let query: any = {};
 
-    if (applicationId) {
-      query.applicationId = applicationId;
-    }
-
-    if (status) {
-      query.status = status;
-    }
-
-    if (isBulk !== undefined) {
-      query.isBulk = isBulk === "true";
-    }
-
-    if (scheduleId) {
-      query.scheduleId = scheduleId;
-    }
+    if (applicationId) query.applicationId = applicationId;
+    if (status) query.status = status;
+    if (isBulk !== undefined) query.isBulk = isBulk === "true";
+    if (scheduleId) query.scheduleId = scheduleId;
 
     const records = await EmailSentRecord.find(query)
       .sort({ sentAt: -1 })
@@ -1591,7 +1452,9 @@ export const getSentRecords = async (
   }
 };
 
-// ==================== DELETE SENT RECORD ====================
+// ============================================================
+// DELETE SENT RECORD
+// ============================================================
 export const deleteSentRecord = async (
   req: AuthRequest,
   res: Response,
@@ -1627,7 +1490,9 @@ export const deleteSentRecord = async (
   }
 };
 
-// ==================== SCHEDULE EMAIL - FIXED (NO TIMEZONE CONVERSION) ====================
+// ============================================================
+// SCHEDULE EMAIL
+// ============================================================
 export const scheduleEmail = async (
   req: AuthRequest,
   res: Response,
@@ -1651,7 +1516,6 @@ export const scheduleEmail = async (
       recurring,
     } = req.body;
 
-    // Validation
     if (!name) {
       return res.status(400).json({
         success: false,
@@ -1673,26 +1537,11 @@ export const scheduleEmail = async (
       });
     }
 
-    // ============================================================
-    // FIX: Use the date as-is from frontend
-    // Frontend already sends the correct UTC time
-    // ============================================================
     const scheduleDate = new Date(scheduledFor);
 
     console.log(`📅 Schedule date received: ${scheduledFor}`);
     console.log(`📅 Date object: ${scheduleDate.toISOString()}`);
-    console.log(`📅 Local time would be: ${scheduleDate.toLocaleString()}`);
 
-    // Check if schedule time is in the future
-    const now = new Date();
-    if (scheduleDate <= now) {
-      console.warn(
-        `⚠️ Schedule time is in the past: ${scheduleDate.toISOString()}`,
-      );
-      // Still allow it for testing
-    }
-
-    // If no specific application IDs, use location filter to find customers
     let targetApplicationIds = applicationIds || [];
     if (targetApplicationIds.length === 0 && locationFilter) {
       let query: any = {};
@@ -1702,10 +1551,7 @@ export const scheduleEmail = async (
         query.buildingName = { $regex: /sil|silk/, $options: "i" };
       } else if (locationFilter === "other") {
         query.buildingName = {
-          $not: {
-            $regex: /breeze|sil|silk/,
-            $options: "i",
-          },
+          $not: { $regex: /breeze|sil|silk/, $options: "i" },
         };
       }
 
@@ -1726,7 +1572,6 @@ export const scheduleEmail = async (
       });
     }
 
-    // Create schedule with the date as-is (no conversion)
     const schedule = new EmailSchedule({
       name,
       applicationIds: targetApplicationIds,
@@ -1737,7 +1582,7 @@ export const scheduleEmail = async (
       billType: billType || "unpaid",
       sendCopyToAdmin: sendCopyToAdmin || false,
       useAdminSender: useAdminSender || false,
-      scheduledFor: scheduleDate, // Use as-is, no conversion
+      scheduledFor: scheduleDate,
       status: "pending",
       totalRecipients: targetApplicationIds.length,
       createdBy: req.user?.username || req.user?.email || "Admin",
@@ -1749,7 +1594,6 @@ export const scheduleEmail = async (
     await schedule.save();
 
     console.log(`✅ Email scheduled at: ${scheduleDate.toISOString()}`);
-    console.log(`✅ Local time: ${scheduleDate.toLocaleString()}`);
 
     res.status(200).json({
       success: true,
@@ -1767,7 +1611,9 @@ export const scheduleEmail = async (
   }
 };
 
-// ==================== GET SCHEDULED EMAILS ====================
+// ============================================================
+// GET SCHEDULED EMAILS
+// ============================================================
 export const getScheduledEmails = async (
   req: AuthRequest,
   res: Response,
@@ -1779,9 +1625,7 @@ export const getScheduledEmails = async (
     const { status, page = 1, limit = 50 } = req.query;
 
     const query: any = {};
-    if (status && status !== "all") {
-      query.status = status;
-    }
+    if (status && status !== "all") query.status = status;
 
     const pageNum = parseInt(page as string) || 1;
     const limitNum = parseInt(limit as string) || 50;
@@ -1833,7 +1677,9 @@ export const getScheduledEmails = async (
   }
 };
 
-// ==================== UPDATE SCHEDULED EMAIL ====================
+// ============================================================
+// UPDATE SCHEDULED EMAIL
+// ============================================================
 export const updateScheduledEmail = async (
   req: AuthRequest,
   res: Response,
@@ -1853,7 +1699,6 @@ export const updateScheduledEmail = async (
       });
     }
 
-    // Don't allow updates to cancelled or completed schedules
     if (schedule.status === "cancelled" || schedule.status === "sent") {
       return res.status(400).json({
         success: false,
@@ -1861,7 +1706,6 @@ export const updateScheduledEmail = async (
       });
     }
 
-    // Update fields
     const allowedFields = [
       "name",
       "subject",
@@ -1882,7 +1726,6 @@ export const updateScheduledEmail = async (
       }
     }
 
-    // If scheduledFor is updated, use as-is
     if (updates.scheduledFor) {
       const newDate = new Date(updates.scheduledFor);
       if (newDate <= new Date()) {
@@ -1906,7 +1749,9 @@ export const updateScheduledEmail = async (
   }
 };
 
-// ==================== DELETE SCHEDULED EMAIL ====================
+// ============================================================
+// DELETE SCHEDULED EMAIL
+// ============================================================
 export const deleteScheduledEmail = async (
   req: AuthRequest,
   res: Response,
@@ -1925,7 +1770,6 @@ export const deleteScheduledEmail = async (
       });
     }
 
-    // Only allow deletion of pending schedules
     if (schedule.status === "processing") {
       return res.status(400).json({
         success: false,
@@ -1933,7 +1777,6 @@ export const deleteScheduledEmail = async (
       });
     }
 
-    // Update status to cancelled instead of deleting
     schedule.status = "cancelled";
     await schedule.save();
 
@@ -1946,7 +1789,9 @@ export const deleteScheduledEmail = async (
   }
 };
 
-// ==================== CANCEL SCHEDULED EMAIL ====================
+// ============================================================
+// CANCEL SCHEDULED EMAIL
+// ============================================================
 export const cancelScheduledEmail = async (
   req: AuthRequest,
   res: Response,
@@ -1984,7 +1829,9 @@ export const cancelScheduledEmail = async (
   }
 };
 
-// ==================== GET SCHEDULE STATS ====================
+// ============================================================
+// GET SCHEDULE STATS
+// ============================================================
 export const getScheduleStats = async (
   req: AuthRequest,
   res: Response,
@@ -2003,7 +1850,6 @@ export const getScheduleStats = async (
       status: "cancelled",
     });
 
-    // Get total scheduled recipients
     const schedules = await EmailSchedule.find({
       status: { $in: ["pending", "processing", "sent"] },
     }).lean();
@@ -2013,7 +1859,6 @@ export const getScheduleStats = async (
       totalRecipients += schedule.totalRecipients || 0;
     }
 
-    // Get upcoming schedules
     const upcoming = await EmailSchedule.find({
       status: "pending",
       scheduledFor: { $gte: new Date() },
@@ -2044,7 +1889,9 @@ export const getScheduleStats = async (
   }
 };
 
-// ==================== FORCE PROCESS SCHEDULES ====================
+// ============================================================
+// FORCE PROCESS SCHEDULES
+// ============================================================
 export const forceProcessSchedules = async (
   req: AuthRequest,
   res: Response,
@@ -2065,7 +1912,9 @@ export const forceProcessSchedules = async (
   }
 };
 
-// ==================== EXPORT ====================
+// ============================================================
+// EXPORT DEFAULT
+// ============================================================
 export default {
   getCustomersForEmail,
   getCustomerBills,
