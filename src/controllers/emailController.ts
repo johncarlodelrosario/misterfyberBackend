@@ -16,7 +16,7 @@ import emailService, {
 type AuthRequest = Request & { user?: any };
 
 // ============================================================
-// CHECK ADMIN - FIXED to match middleware roles
+// CHECK ADMIN
 // ============================================================
 function checkAdmin(req: AuthRequest, res: Response): boolean {
   if (!req.user) {
@@ -28,7 +28,6 @@ function checkAdmin(req: AuthRequest, res: Response): boolean {
   }
 
   const role = req.user.role;
-  // ✅ Match the same roles as middleware
   if (role !== "super_admin" && role !== "admin" && role !== "staff") {
     res.status(403).json({
       success: false,
@@ -41,7 +40,18 @@ function checkAdmin(req: AuthRequest, res: Response): boolean {
 }
 
 // ============================================================
-// GENERATE EMAIL PREVIEW (keep as-is from your file)
+// HELPER: Extract location from building name
+// ============================================================
+function extractLocationFromBuildingName(buildingName?: string): string {
+  if (!buildingName) return "other";
+  const name = buildingName.toLowerCase().trim();
+  if (name.includes("breeze")) return "breeze";
+  if (name.includes("sil") || name.includes("silk")) return "sil";
+  return "other";
+}
+
+// ============================================================
+// GENERATE EMAIL PREVIEW
 // ============================================================
 function generateEmailPreview(
   subject: string,
@@ -64,11 +74,7 @@ function generateEmailPreview(
 
   let locationBadge = "";
   if (customerData && customerData.buildingName) {
-    const buildingName = customerData.buildingName.toLowerCase().trim();
-    let location = "other";
-    if (buildingName.includes("breeze")) location = "breeze";
-    else if (buildingName.includes("sil") || buildingName.includes("silk"))
-      location = "sil";
+    const location = extractLocationFromBuildingName(customerData.buildingName);
 
     if (location !== "other") {
       locationBadge = `
@@ -174,7 +180,7 @@ function generateEmailPreview(
 }
 
 // ============================================================
-// GET CUSTOMERS FOR EMAIL
+// GET CUSTOMERS FOR EMAIL - FULLY OPTIMIZED + ALWAYS FRESH
 // ============================================================
 export const getCustomersForEmail = async (
   req: AuthRequest,
@@ -186,10 +192,12 @@ export const getCustomersForEmail = async (
   try {
     const { search, status, hasBilling, forceRefresh, location } = req.query;
 
+    // ✅ ALWAYS no-cache headers
     res.set({
       "Cache-Control": "no-store, no-cache, must-revalidate, private",
       Pragma: "no-cache",
       Expires: "0",
+      "Surrogate-Control": "no-store",
     });
 
     let query: any = {};
@@ -217,56 +225,103 @@ export const getCustomersForEmail = async (
       }
     }
 
+    // ✅ STEP 1: Get all applications
     const applications = await Application.find(query)
       .select(
         "firstName lastName email phoneNumber applicationId status buildingName buildingId",
       )
       .lean()
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .limit(500);
 
     console.log(
       `📊 Found ${applications.length} applications for email selection`,
     );
 
-    const enhancedCustomers = await Promise.all(
-      applications.map(async (app) => {
-        const billingCycle = await BillingCycle.findOne({
-          applicationId: app.applicationId,
-        }).lean();
+    if (applications.length === 0) {
+      return res.status(200).json({
+        success: true,
+        data: [],
+        total: 0,
+        timestamp: new Date().toISOString(),
+        _meta: {
+          fetchedAt: new Date().toISOString(),
+          totalApplications: 0,
+          forceRefresh: forceRefresh === "true",
+        },
+      });
+    }
 
-        const hasUnpaidBills = await Billing.exists({
-          applicationId: app.applicationId,
-          status: { $in: ["sent", "overdue"] },
-        });
+    const applicationIds = applications.map((app) => app.applicationId);
 
-        const lastBill = await Billing.findOne({
-          applicationId: app.applicationId,
-        })
-          .sort({ createdAt: -1 })
-          .lean();
+    // ✅ STEP 2: Batch fetch billing cycles
+    const billingCycles = await BillingCycle.find({
+      applicationId: { $in: applicationIds },
+    })
+      .select("applicationId")
+      .lean();
 
-        let loc = "other";
-        if (app.buildingName) {
-          const buildingName = app.buildingName.toLowerCase().trim();
-          if (buildingName.includes("breeze")) loc = "breeze";
-          else if (
-            buildingName.includes("sil") ||
-            buildingName.includes("silk")
-          )
-            loc = "sil";
-        }
-
-        return {
-          ...app,
-          hasBilling: !!billingCycle,
-          hasUnpaidBills: !!hasUnpaidBills,
-          lastBillAmount: lastBill?.total || 0,
-          lastBillStatus: lastBill?.status || null,
-          location: loc,
-          _fetchedAt: new Date().toISOString(),
-        };
-      }),
+    const applicationsWithBilling = new Set(
+      billingCycles.map((bc) => bc.applicationId),
     );
+
+    // ✅ STEP 3: Batch fetch unpaid bills count per application
+    const unpaidBillsAgg = await Billing.aggregate([
+      {
+        $match: {
+          applicationId: { $in: applicationIds },
+          status: { $in: ["sent", "overdue"] },
+        },
+      },
+      {
+        $group: {
+          _id: "$applicationId",
+          count: { $sum: 1 },
+        },
+      },
+    ]);
+
+    const applicationsWithUnpaidBills = new Set(
+      unpaidBillsAgg.map((item) => item._id),
+    );
+
+    // ✅ STEP 4: Batch fetch last bill per application
+    const lastBillsAgg = await Billing.aggregate([
+      {
+        $match: {
+          applicationId: { $in: applicationIds },
+        },
+      },
+      {
+        $sort: { createdAt: -1 },
+      },
+      {
+        $group: {
+          _id: "$applicationId",
+          lastBill: { $first: "$$ROOT" },
+        },
+      },
+    ]);
+
+    const lastBillMap = new Map(
+      lastBillsAgg.map((item) => [item._id, item.lastBill]),
+    );
+
+    // ✅ STEP 5: Build enhanced customers
+    const enhancedCustomers = applications.map((app) => {
+      const lastBill = lastBillMap.get(app.applicationId);
+      const location = extractLocationFromBuildingName(app.buildingName);
+
+      return {
+        ...app,
+        hasBilling: applicationsWithBilling.has(app.applicationId),
+        hasUnpaidBills: applicationsWithUnpaidBills.has(app.applicationId),
+        lastBillAmount: lastBill?.total || 0,
+        lastBillStatus: lastBill?.status || null,
+        location,
+        _fetchedAt: new Date().toISOString(),
+      };
+    });
 
     const filteredCustomers =
       hasBilling === "true"
@@ -276,7 +331,7 @@ export const getCustomersForEmail = async (
           : enhancedCustomers;
 
     console.log(
-      `✅ Returning ${filteredCustomers.length} customers (fresh data)`,
+      `✅ Returning ${filteredCustomers.length} customers (fresh from DB)`,
     );
 
     res.status(200).json({
@@ -321,13 +376,12 @@ export const getCustomerBills = async (
       Expires: "0",
     });
 
-    const bills = await Billing.find({ applicationId })
-      .sort({ createdAt: -1 })
-      .lean();
-
-    const customer = await Application.findOne({ applicationId })
-      .select("firstName lastName email phoneNumber buildingName buildingId")
-      .lean();
+    const [bills, customer] = await Promise.all([
+      Billing.find({ applicationId }).sort({ createdAt: -1 }).lean(),
+      Application.findOne({ applicationId })
+        .select("firstName lastName email phoneNumber buildingName buildingId")
+        .lean(),
+    ]);
 
     res.status(200).json({
       success: true,
@@ -402,33 +456,21 @@ export const sendManualEmail = async (
       });
     }
 
-    // Determine location
-    let location = "";
-    if (application.buildingName) {
-      const buildingName = application.buildingName.toLowerCase().trim();
-      if (buildingName.includes("breeze")) location = "breeze";
-      else if (buildingName.includes("sil") || buildingName.includes("silk"))
-        location = "sil";
-    }
+    let location = extractLocationFromBuildingName(application.buildingName);
 
-    if (!location && application.buildingId) {
+    if (location === "other" && application.buildingId) {
       const Building = require("../models/Building").default;
       const building = await Building.findById(application.buildingId).lean();
       if (building) {
-        if (building.name) {
-          const buildingName = building.name.toLowerCase().trim();
-          if (buildingName.includes("breeze")) location = "breeze";
-          else if (
-            buildingName.includes("sil") ||
-            buildingName.includes("silk")
-          )
-            location = "sil";
+        const buildingLocation = extractLocationFromBuildingName(building.name);
+        if (buildingLocation !== "other") {
+          location = buildingLocation;
+        } else if (building.location) {
+          location = building.location;
         }
-        if (building.location) location = building.location;
       }
     }
 
-    // Fetch multiple bills
     let billingDataArray: any[] = [];
     let selectedBillIds: string[] = [];
     if (
@@ -457,11 +499,10 @@ export const sendManualEmail = async (
       }));
     }
 
-    // Determine sender info
     let senderInfo = "";
     if (useAdminSender) {
       senderInfo = "Sent from: Admin (admin@misterfyber.com)";
-    } else if (location) {
+    } else if (location && location !== "other") {
       const collectionEmail = getCollectionEmailByLocation(location);
       senderInfo = `Sent from: Collection (${collectionEmail})`;
     } else {
@@ -542,7 +583,6 @@ export const sendManualEmail = async (
       }
     }
 
-    // Save sent record
     const sentRecord = new EmailSentRecord({
       applicationId: application.applicationId,
       customerName: `${application.firstName} ${application.lastName}`,
@@ -563,7 +603,10 @@ export const sendManualEmail = async (
       adminCopySent: adminCopySent || false,
       senderType: useAdminSender ? "admin" : "collection",
       location: location || "unknown",
-      collectionEmail: location ? getCollectionEmailByLocation(location) : null,
+      collectionEmail:
+        location && location !== "other"
+          ? getCollectionEmailByLocation(location)
+          : null,
       isScheduled: false,
     });
 
@@ -667,6 +710,59 @@ export const sendBulkEmails = async (
       `📧 Bulk Email - Using admin sender: ${useAdminSender ? "YES" : "NO"}`,
     );
 
+    const applications = await Application.find({
+      applicationId: { $in: applicationIds },
+    }).lean();
+
+    const applicationMap = new Map(
+      applications.map((app) => [app.applicationId, app]),
+    );
+
+    let allBills: any[] = [];
+    if (includeBilling) {
+      let billQuery: any = { applicationId: { $in: applicationIds } };
+
+      if (billType === "unpaid") {
+        billQuery.status = { $in: ["sent", "overdue"] };
+      } else if (billType === "installation") {
+        billQuery.isInstallationBill = true;
+        billQuery.installationFeePaid = false;
+      }
+
+      allBills = await Billing.find(billQuery).lean();
+    }
+
+    const billsByApplication = new Map<string, any[]>();
+    for (const bill of allBills) {
+      if (!billsByApplication.has(bill.applicationId)) {
+        billsByApplication.set(bill.applicationId, []);
+      }
+      billsByApplication.get(bill.applicationId)!.push(bill);
+    }
+
+    if (includeBilling && billType === "latest") {
+      const latestBillsAgg = await Billing.aggregate([
+        {
+          $match: {
+            applicationId: { $in: applicationIds },
+          },
+        },
+        {
+          $sort: { createdAt: -1 },
+        },
+        {
+          $group: {
+            _id: "$applicationId",
+            lastBill: { $first: "$$ROOT" },
+          },
+        },
+      ]);
+
+      for (const item of latestBillsAgg) {
+        billsByApplication.set(item._id, [item.lastBill]);
+      }
+    }
+
     const results = [];
     let successCount = 0;
     let failCount = 0;
@@ -674,7 +770,7 @@ export const sendBulkEmails = async (
 
     for (const applicationId of applicationIds) {
       try {
-        const application = await Application.findOne({ applicationId }).lean();
+        const application = applicationMap.get(applicationId);
         if (!application || !application.email) {
           results.push({
             applicationId,
@@ -685,16 +781,9 @@ export const sendBulkEmails = async (
           continue;
         }
 
-        let location = "";
-        if (application.buildingName) {
-          const buildingName = application.buildingName.toLowerCase().trim();
-          if (buildingName.includes("breeze")) location = "breeze";
-          else if (
-            buildingName.includes("sil") ||
-            buildingName.includes("silk")
-          )
-            location = "sil";
-        }
+        const location = extractLocationFromBuildingName(
+          application.buildingName,
+        );
 
         if (locationFilter && locationFilter !== "all") {
           if (location !== locationFilter) {
@@ -705,39 +794,13 @@ export const sendBulkEmails = async (
           }
         }
 
-        let billingDataArray: any[] = [];
-        let selectedBillIds: string[] = [];
-
-        if (includeBilling) {
-          let billQuery: any = { applicationId: application.applicationId };
-          if (billType === "unpaid") {
-            billQuery.status = { $in: ["sent", "overdue"] };
-          } else if (billType === "latest") {
-            const latestBill = await Billing.findOne({
-              applicationId: application.applicationId,
-            })
-              .sort({ createdAt: -1 })
-              .lean();
-            if (latestBill) {
-              billingDataArray = [latestBill];
-              selectedBillIds = [latestBill._id];
-            }
-          } else if (billType === "installation") {
-            billQuery.isInstallationBill = true;
-            billQuery.installationFeePaid = false;
-          }
-
-          if (billingDataArray.length === 0 && billType !== "latest") {
-            const bills = await Billing.find(billQuery).lean();
-            billingDataArray = bills;
-            selectedBillIds = bills.map((b) => b._id);
-          }
-        }
+        const billingDataArray = billsByApplication.get(applicationId) || [];
+        const selectedBillIds = billingDataArray.map((b) => b._id);
 
         let senderInfo = "";
         if (useAdminSender) {
           senderInfo = "Sent from: Admin (admin@misterfyber.com)";
-        } else if (location) {
+        } else if (location && location !== "other") {
           const collectionEmail = getCollectionEmailByLocation(location);
           senderInfo = `Sent from: Collection (${collectionEmail})`;
         } else {
@@ -800,9 +863,10 @@ export const sendBulkEmails = async (
           adminCopySent: false,
           senderType: useAdminSender ? "admin" : "collection",
           location: location || "unknown",
-          collectionEmail: location
-            ? getCollectionEmailByLocation(location)
-            : null,
+          collectionEmail:
+            location && location !== "other"
+              ? getCollectionEmailByLocation(location)
+              : null,
           isScheduled: false,
         });
 
@@ -1111,31 +1175,22 @@ export const previewEmail = async (
     if (applicationId) {
       customerData = await Application.findOne({ applicationId }).lean();
       if (customerData) {
-        if (customerData.buildingName) {
-          const buildingName = customerData.buildingName.toLowerCase().trim();
-          if (buildingName.includes("breeze")) location = "breeze";
-          else if (
-            buildingName.includes("sil") ||
-            buildingName.includes("silk")
-          )
-            location = "sil";
-        }
-        if (!location && customerData.buildingId) {
+        location = extractLocationFromBuildingName(customerData.buildingName);
+
+        if (location === "other" && customerData.buildingId) {
           const Building = require("../models/Building").default;
           const building = await Building.findById(
             customerData.buildingId,
           ).lean();
           if (building) {
-            if (building.name) {
-              const buildingName = building.name.toLowerCase().trim();
-              if (buildingName.includes("breeze")) location = "breeze";
-              else if (
-                buildingName.includes("sil") ||
-                buildingName.includes("silk")
-              )
-                location = "sil";
+            const buildingLocation = extractLocationFromBuildingName(
+              building.name,
+            );
+            if (buildingLocation !== "other") {
+              location = buildingLocation;
+            } else if (building.location) {
+              location = building.location;
             }
-            if (building.location) location = building.location;
           }
         }
       }
@@ -1163,7 +1218,7 @@ export const previewEmail = async (
     let senderInfo = "";
     if (useAdminSender) {
       senderInfo = "Sent from: Admin (admin@misterfyber.com)";
-    } else if (location) {
+    } else if (location && location !== "other") {
       const collectionEmail = getCollectionEmailByLocation(location);
       senderInfo = `Sent from: Collection (${collectionEmail})`;
     } else {
@@ -1232,6 +1287,22 @@ export const sendReminderToUnpaid = async (
       ...new Set(unpaidBills.map((bill) => bill.applicationId)),
     ];
 
+    const applications = await Application.find({
+      applicationId: { $in: uniqueApplicationIds },
+    }).lean();
+
+    const applicationMap = new Map(
+      applications.map((app) => [app.applicationId, app]),
+    );
+
+    const billsByApplication = new Map<string, any[]>();
+    for (const bill of unpaidBills) {
+      if (!billsByApplication.has(bill.applicationId)) {
+        billsByApplication.set(bill.applicationId, []);
+      }
+      billsByApplication.get(bill.applicationId)!.push(bill);
+    }
+
     const results = [];
     let sentCount = 0;
     let failCount = 0;
@@ -1239,20 +1310,14 @@ export const sendReminderToUnpaid = async (
     for (const applicationId of uniqueApplicationIds) {
       if (!applicationId) continue;
 
-      const application = await Application.findOne({ applicationId }).lean();
+      const application = applicationMap.get(applicationId);
       if (!application || !application.email) continue;
 
-      let location = "";
-      if (application.buildingName) {
-        const buildingName = application.buildingName.toLowerCase().trim();
-        if (buildingName.includes("breeze")) location = "breeze";
-        else if (buildingName.includes("sil") || buildingName.includes("silk"))
-          location = "sil";
-      }
-
-      const customerBills = unpaidBills.filter(
-        (bill) => bill.applicationId === applicationId,
+      const location = extractLocationFromBuildingName(
+        application.buildingName,
       );
+
+      const customerBills = billsByApplication.get(applicationId) || [];
       const totalAmount = customerBills.reduce(
         (sum, bill) => sum + (bill.total || 0),
         0,
@@ -1282,7 +1347,7 @@ export const sendReminderToUnpaid = async (
       let senderInfo = "";
       if (useAdminSender) {
         senderInfo = "Sent from: Admin (admin@misterfyber.com)";
-      } else if (location) {
+      } else if (location && location !== "other") {
         const collectionEmail = getCollectionEmailByLocation(location);
         senderInfo = `Sent from: Collection (${collectionEmail})`;
       } else {
@@ -1347,9 +1412,10 @@ export const sendReminderToUnpaid = async (
         adminCopySent: false,
         senderType: useAdminSender ? "admin" : "collection",
         location: location || "unknown",
-        collectionEmail: location
-          ? getCollectionEmailByLocation(location)
-          : null,
+        collectionEmail:
+          location && location !== "other"
+            ? getCollectionEmailByLocation(location)
+            : null,
         isScheduled: false,
       });
 
@@ -1840,15 +1906,13 @@ export const getScheduleStats = async (
   if (!checkAdmin(req, res)) return;
 
   try {
-    const pending = await EmailSchedule.countDocuments({ status: "pending" });
-    const processing = await EmailSchedule.countDocuments({
-      status: "processing",
-    });
-    const sent = await EmailSchedule.countDocuments({ status: "sent" });
-    const failed = await EmailSchedule.countDocuments({ status: "failed" });
-    const cancelled = await EmailSchedule.countDocuments({
-      status: "cancelled",
-    });
+    const [pending, processing, sent, failed, cancelled] = await Promise.all([
+      EmailSchedule.countDocuments({ status: "pending" }),
+      EmailSchedule.countDocuments({ status: "processing" }),
+      EmailSchedule.countDocuments({ status: "sent" }),
+      EmailSchedule.countDocuments({ status: "failed" }),
+      EmailSchedule.countDocuments({ status: "cancelled" }),
+    ]);
 
     const schedules = await EmailSchedule.find({
       status: { $in: ["pending", "processing", "sent"] },

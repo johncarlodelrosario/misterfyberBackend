@@ -1,4 +1,4 @@
-// backend/src/routes/billingRoutes.ts - COMPLETE FIXED VERSION WITH PRICE EDIT ROUTE
+// backend/src/routes/billingRoutes.ts - COMPLETE FIXED VERSION WITH PRICE EDIT AND DELETE BILL ROUTES
 
 import express from "express";
 import { optionalAuth, adminMiddleware } from "../middleware/auth";
@@ -10,6 +10,7 @@ import {
   disconnectClient,
   reconnectClient,
   deleteBillingCycle,
+  deleteBill,
   getBillingSettings,
   updateBillingSettings,
   getBillingSettingsAdmin,
@@ -45,7 +46,7 @@ import {
   checkForUpdates,
   manuallyGenerateEarlyBill,
   checkForNewCustomers,
-  updateBillPrice, // ADDED
+  updateBillPrice,
 } from "../controllers/billingController";
 
 const router = express.Router();
@@ -99,6 +100,10 @@ router.put(
 // ===== UPDATE PRICE ROUTE =====
 router.put("/update-price/:billId", adminMiddleware, updateBillPrice);
 console.log("✅ /update-price/:billId route registered");
+
+// ===== DELETE BILL ROUTE =====
+router.delete("/delete-bill/:billId", adminMiddleware, deleteBill);
+console.log("✅ /delete-bill/:billId route registered");
 
 // ===== BILLING ACTION ROUTES =====
 router.post("/confirm-pro-rated", adminMiddleware, confirmProRatedPayment);
