@@ -19,6 +19,7 @@ import {
   getApplicationDashboardData,
   getApplicationStats,
   clearApplicationCache,
+  getAllApplications,
 } from "../controllers/applicationController";
 import { protect, authorize } from "../middleware/auth";
 import { uploadIdCard } from "../middleware/upload";
@@ -45,7 +46,6 @@ console.log(`📸 Image URL base: ${PRODUCTION_URL}`);
 function getImageUrl(imagePath?: string): string {
   if (!imagePath) return "";
 
-  // If it's already a full URL or data URL
   if (
     imagePath.startsWith("http://") ||
     imagePath.startsWith("https://") ||
@@ -54,10 +54,8 @@ function getImageUrl(imagePath?: string): string {
     return imagePath;
   }
 
-  // Extract filename from path
   let filename = "";
 
-  // Handle Cloudinary URLs that might be stored as paths
   if (imagePath.includes("cloudinary.com")) {
     return imagePath.startsWith("http") ? imagePath : `https://${imagePath}`;
   }
@@ -65,12 +63,10 @@ function getImageUrl(imagePath?: string): string {
   const parts = imagePath.split(/[\\\/]/);
   filename = parts[parts.length - 1];
 
-  // If no filename or placeholder, use placeholder
   if (!filename || filename === "placeholder.jpg" || filename === "") {
     return `${PRODUCTION_URL}/uploads/id-cards/placeholder.jpg`;
   }
 
-  // Build the full URL
   return `${PRODUCTION_URL}/uploads/id-cards/${filename}`;
 }
 
@@ -177,187 +173,9 @@ router.get("/dashboard/data", getApplicationDashboardData);
 router.get("/dashboard/stats", getApplicationStats);
 
 // ============================================================
-// ✅ MAIN GET - ULTRA FAST + WITH ID IMAGE
+// ✅ MAIN GET - USING CONTROLLER (FIXED FILTER + NAME SORT)
 // ============================================================
-router.get("/", async (req: Request, res: Response, next: NextFunction) => {
-  const startTime = Date.now();
-
-  try {
-    const page = getStringQuery(req.query.page) || "1";
-    const limit = getStringQuery(req.query.limit) || "20";
-    const status = getStringQuery(req.query.status);
-    const search = getStringQuery(req.query.search);
-    const buildingId = getStringQuery(req.query.buildingId);
-    const forceRefresh = getStringQuery(req.query.forceRefresh);
-
-    const pageNum = parseInt(page) || 1;
-    const limitNum = parseInt(limit) || 20;
-    const skip = (pageNum - 1) * limitNum;
-
-    const cacheKey = `apps_ultra_${pageNum}_${limitNum}_${status || "all"}_${search || ""}_${buildingId || ""}`;
-
-    if (forceRefresh !== "true") {
-      const cachedData = cache.get(cacheKey);
-      if (cachedData) {
-        console.log(`⚡ CACHE HIT! ${cacheKey} - ${Date.now() - startTime}ms`);
-        return res.status(200).json(cachedData);
-      }
-    }
-
-    console.log(`📊 DB QUERY (ULTRA FAST): ${cacheKey}`);
-
-    // ✅ BUILD FILTER
-    const filter: any = {};
-
-    if (status && status !== "all" && status !== "") {
-      filter.status = status;
-    }
-
-    if (buildingId && buildingId !== "" && buildingId !== "all") {
-      filter.buildingId = buildingId;
-    }
-
-    if (search && search.trim() !== "") {
-      const searchTerm = search.trim();
-      filter.$or = [
-        { firstName: { $regex: searchTerm, $options: "i" } },
-        { lastName: { $regex: searchTerm, $options: "i" } },
-        { email: { $regex: searchTerm, $options: "i" } },
-        { applicationId: { $regex: searchTerm, $options: "i" } },
-        { phoneNumber: { $regex: searchTerm, $options: "i" } },
-        { idNumber: { $regex: searchTerm, $options: "i" } },
-      ];
-    }
-
-    console.log(`🔍 Final filter:`, JSON.stringify(filter, null, 2));
-
-    // ✅ ULTRA FAST TOTAL
-    let total = 0;
-    const totalCacheKey = `total_ultra_${status || "all"}_${search || ""}_${buildingId || ""}`;
-    const cachedTotal = cache.get(totalCacheKey) as number | undefined;
-
-    if (cachedTotal !== undefined && forceRefresh !== "true") {
-      total = cachedTotal;
-      console.log(`⚡ TOTAL COUNT CACHE HIT! ${total}`);
-    } else {
-      console.log(`📊 Getting total count...`);
-      if (Object.keys(filter).length === 0) {
-        total = await Application.estimatedDocumentCount();
-        console.log(`✅ Estimated total: ${total} (from collection stats)`);
-      } else {
-        total = await Application.countDocuments(filter);
-        console.log(`✅ Counted total with filter: ${total}`);
-      }
-      cache.set(totalCacheKey, total, 60);
-    }
-
-    // ✅ GET DATA - INCLUDING idImage!
-    const applications = await Application.find(filter)
-      .select(
-        "_id applicationId firstName lastName middleName email phoneNumber status createdAt buildingId buildingName tower floor unitNumber planId installationFee installationFeePaid serviceStatus billingStarted registeredUserId idType idNumber macAddress notes adminNotes idImage",
-      )
-      .populate("planId", "name price")
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limitNum)
-      .lean();
-
-    const elapsed = Date.now() - startTime;
-
-    // ✅ FORMATTED DATA - WITH idImageUrl!
-    const formattedData = applications.map((app: any) => {
-      // Get the ID image URL
-      const idImageValue = app.idImage || "";
-      const idImageUrl = getImageUrl(idImageValue);
-
-      return {
-        _id: app._id,
-        id: app._id,
-        applicationId: app.applicationId,
-        firstName: app.firstName,
-        lastName: app.lastName,
-        middleName: app.middleName || "",
-        email: app.email,
-        phoneNumber: app.phoneNumber,
-        status: app.status,
-        buildingId: app.buildingId,
-        buildingName: app.buildingName,
-        tower: app.tower || "",
-        floor: app.floor || "",
-        unitNumber: app.unitNumber || "",
-        planId: app.planId,
-        plan: app.planId?.name || "N/A",
-        price: app.planId?.price || 0,
-        installationFee: app.installationFee || 0,
-        installationFeePaid: app.installationFeePaid || false,
-        serviceStatus: app.serviceStatus || "pending",
-        billingStarted: app.billingStarted || false,
-        hasAccount: !!app.registeredUserId,
-        createdAt: app.createdAt,
-        updatedAt: app.updatedAt,
-        idType: app.idType || "N/A",
-        idNumber: app.idNumber || "N/A",
-        macAddress: app.macAddress || "",
-        notes: app.notes || "",
-        adminNotes: app.adminNotes || "",
-        // ✅ CRITICAL: Include both idImage and idImageUrl
-        idImage: idImageValue,
-        idImageUrl: idImageUrl,
-      };
-    });
-
-    console.log(
-      `✅ ${applications.length} apps, Total: ${total} in ${elapsed}ms`,
-    );
-    console.log(
-      `📸 First app image: ${formattedData[0]?.idImageUrl || "none"}`,
-    );
-
-    const responseData = {
-      success: true,
-      data: formattedData,
-      totalPages: Math.ceil((total || 0) / limitNum) || 1,
-      currentPage: pageNum,
-      total: total || 0,
-      limit: limitNum,
-      _responseTime: `${elapsed}ms`,
-      _cached: false,
-      _filters: { status, search, buildingId },
-    };
-
-    cache.set(cacheKey, responseData, 30);
-
-    console.log(`✅ Response in ${Date.now() - startTime}ms`);
-
-    return res.status(200).json(responseData);
-  } catch (error: any) {
-    console.error("❌ Route error:", error);
-
-    const page = getStringQuery(req.query.page) || "1";
-    const limit = getStringQuery(req.query.limit) || "20";
-    const status = getStringQuery(req.query.status);
-    const search = getStringQuery(req.query.search);
-    const buildingId = getStringQuery(req.query.buildingId);
-    const cacheKey = `apps_ultra_${page}_${limit}_${status || "all"}_${search || ""}_${buildingId || ""}`;
-    const cachedData = cache.get(cacheKey);
-    if (cachedData) {
-      console.log("📦 Returning cached data due to error");
-      return res.status(200).json(cachedData);
-    }
-
-    return res.status(200).json({
-      success: true,
-      data: [],
-      totalPages: 0,
-      currentPage: 1,
-      total: 0,
-      limit: 20,
-      _error: true,
-      message: error.message || "Error loading applications",
-      _responseTime: `${Date.now() - startTime}ms`,
-    });
-  }
-});
+router.get("/", getAllApplications);
 
 // ============================================================
 // ✅ GET ALL - NO LIMIT (WITH ID IMAGE)
@@ -573,7 +391,6 @@ router.get("/:id", async (req: Request, res: Response) => {
       });
     }
 
-    // Add idImageUrl
     const result = {
       ...application,
       idImageUrl: getImageUrl(application.idImage),
@@ -745,7 +562,6 @@ router.get("/test/direct", async (req: Request, res: Response) => {
       .select("applicationId firstName lastName email status createdAt idImage")
       .lean();
 
-    // Show image URLs for debugging
     const appsWithImages = apps.map((app: any) => ({
       ...app,
       idImageUrl: getImageUrl(app.idImage),

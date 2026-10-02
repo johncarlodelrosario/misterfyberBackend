@@ -1,4 +1,4 @@
-// controllers/applicationController.ts - COMPLETE OPTIMIZED WITH AGGREGATION
+// controllers/applicationController.ts - COMPLETE OPTIMIZED WITH AGGREGATION + NAME SORT
 import { Request, Response, NextFunction } from "express";
 import Application from "../models/Application";
 import Plan from "../models/Plan";
@@ -174,7 +174,7 @@ export const getBarangaysByCity = async (
 };
 
 // ============================================================
-// ✅ GET ALL APPLICATIONS - OPTIMIZED WITH AGGREGATION
+// ✅ GET ALL APPLICATIONS - WITH NAME SORT SUPPORT
 // ============================================================
 export const getAllApplications = async (
   req: Request,
@@ -189,26 +189,36 @@ export const getAllApplications = async (
     const status = getStringQuery(req.query.status);
     const search = getStringQuery(req.query.search);
     const buildingId = getStringQuery(req.query.buildingId);
+    const forceRefresh = getStringQuery(req.query.forceRefresh);
+    const nameSort = getStringQuery(req.query.nameSort); // ✅ NEW
 
     const pageNum = parseInt(page) || 1;
     const limitNum = parseInt(limit) || 20;
     const skip = (pageNum - 1) * limitNum;
 
     console.log(
-      `🔄 getAllApplications - page: ${pageNum}, limit: ${limitNum}, status: ${status || "all"}, search: ${search || "none"}, buildingId: ${buildingId || "none"}`,
+      `🔄 getAllApplications - page: ${pageNum}, limit: ${limitNum}, status: ${status || "all"}, search: ${search || "none"}, buildingId: ${buildingId || "none"}, nameSort: ${nameSort || "none"}, forceRefresh: ${forceRefresh || "false"}`,
     );
 
-    // ✅ BUILD FILTER
+    // ✅ BUILD FILTER PROPERLY
     const filter: any = {};
 
+    // Status filter
     if (status && status !== "all" && status !== "") {
       filter.status = status;
     }
 
+    // Building filter - convert to ObjectId properly
     if (buildingId && buildingId !== "" && buildingId !== "all") {
-      filter.buildingId = new mongoose.Types.ObjectId(buildingId);
+      if (mongoose.Types.ObjectId.isValid(buildingId)) {
+        filter.buildingId = new mongoose.Types.ObjectId(buildingId);
+      } else {
+        console.log(`⚠️ Invalid ObjectId for buildingId: ${buildingId}`);
+        filter.buildingId = buildingId;
+      }
     }
 
+    // Search filter
     if (search && search.trim() !== "") {
       const searchTerm = search.trim();
       filter.$or = [
@@ -223,92 +233,174 @@ export const getAllApplications = async (
 
     console.log("🔍 Final filter:", JSON.stringify(filter, null, 2));
 
-    // ✅ OPTIMIZED: SINGLE AGGREGATION QUERY
-    const pipeline: any[] = [];
+    // ✅ STEP 1: Get total count separately (fast, no base64 data)
+    const total = await Application.countDocuments(filter);
+    console.log(`✅ Total count: ${total}`);
 
-    // Match stage
-    if (Object.keys(filter).length > 0) {
-      pipeline.push({ $match: filter });
+    // ✅ STEP 2: Determine sort option based on nameSort param
+    // Default: newest first (createdAt: -1)
+    // asc: firstName A→Z, then lastName A→Z
+    // desc: firstName Z→A, then lastName Z→A
+    let sortOption: any = { createdAt: -1 };
+    if (nameSort === "asc") {
+      sortOption = { firstName: 1, lastName: 1 };
+    } else if (nameSort === "desc") {
+      sortOption = { firstName: -1, lastName: -1 };
     }
+    console.log("📊 Sort option:", JSON.stringify(sortOption));
 
-    // ✅ Facet para sa data at total count (isang query lang!)
-    pipeline.push({
-      $facet: {
-        metadata: [{ $count: "total" }],
-        data: [
-          { $sort: { createdAt: -1 } },
-          { $skip: skip },
-          { $limit: limitNum },
-          // ✅ Lookup sa Plan (imbes na populate)
-          {
-            $lookup: {
-              from: "plans",
-              localField: "planId",
-              foreignField: "_id",
-              as: "plan",
-            },
-          },
-          { $unwind: { path: "$plan", preserveNullAndEmptyArrays: true } },
-          // ✅ Project para sa tamang format
-          {
-            $project: {
-              _id: 1,
-              applicationId: 1,
-              firstName: 1,
-              lastName: 1,
-              middleName: 1,
-              email: 1,
-              phoneNumber: 1,
-              status: 1,
-              createdAt: 1,
-              idImage: 1,
-              billingStarted: 1,
-              registeredUserId: 1,
-              billingCycleId: 1,
-              idType: 1,
-              idNumber: 1,
-              tower: 1,
-              floor: 1,
-              unitNumber: 1,
-              macAddress: 1,
-              buildingId: 1,
-              buildingName: 1,
-              installationFee: 1,
-              installationFeePaid: 1,
-              serviceStatus: 1,
-              notes: 1,
-              "plan._id": 1,
-              "plan.name": 1,
-              "plan.price": 1,
-              "plan.speed": 1,
-              hasAccount: {
-                $cond: [{ $ne: ["$registeredUserId", null] }, true, false],
-              },
-              idImageUrl: { $concat: ["/uploads/id-cards/", "$idImage"] },
-            },
-          },
-        ],
-      },
-    });
-
-    const result = await Application.aggregate(pipeline);
-
-    const total = result[0]?.metadata[0]?.total || 0;
-    const applications = result[0]?.data || [];
+    // ✅ STEP 3: Get paginated data - EXPLICITLY EXCLUDE base64 idImage
+    const applications = await Application.find(filter)
+      .select("-idImage")
+      .populate("planId", "name price speed")
+      .sort(sortOption)
+      .skip(skip)
+      .limit(limitNum)
+      .lean();
 
     const elapsed = Date.now() - startTime;
     console.log(
       `✅ Found ${applications.length} applications, Total: ${total} in ${elapsed}ms`,
     );
 
-    // ✅ Fix image URLs
-    const formattedData = applications.map((app: any) => ({
-      ...app,
-      idImageUrl: getImageUrl(app.idImage),
-      idImage: app.idImage,
-      plan: app.plan || null,
-      building: null,
-    }));
+    // ✅ STEP 4: THE REAL FIX - Use aggregation with $project + $regexMatch
+    const appIds = applications.map((app: any) => app._id);
+
+    let idImageMap = new Map<string, { hasImage: boolean; filename: string }>();
+
+    if (appIds.length > 0) {
+      const idImageData = await Application.aggregate([
+        { $match: { _id: { $in: appIds } } },
+        {
+          $project: {
+            _id: 1,
+            hasIdImage: {
+              $cond: [
+                {
+                  $and: [
+                    { $ne: ["$idImage", null] },
+                    { $ne: ["$idImage", ""] },
+                    { $ne: [{ $type: "$idImage" }, "missing"] },
+                  ],
+                },
+                true,
+                false,
+              ],
+            },
+            isBase64: {
+              $cond: [
+                {
+                  $and: [
+                    { $ne: ["$idImage", null] },
+                    { $ne: ["$idImage", ""] },
+                    { $regexMatch: { input: "$idImage", regex: "^data:" } },
+                  ],
+                },
+                true,
+                false,
+              ],
+            },
+            idImageFilename: {
+              $cond: [
+                {
+                  $and: [
+                    { $ne: ["$idImage", null] },
+                    { $ne: ["$idImage", ""] },
+                    {
+                      $not: {
+                        $regexMatch: { input: "$idImage", regex: "^data:" },
+                      },
+                    },
+                  ],
+                },
+                {
+                  $arrayElemAt: [{ $split: ["$idImage", "/"] }, -1],
+                },
+                "",
+              ],
+            },
+          },
+        },
+      ]).allowDiskUse(true);
+
+      idImageData.forEach((info: any) => {
+        const idStr = info._id.toString();
+        if (!info.hasIdImage) {
+          idImageMap.set(idStr, { hasImage: false, filename: "" });
+        } else if (info.isBase64) {
+          idImageMap.set(idStr, { hasImage: true, filename: "base64" });
+        } else {
+          idImageMap.set(idStr, {
+            hasImage: true,
+            filename: info.idImageFilename || "",
+          });
+        }
+      });
+    }
+
+    // ✅ STEP 5: Format data
+    const formattedData = applications.map((app: any) => {
+      const appIdStr = app._id.toString();
+      const imgInfo = idImageMap.get(appIdStr) || {
+        hasImage: false,
+        filename: "",
+      };
+
+      let idImageUrl = "";
+      if (
+        imgInfo.hasImage &&
+        imgInfo.filename &&
+        imgInfo.filename !== "base64"
+      ) {
+        idImageUrl = getImageUrl(imgInfo.filename);
+      }
+
+      let planData = null;
+      let planIdValue = app.planId;
+      if (app.planId && typeof app.planId === "object" && app.planId.name) {
+        planData = {
+          _id: app.planId._id,
+          name: app.planId.name,
+          price: app.planId.price,
+          speed: app.planId.speed,
+        };
+        planIdValue = app.planId._id;
+      }
+
+      return {
+        _id: app._id,
+        id: app._id,
+        applicationId: app.applicationId,
+        firstName: app.firstName,
+        lastName: app.lastName,
+        middleName: app.middleName || "",
+        email: app.email,
+        phoneNumber: app.phoneNumber,
+        status: app.status,
+        buildingId: app.buildingId,
+        buildingName: app.buildingName || "",
+        tower: app.tower || "",
+        floor: app.floor || "",
+        unitNumber: app.unitNumber || "",
+        planId: planIdValue,
+        plan: planData,
+        installationFee: app.installationFee || 0,
+        installationFeePaid: app.installationFeePaid || false,
+        serviceStatus: app.serviceStatus || "pending",
+        billingStarted: app.billingStarted || false,
+        hasAccount: !!app.registeredUserId,
+        createdAt: app.createdAt,
+        updatedAt: app.updatedAt,
+        idType: app.idType || "N/A",
+        idNumber: app.idNumber || "N/A",
+        macAddress: app.macAddress || "",
+        notes: app.notes || "",
+        adminNotes: app.adminNotes || "",
+        idImage: imgInfo.filename,
+        idImageUrl: idImageUrl,
+        hasIdImage: imgInfo.hasImage,
+      };
+    });
 
     const responseData = {
       success: true,
@@ -319,7 +411,7 @@ export const getAllApplications = async (
       limit: limitNum,
       _responseTime: `${elapsed}ms`,
       _cached: false,
-      _filters: { status, search, buildingId },
+      _filters: { status, search, buildingId, nameSort },
     };
 
     console.log(`✅ Response sent in ${Date.now() - startTime}ms`);
@@ -364,55 +456,11 @@ export const getAllApplicationsNoLimit = async (
       });
     }
 
-    // ✅ OPTIMIZED: Use aggregation with lookup
-    const applications = await Application.aggregate([
-      { $sort: { createdAt: -1 } },
-      {
-        $lookup: {
-          from: "plans",
-          localField: "planId",
-          foreignField: "_id",
-          as: "plan",
-        },
-      },
-      { $unwind: { path: "$plan", preserveNullAndEmptyArrays: true } },
-      {
-        $project: {
-          _id: 1,
-          applicationId: 1,
-          firstName: 1,
-          lastName: 1,
-          middleName: 1,
-          email: 1,
-          phoneNumber: 1,
-          status: 1,
-          createdAt: 1,
-          idImage: 1,
-          billingStarted: 1,
-          registeredUserId: 1,
-          billingCycleId: 1,
-          idType: 1,
-          idNumber: 1,
-          tower: 1,
-          floor: 1,
-          unitNumber: 1,
-          macAddress: 1,
-          buildingId: 1,
-          buildingName: 1,
-          installationFee: 1,
-          installationFeePaid: 1,
-          serviceStatus: 1,
-          notes: 1,
-          "plan._id": 1,
-          "plan.name": 1,
-          "plan.price": 1,
-          "plan.speed": 1,
-          hasAccount: {
-            $cond: [{ $ne: ["$registeredUserId", null] }, true, false],
-          },
-        },
-      },
-    ]);
+    const applications = await Application.find()
+      .select("-idImage")
+      .populate("planId", "name price speed")
+      .sort({ createdAt: -1 })
+      .lean();
 
     const total = applications.length;
 
@@ -420,12 +468,115 @@ export const getAllApplicationsNoLimit = async (
       `✅ Found ${total} total applications in ${Date.now() - startTime}ms`,
     );
 
-    const formattedData = applications.map((app: any) => ({
-      ...app,
-      idImageUrl: getImageUrl(app.idImage),
-      plan: app.plan || null,
-      building: null,
-    }));
+    const appIds = applications.map((app: any) => app._id);
+
+    let idImageMap = new Map<string, { hasImage: boolean; filename: string }>();
+
+    if (appIds.length > 0) {
+      const idImageData = await Application.aggregate([
+        { $match: { _id: { $in: appIds } } },
+        {
+          $project: {
+            _id: 1,
+            hasIdImage: {
+              $cond: [
+                {
+                  $and: [
+                    { $ne: ["$idImage", null] },
+                    { $ne: ["$idImage", ""] },
+                    { $ne: [{ $type: "$idImage" }, "missing"] },
+                  ],
+                },
+                true,
+                false,
+              ],
+            },
+            isBase64: {
+              $cond: [
+                {
+                  $and: [
+                    { $ne: ["$idImage", null] },
+                    { $ne: ["$idImage", ""] },
+                    { $regexMatch: { input: "$idImage", regex: "^data:" } },
+                  ],
+                },
+                true,
+                false,
+              ],
+            },
+            idImageFilename: {
+              $cond: [
+                {
+                  $and: [
+                    { $ne: ["$idImage", null] },
+                    { $ne: ["$idImage", ""] },
+                    {
+                      $not: {
+                        $regexMatch: { input: "$idImage", regex: "^data:" },
+                      },
+                    },
+                  ],
+                },
+                {
+                  $arrayElemAt: [{ $split: ["$idImage", "/"] }, -1],
+                },
+                "",
+              ],
+            },
+          },
+        },
+      ]).allowDiskUse(true);
+
+      idImageData.forEach((info: any) => {
+        const idStr = info._id.toString();
+        if (!info.hasIdImage) {
+          idImageMap.set(idStr, { hasImage: false, filename: "" });
+        } else if (info.isBase64) {
+          idImageMap.set(idStr, { hasImage: true, filename: "base64" });
+        } else {
+          idImageMap.set(idStr, {
+            hasImage: true,
+            filename: info.idImageFilename || "",
+          });
+        }
+      });
+    }
+
+    const formattedData = applications.map((app: any) => {
+      const appIdStr = app._id.toString();
+      const imgInfo = idImageMap.get(appIdStr) || {
+        hasImage: false,
+        filename: "",
+      };
+
+      let idImageUrl = "";
+      if (
+        imgInfo.hasImage &&
+        imgInfo.filename &&
+        imgInfo.filename !== "base64"
+      ) {
+        idImageUrl = getImageUrl(imgInfo.filename);
+      }
+
+      let planData = null;
+      if (app.planId && typeof app.planId === "object" && app.planId.name) {
+        planData = {
+          _id: app.planId._id,
+          name: app.planId.name,
+          price: app.planId.price,
+          speed: app.planId.speed,
+        };
+      }
+
+      return {
+        ...app,
+        idImageUrl,
+        idImage: imgInfo.filename,
+        hasIdImage: imgInfo.hasImage,
+        plan: planData,
+        building: null,
+      };
+    });
 
     return res.status(200).json({
       success: true,
@@ -669,7 +820,6 @@ export const submitApplication = async (
       macAddress,
     } = req.body;
 
-    // Clean up tower
     if (!tower || tower === "undefined" || tower === "null") {
       tower = "";
     }
@@ -677,11 +827,6 @@ export const submitApplication = async (
     const normalizedEmail = email?.trim().toLowerCase();
     const normalizedPhoneNumber = phoneNumber?.trim();
 
-    // ============================================================
-    // ✅ CHECK FOR DUPLICATES - WITH PROPER 409 STATUS CODES
-    // ============================================================
-
-    // 1. Check if email is already registered as a user
     const existingUser = await User.findOne({
       email: normalizedEmail,
     })
@@ -700,7 +845,6 @@ export const submitApplication = async (
       });
     }
 
-    // 2. Check if email already has an application
     const existingApplicationByEmail = await Application.findOne({
       email: normalizedEmail,
     })
@@ -743,7 +887,6 @@ export const submitApplication = async (
       });
     }
 
-    // 3. Check if phone number already has an application
     const existingApplicationByPhone = await Application.findOne({
       phoneNumber: normalizedPhoneNumber,
     })
@@ -762,7 +905,6 @@ export const submitApplication = async (
       });
     }
 
-    // 4. Check if unit is already occupied
     const existingActiveServiceQuery: any = {
       buildingId: new mongoose.Types.ObjectId(buildingId),
       floor: floor?.toString().trim(),
@@ -791,10 +933,6 @@ export const submitApplication = async (
         existingStatus: existingActiveService.status,
       });
     }
-
-    // ============================================================
-    // ✅ VALIDATE BUILDING AND PLAN
-    // ============================================================
 
     const [building, plan] = await Promise.all([
       Building.findById(buildingId)
@@ -832,10 +970,6 @@ export const submitApplication = async (
       });
     }
 
-    // ============================================================
-    // ✅ HANDLE ID IMAGE UPLOAD
-    // ============================================================
-
     let idImagePath = "uploads/id-cards/placeholder.jpg";
     if (req.file) {
       if (req.file.path) {
@@ -847,10 +981,6 @@ export const submitApplication = async (
         )}`;
       }
     }
-
-    // ============================================================
-    // ✅ CREATE APPLICATION
-    // ============================================================
 
     const applicationData = {
       firstName: firstName?.trim(),
@@ -878,7 +1008,6 @@ export const submitApplication = async (
 
     console.log(`✅ Application created with ID: ${application.applicationId}`);
 
-    // Populate for response - OPTIMIZED with aggregation
     const populatedApplication = await Application.aggregate([
       { $match: { _id: application._id } },
       {
@@ -904,12 +1033,10 @@ export const submitApplication = async (
     await session.commitTransaction();
     session.endSession();
 
-    // Clear cache
     appCache.flushAll();
     dashboardCache = null;
     dashboardCacheTime = 0;
 
-    // Send emails asynchronously
     const fullImageUrl = getImageUrl(application.idImage);
     const populatedPlan = populatedApplication[0]?.plan;
 
@@ -929,7 +1056,6 @@ export const submitApplication = async (
         .catch((err) => console.error("❌ Admin email failed:", err));
     });
 
-    // Response
     const planPrice = populatedPlan?.price;
     const safePrice =
       planPrice !== undefined && planPrice !== null ? planPrice : 0;
@@ -1043,59 +1169,26 @@ export const getApplication = async (
   next: NextFunction,
 ) => {
   try {
-    // ✅ OPTIMIZED: Use aggregation
-    const applications = await Application.aggregate([
-      { $match: { _id: new mongoose.Types.ObjectId(req.params.id) } },
-      {
-        $lookup: {
-          from: "plans",
-          localField: "planId",
-          foreignField: "_id",
-          as: "plan",
-        },
-      },
-      { $unwind: { path: "$plan", preserveNullAndEmptyArrays: true } },
-      {
-        $lookup: {
-          from: "buildings",
-          localField: "buildingId",
-          foreignField: "_id",
-          as: "building",
-        },
-      },
-      { $unwind: { path: "$building", preserveNullAndEmptyArrays: true } },
-      {
-        $lookup: {
-          from: "admins",
-          localField: "reviewedBy",
-          foreignField: "_id",
-          as: "reviewedBy",
-        },
-      },
-      { $unwind: { path: "$reviewedBy", preserveNullAndEmptyArrays: true } },
-      {
-        $project: {
-          __v: 0,
-          idImageUrl: { $concat: ["/uploads/id-cards/", "$idImage"] },
-        },
-      },
-    ]);
+    const application = await Application.findById(req.params.id)
+      .populate("planId", "name price speed duration features")
+      .populate("buildingId", "buildingName streetAddress city barangay")
+      .lean();
 
-    if (!applications || applications.length === 0) {
+    if (!application) {
       return res
         .status(404)
         .json({ success: false, message: "Application not found" });
     }
 
-    const application = applications[0];
     res.status(200).json({
       success: true,
       data: {
         ...application,
+        idImageUrl: getImageUrl(application.idImage),
         macAddress: application.macAddress || "",
         tower: application.tower || "",
         middleName: application.middleName || "",
-        building: application.building,
+        building: application.buildingId,
       },
     });
   } catch (error) {
@@ -1479,7 +1572,6 @@ export const updateApplication = async (
 
     const updateFields: any = {};
 
-    // Personal Information
     if (updateData.firstName !== undefined) {
       updateFields.firstName = updateData.firstName?.trim();
     }
@@ -1496,7 +1588,6 @@ export const updateApplication = async (
       updateFields.phoneNumber = updateData.phoneNumber?.trim();
     }
 
-    // Address & Unit Information
     if (updateData.buildingId !== undefined) {
       const building = await Building.findById(updateData.buildingId)
         .session(session)
@@ -1523,7 +1614,6 @@ export const updateApplication = async (
       updateFields.unitNumber = updateData.unitNumber?.toString().trim();
     }
 
-    // Plan Information
     if (updateData.planId !== undefined) {
       const plan = await Plan.findById(updateData.planId)
         .session(session)
@@ -1539,7 +1629,6 @@ export const updateApplication = async (
       updateFields.planId = updateData.planId;
     }
 
-    // ID Information
     if (updateData.idType !== undefined) {
       updateFields.idType = updateData.idType?.trim() || "Not Provided";
     }
@@ -1550,7 +1639,6 @@ export const updateApplication = async (
       updateFields.macAddress = updateData.macAddress?.trim() || "";
     }
 
-    // Status
     if (updateData.status !== undefined) {
       const validStatuses = ["pending", "approved", "rejected", "suspended"];
       if (!validStatuses.includes(updateData.status)) {
@@ -1565,7 +1653,6 @@ export const updateApplication = async (
       updateFields.status = updateData.status;
     }
 
-    // Service Status
     if (updateData.serviceStatus !== undefined) {
       const validServiceStatuses = [
         "pending",
@@ -1585,7 +1672,6 @@ export const updateApplication = async (
       updateFields.serviceStatus = updateData.serviceStatus;
     }
 
-    // Installation Fee
     if (updateData.installationFee !== undefined) {
       updateFields.installationFee =
         parseFloat(updateData.installationFee) || 0;
@@ -1596,7 +1682,6 @@ export const updateApplication = async (
       );
     }
 
-    // Notes
     if (updateData.notes !== undefined) {
       updateFields.notes = updateData.notes || "";
     }
@@ -1607,7 +1692,6 @@ export const updateApplication = async (
       updateFields.billingStarted = Boolean(updateData.billingStarted);
     }
 
-    // Remove undefined values
     Object.keys(updateFields).forEach((key) => {
       if (updateFields[key] === undefined) {
         delete updateFields[key];
@@ -1623,7 +1707,6 @@ export const updateApplication = async (
       });
     }
 
-    // Check for duplicate email
     if (
       updateFields.email &&
       updateFields.email !== existingApplication.email
@@ -1643,7 +1726,6 @@ export const updateApplication = async (
       }
     }
 
-    // Check for duplicate phone
     if (
       updateFields.phoneNumber &&
       updateFields.phoneNumber !== existingApplication.phoneNumber
@@ -1734,7 +1816,6 @@ export const patchApplication = async (
 
     const updateFields: any = {};
 
-    // Personal Information
     if (updateData.firstName !== undefined) {
       updateFields.firstName = updateData.firstName?.trim();
     }
@@ -1751,7 +1832,6 @@ export const patchApplication = async (
       updateFields.phoneNumber = updateData.phoneNumber?.trim();
     }
 
-    // Address & Unit Information
     if (updateData.buildingId !== undefined) {
       const building = await Building.findById(updateData.buildingId)
         .session(session)
@@ -1778,7 +1858,6 @@ export const patchApplication = async (
       updateFields.unitNumber = updateData.unitNumber?.toString().trim();
     }
 
-    // Plan Information
     if (updateData.planId !== undefined) {
       const plan = await Plan.findById(updateData.planId)
         .session(session)
@@ -1794,7 +1873,6 @@ export const patchApplication = async (
       updateFields.planId = updateData.planId;
     }
 
-    // ID Information
     if (updateData.idType !== undefined) {
       updateFields.idType = updateData.idType?.trim() || "Not Provided";
     }
@@ -1805,7 +1883,6 @@ export const patchApplication = async (
       updateFields.macAddress = updateData.macAddress?.trim() || "";
     }
 
-    // Status
     if (updateData.status !== undefined) {
       const validStatuses = ["pending", "approved", "rejected", "suspended"];
       if (!validStatuses.includes(updateData.status)) {
@@ -1820,7 +1897,6 @@ export const patchApplication = async (
       updateFields.status = updateData.status;
     }
 
-    // Service Status
     if (updateData.serviceStatus !== undefined) {
       const validServiceStatuses = [
         "pending",
@@ -1840,7 +1916,6 @@ export const patchApplication = async (
       updateFields.serviceStatus = updateData.serviceStatus;
     }
 
-    // Installation Fee
     if (updateData.installationFee !== undefined) {
       updateFields.installationFee =
         parseFloat(updateData.installationFee) || 0;
@@ -1851,7 +1926,6 @@ export const patchApplication = async (
       );
     }
 
-    // Notes
     if (updateData.notes !== undefined) {
       updateFields.notes = updateData.notes || "";
     }
@@ -1859,7 +1933,6 @@ export const patchApplication = async (
       updateFields.adminNotes = updateData.adminNotes || "";
     }
 
-    // Remove undefined values
     Object.keys(updateFields).forEach((key) => {
       if (updateFields[key] === undefined) {
         delete updateFields[key];
@@ -1880,7 +1953,6 @@ export const patchApplication = async (
       JSON.stringify(updateFields, null, 2),
     );
 
-    // Check for duplicate email
     if (
       updateFields.email &&
       updateFields.email !== existingApplication.email
@@ -1900,7 +1972,6 @@ export const patchApplication = async (
       }
     }
 
-    // Check for duplicate phone
     if (
       updateFields.phoneNumber &&
       updateFields.phoneNumber !== existingApplication.phoneNumber

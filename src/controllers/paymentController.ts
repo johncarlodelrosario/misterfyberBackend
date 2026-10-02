@@ -1,4 +1,4 @@
-// backend/src/controllers/paymentController.ts - COMPLETE WITH FIXED FILTERING
+// backend/src/controllers/paymentController.ts - COMPLETE WITH FIXED FILTERING + INSTANT BUILDING ENRICHMENT
 
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
@@ -52,7 +52,7 @@ async function getPopulatedPayment(paymentId: string) {
       applicationId: payment.applicationId,
     })
       .select(
-        "firstName lastName email applicationId phoneNumber status serviceStatus billingStarted installationFee installationFeePaid",
+        "firstName lastName email applicationId phoneNumber status serviceStatus billingStarted installationFee installationFeePaid buildingId buildingName",
       )
       .lean();
 
@@ -71,8 +71,17 @@ async function getPopulatedPayment(paymentId: string) {
         installationFeePaid: (application as any).installationFeePaid || false,
         applicantName:
           `${application.firstName || ""} ${application.lastName || ""}`.trim(),
+        buildingId: (application as any).buildingId,
+        buildingName: (application as any).buildingName || "",
       };
       result.applicationId = application.applicationId;
+
+      if (!result.buildingId && (application as any).buildingId) {
+        result.buildingId = (application as any).buildingId;
+      }
+      if (!result.buildingName && (application as any).buildingName) {
+        result.buildingName = (application as any).buildingName;
+      }
 
       if (!result.customerName || result.customerName === "") {
         result.customerName =
@@ -93,7 +102,12 @@ async function getPopulatedPayment(paymentId: string) {
       phoneNumber: user.phoneNumber,
       username: user.username,
       status: user.status,
+      buildingId: user.buildingId,
     };
+
+    if (user.buildingId && !result.buildingId) {
+      result.buildingId = user.buildingId;
+    }
 
     if (!result.customerName || result.customerName === "") {
       result.customerName =
@@ -275,10 +289,18 @@ export const getPayments = async (
           const application = await Application.findOne({
             applicationId: payment.applicationId,
           })
-            .select("firstName lastName email applicationId phoneNumber")
+            .select(
+              "firstName lastName email applicationId phoneNumber buildingId buildingName",
+            )
             .lean();
           if (application) {
             enriched.application = application;
+            if (!enriched.buildingId && (application as any).buildingId) {
+              enriched.buildingId = (application as any).buildingId;
+            }
+            if (!enriched.buildingName && (application as any).buildingName) {
+              enriched.buildingName = (application as any).buildingName;
+            }
             if (!enriched.customerName || enriched.customerName === "") {
               enriched.customerName =
                 `${application.firstName || ""} ${application.lastName || ""}`.trim();
@@ -1112,7 +1134,7 @@ export const getPendingPayments = async (
   }
 };
 
-// ==================== GET ALL PAYMENTS ADMIN (FIXED FILTERING) ====================
+// ==================== GET ALL PAYMENTS ADMIN (FIXED FILTERING + INSTANT LOAD) ====================
 // @desc    Get all payments with pagination and proper filtering (Admin)
 // @route   GET /api/payments/admin/all
 // @access  Private/Admin
@@ -1125,7 +1147,6 @@ export const getAllPaymentsAdmin = async (
   try {
     const page = parseInt(req.query.page as string) || 1;
     const limitParam = req.query.limit as string;
-    // Support limit=all to fetch all records
     const fetchAll = limitParam === "all" || limitParam === "0";
     const limit = fetchAll ? 0 : parseInt(limitParam) || 100;
     const skip = fetchAll ? 0 : (page - 1) * limit;
@@ -1137,7 +1158,7 @@ export const getAllPaymentsAdmin = async (
     const endDate = req.query.endDate as string;
 
     // Build base query
-    let baseQuery: any = {};
+    const baseQuery: any = {};
 
     if (status && status !== "all" && status !== "") {
       baseQuery.status = status;
@@ -1173,11 +1194,9 @@ export const getAllPaymentsAdmin = async (
     }
 
     // ==================== BUILDING FILTER (ROBUST) ====================
-    // Collect ALL possible references to the building so we don't miss payments.
     let buildingFilterClause: any = null;
 
     if (buildingId && buildingId !== "all" && buildingId !== "") {
-      // Get all applications in this building
       const buildingApps = await Application.find({ buildingId })
         .select("applicationId")
         .lean();
@@ -1185,13 +1204,11 @@ export const getAllPaymentsAdmin = async (
         .map((a) => a.applicationId)
         .filter(Boolean);
 
-      // Get all users in this building
       const buildingUsers = await User.find({ buildingId })
         .select("_id")
         .lean();
       const buildingUserIds = buildingUsers.map((u) => u._id);
 
-      // Get all billings associated with this building (via applicationId OR direct buildingId)
       const billingOrConditions: any[] = [];
       if (buildingApplicationIds.length > 0) {
         billingOrConditions.push({
@@ -1207,30 +1224,24 @@ export const getAllPaymentsAdmin = async (
         .lean();
       const buildingBillingIds = buildingBillings.map((b) => b._id);
 
-      // Build combined $or clause
       const orConditions: any[] = [];
 
-      // 1. Direct buildingId on Payment
       orConditions.push({ buildingId: buildingId });
 
-      // 2. applicationId matches any building application
       if (buildingApplicationIds.length > 0) {
         orConditions.push({
           applicationId: { $in: buildingApplicationIds },
         });
       }
 
-      // 3. userId matches any building user
       if (buildingUserIds.length > 0) {
         orConditions.push({ userId: { $in: buildingUserIds } });
       }
 
-      // 4. billingId matches any building billing
       if (buildingBillingIds.length > 0) {
         orConditions.push({ billingId: { $in: buildingBillingIds } });
       }
 
-      // 5. paymentDetails.gatewayResponse.applicationId matches
       if (buildingApplicationIds.length > 0) {
         orConditions.push({
           "paymentDetails.gatewayResponse.applicationId": {
@@ -1242,7 +1253,7 @@ export const getAllPaymentsAdmin = async (
       buildingFilterClause = { $or: orConditions };
     }
 
-    // Compose final query — combine baseQuery with building filter using $and
+    // Compose final query
     let query: any;
     if (buildingFilterClause) {
       query = { $and: [baseQuery, buildingFilterClause] };
@@ -1250,7 +1261,7 @@ export const getAllPaymentsAdmin = async (
       query = { ...baseQuery };
     }
 
-    // Fetch payments and total count with filters
+    // Fetch payments with filters
     const findQuery = Payment.find(query)
       .populate(
         "userId",
@@ -1271,81 +1282,42 @@ export const getAllPaymentsAdmin = async (
       Payment.countDocuments(query),
     ]);
 
-    // Collect building IDs from payments / users / billings for name mapping
-    const buildingIdsSet = new Set<string>();
+    // ==================== EFFICIENT BATCH ENRICHMENT ====================
+    // Collect unique application IDs and user IDs for batch lookups
+    const appIdsSet = new Set<string>();
+    const userIdsSet = new Set<string>();
+
     for (const payment of payments) {
-      if ((payment as any).buildingId) {
-        buildingIdsSet.add((payment as any).buildingId.toString());
+      if (payment.applicationId && typeof payment.applicationId === "string") {
+        appIdsSet.add(payment.applicationId);
       }
-      if (payment.userId && typeof payment.userId === "object") {
-        const user = payment.userId as any;
-        if (user.buildingId) {
-          buildingIdsSet.add(user.buildingId.toString());
-        }
-      }
-      if (payment.billingId && typeof payment.billingId === "object") {
-        const billing = payment.billingId as any;
-        if (billing.buildingId) {
-          buildingIdsSet.add(billing.buildingId.toString());
-        }
-      }
+      const uid =
+        payment.userId && typeof payment.userId === "object"
+          ? (payment.userId as any)._id
+          : payment.userId;
+      if (uid) userIdsSet.add(uid.toString());
     }
 
-    // Fetch building details (name) for those ids
-    let buildingMap = new Map();
-    if (buildingIdsSet.size > 0) {
-      const buildings = await Application.aggregate([
-        { $match: { buildingId: { $in: Array.from(buildingIdsSet) } } },
-        {
-          $group: {
-            _id: "$buildingId",
-            buildingName: { $first: "$buildingName" },
-          },
-        },
-      ]);
-      buildings.forEach((b: any) => {
-        buildingMap.set(b._id, b.buildingName || "Unknown Building");
-      });
+    // Batch fetch applications with building info
+    const appMap = new Map<string, any>();
+    if (appIdsSet.size > 0) {
+      const apps = await Application.find({
+        applicationId: { $in: Array.from(appIdsSet) },
+      })
+        .select(
+          "applicationId firstName lastName email phoneNumber status serviceStatus billingStarted installationFee installationFeePaid buildingId buildingName",
+        )
+        .lean();
+      apps.forEach((a) => appMap.set(a.applicationId, a));
     }
 
-    // Get application details for payments
-    const applicationIds = payments
-      .filter((p) => p.applicationId)
-      .map((p) => p.applicationId)
-      .filter((value, index, self) => self.indexOf(value) === index);
-
-    let applicationMap = new Map();
-    if (applicationIds.length > 0) {
-      const applications = await Application.find({
-        applicationId: { $in: applicationIds },
-      }).lean();
-
-      applications.forEach((app) => {
-        applicationMap.set(app.applicationId, app);
-      });
-    }
-
-    // Enrich payments
-    const enrichPaymentWithAppData = (payment: any) => {
+    // Enrich each payment
+    const enrichedPayments = payments.map((payment) => {
       const enriched: any = { ...payment };
 
-      // If we know the buildingId directly on the payment, use it
-      if (
-        payment.buildingId &&
-        buildingMap.has(payment.buildingId.toString())
-      ) {
-        enriched.buildingName = buildingMap.get(payment.buildingId.toString());
-      }
-
-      if (payment.userId && typeof payment.userId === "object") {
-        const user = payment.userId as any;
-        if (user.buildingId && buildingMap.has(user.buildingId.toString())) {
-          enriched.buildingName = buildingMap.get(user.buildingId.toString());
-        }
-      }
-
-      if (payment.applicationId && applicationMap.has(payment.applicationId)) {
-        const app = applicationMap.get(payment.applicationId);
+      // Attach application
+      if (payment.applicationId && appMap.has(payment.applicationId)) {
+        const app = appMap.get(payment.applicationId)!;
         enriched.application = {
           _id: app._id,
           applicationId: app.applicationId,
@@ -1363,22 +1335,24 @@ export const getAllPaymentsAdmin = async (
           buildingId: (app as any).buildingId,
           buildingName: (app as any).buildingName || "",
         };
+
         if (!enriched.customerName || enriched.customerName === "") {
           enriched.customerName =
             `${app.firstName || ""} ${app.lastName || ""}`.trim();
           enriched.customerEmail = app.email || "";
           enriched.customerPhone = app.phoneNumber || "";
         }
+
+        // TOP-LEVEL propagation for instant frontend matching
+        if ((app as any).buildingId) {
+          enriched.buildingId = (app as any).buildingId;
+        }
         if ((app as any).buildingName) {
           enriched.buildingName = (app as any).buildingName;
         }
-        // IMPORTANT: propagate buildingId to the payment object so the frontend
-        // can match by building without extra API calls
-        if ((app as any).buildingId && !enriched.buildingId) {
-          enriched.buildingId = (app as any).buildingId;
-        }
       }
 
+      // Attach user
       if (
         !enriched.application &&
         payment.userId &&
@@ -1401,17 +1375,25 @@ export const getAllPaymentsAdmin = async (
           enriched.customerEmail = user.email || "";
           enriched.customerPhone = user.phoneNumber || "";
         }
-        if (user.buildingId && buildingMap.has(user.buildingId.toString())) {
-          enriched.buildingName = buildingMap.get(user.buildingId.toString());
-        }
-        // Propagate buildingId from user
         if (user.buildingId && !enriched.buildingId) {
           enriched.buildingId = user.buildingId;
         }
       }
 
+      // Final fallback for customerName
       if (!enriched.customerName || enriched.customerName === "") {
         enriched.customerName = payment.applicationId || "Unknown Customer";
+      }
+
+      // Top-level customerName/email/phone for legacy consumers
+      if (!enriched.customerName || enriched.customerName === "") {
+        enriched.customerName = payment.customerName || "Unknown Customer";
+      }
+      if (!enriched.customerEmail || enriched.customerEmail === "") {
+        enriched.customerEmail = payment.customerEmail || "";
+      }
+      if (!enriched.customerPhone || enriched.customerPhone === "") {
+        enriched.customerPhone = payment.customerPhone || "";
       }
 
       enriched.isInstallationPayment =
@@ -1421,11 +1403,9 @@ export const getAllPaymentsAdmin = async (
           (payment.billingId as any).isInstallationBill);
 
       return enriched;
-    };
+    });
 
-    const enrichedPayments = payments.map(enrichPaymentWithAppData);
-
-    // ==================== STATS (USE SAME QUERY) ====================
+    // ==================== STATS ====================
     const statsQuery = query;
 
     const completedQuery = {
@@ -1745,9 +1725,6 @@ export const getInstallationPaymentSummary = async (
 };
 
 // ==================== DELETE PAYMENT (ADMIN ONLY) ====================
-// @desc    Delete payment (Admin only)
-// @route   DELETE /api/payments/:id
-// @access  Private/Admin
 export const deletePayment = async (
   req: AuthRequest,
   res: Response,
@@ -1810,9 +1787,6 @@ export const deletePayment = async (
 };
 
 // ==================== BULK DELETE PAYMENTS (ADMIN ONLY) ====================
-// @desc    Bulk delete payments by customer (Admin only)
-// @route   DELETE /api/payments/bulk/customer/:customerId
-// @access  Private/Admin
 export const bulkDeleteCustomerPayments = async (
   req: AuthRequest,
   res: Response,
