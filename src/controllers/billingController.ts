@@ -624,7 +624,6 @@ async function createMonthlyBill(
   req?: AuthRequest,
 ): Promise<any> {
   // ==================== DEDUP GUARD ====================
-  // Ensure billingStart is normalized to the start of its month so dedup works.
   const normalizedStart = normalizeToMonthStart(billingStart);
   const normalizedEnd = getEndOfMonth(normalizedStart);
 
@@ -638,7 +637,6 @@ async function createMonthlyBill(
     console.log(
       `⏭️ [createMonthlyBill] Skipping duplicate monthly bill for cycle ${billingCycleId} in ${getMonthKey(normalizedStart)}`,
     );
-    // Return the existing bill instead of creating a new one
     const existingQuery = Billing.findOne({
       billingCycleId: billingCycleId,
       isProRated: false,
@@ -4347,7 +4345,6 @@ export const deleteBill = async (
         });
       }
 
-      // Prevent deletion of paid bills
       if (bill.status === "paid") {
         await session.abortTransaction();
         return res.status(400).json({
@@ -4357,7 +4354,6 @@ export const deleteBill = async (
         });
       }
 
-      // Get application info for logging
       let application = null;
       if (bill.applicationId) {
         application = await Application.findOne({
@@ -4368,16 +4364,13 @@ export const deleteBill = async (
           .lean();
       }
 
-      // Delete associated invoice
       await Invoice.deleteMany({ billingId: bill._id }, { session });
 
-      // Delete associated pending payments
       await Payment.deleteMany(
         { billingId: bill._id, status: "pending" },
         { session },
       );
 
-      // Remove bill reference from billing cycle payment history
       if (bill.billingCycleId) {
         await BillingCycle.updateOne(
           { _id: bill.billingCycleId },
@@ -4389,7 +4382,6 @@ export const deleteBill = async (
           { session },
         );
 
-        // If this was an installation bill, update the billing cycle
         if (bill.isInstallationBill) {
           await BillingCycle.updateOne(
             { _id: bill.billingCycleId },
@@ -4401,7 +4393,6 @@ export const deleteBill = async (
           );
         }
 
-        // If this was a pro-rated bill, update the billing cycle
         if (bill.isProRated) {
           await BillingCycle.updateOne(
             { _id: bill.billingCycleId },
@@ -4417,12 +4408,10 @@ export const deleteBill = async (
         }
       }
 
-      // Delete the bill
       await Billing.deleteOne({ _id: bill._id }, { session });
 
       await session.commitTransaction();
 
-      // Emit events
       eventService.emitDashboardUpdate({
         reason: "Bill deleted - FORCE REFRESH",
         billId: billId,
@@ -4795,11 +4784,6 @@ export const startMonthlyBilling = async (
 };
 
 // ==================== AUTO-GENERATE MONTHLY BILLS (FIXED) ====================
-// This function generates bills for the NEXT calendar month.
-// DEDUP: It checks by (billingCycleId, isProRated=false, isInstallationBill=false)
-//        and matches billingPeriod.start within the target month's range.
-//        This prevents duplicates even if bills were created by startBilling,
-//        initializeBackdatedBilling, recoverMissingBills, etc.
 export const autoGenerateMonthlyBills = async (
   req?: AuthRequest,
   res?: Response,
@@ -4818,7 +4802,6 @@ export const autoGenerateMonthlyBills = async (
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // Target = next calendar month
     const nextMonth = getStartOfNextMonth(today);
     const nextMonthEnd = getEndOfMonth(nextMonth);
     const dueDate = getDueDateForMonthly(nextMonth, settings);
@@ -4851,9 +4834,6 @@ export const autoGenerateMonthlyBills = async (
     let alreadyGeneratedCount = 0;
     const generatedBills = [];
 
-    // ==================== BULK DEDUP CHECK (FIXED) ====================
-    // Match bills where billingPeriod.start falls within the ENTIRE target month,
-    // NOT just exactly equal to the 1st. This catches any off-by-one dates.
     const existingBills = await Billing.find({
       billingCycleId: { $in: billingCycles.map((c) => c._id) },
       isProRated: false,
@@ -6210,7 +6190,6 @@ export const autoGenerateEarlyBills = async (
       applications.map((a) => [a.applicationId, a]),
     );
 
-    // ==================== BULK DEDUP CHECK (FIXED) ====================
     const existingBills = await Billing.find({
       billingCycleId: { $in: billingCycles.map((c) => c._id) },
       isProRated: false,
