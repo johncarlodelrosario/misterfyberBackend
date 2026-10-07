@@ -1,4 +1,4 @@
-// backend/src/routes/paymentRoutes.ts - COMPLETE WITH BULK DELETE ROUTE
+// backend/src/routes/paymentRoutes.ts - COMPLETE WITH MIGRATION ROUTE
 
 import express from "express";
 import { body } from "express-validator";
@@ -18,6 +18,7 @@ import {
   getInstallationPaymentSummary,
   deletePayment,
   bulkDeleteCustomerPayments,
+  fixProRatedPaymentTypes,
 } from "../controllers/paymentController";
 import { protect, authorize } from "../middleware/auth";
 
@@ -69,6 +70,14 @@ router.get(
   protect,
   authorize("super_admin", "admin", "staff"),
   getInstallationPaymentSummary,
+);
+
+// ==================== MIGRATION ROUTE (SUPER ADMIN ONLY) ====================
+router.post(
+  "/admin/fix-pro-rated-types",
+  protect,
+  authorize("super_admin"),
+  fixProRatedPaymentTypes,
 );
 
 router.put(

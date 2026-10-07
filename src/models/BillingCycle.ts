@@ -104,7 +104,11 @@ BillingCycleSchema.index({ installationFeePaid: 1 });
 BillingCycleSchema.index({ "pendingPlanChange.status": 1 });
 BillingCycleSchema.index({ createdAt: -1 });
 
-export default mongoose.model<IBillingCycle>(
-  "BillingCycle",
-  BillingCycleSchema,
-);
+// ==================== IDEMPOTENT MODEL REGISTRATION ====================
+// ✅ Safe kahit i-import ng maraming beses
+// ✅ Prevent "OverwriteModelError" at "MissingSchemaError"
+const BillingCycle =
+  (mongoose.models.BillingCycle as mongoose.Model<IBillingCycle>) ||
+  mongoose.model<IBillingCycle>("BillingCycle", BillingCycleSchema);
+
+export default BillingCycle;

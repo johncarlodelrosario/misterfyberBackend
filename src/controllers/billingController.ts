@@ -1,4 +1,4 @@
-// backend/src/controllers/billingController.ts - COMPLETE FIXED - NO DUPLICATE INVOICES
+// backend/src/controllers/billingController.ts - COMPLETE FIXED - NO DUPLICATE INVOICES + PRO-RATED PAYMENT TYPE FIXED
 
 import { Request, Response, NextFunction } from "express";
 import Billing from "../models/Billing";
@@ -4527,10 +4527,11 @@ export const confirmProRatedPayment = async (
         await invoice.save({ session });
       }
 
+      // ==================== FIX: PAYMENT TYPE FOR PRO-RATED ====================
       const paymentData: any = {
         amount: proRatedBill.total,
         paymentMethod: "manual",
-        paymentType: "subscription",
+        paymentType: "pro_rated", // ✅ FIXED (was "subscription")
         status: "completed",
         referenceNumber: `PRO-${Date.now()}`,
         billingId: proRatedBill._id,
@@ -5052,12 +5053,15 @@ export const submitProRatedPayment = async (
         { session },
       );
 
+      // ==================== FIX: PAYMENT TYPE FOR PRO-RATED ====================
+      const correctPaymentType = bill.isProRated ? "pro_rated" : "subscription";
+
       const payment = await Payment.create(
         [
           {
             amount: bill.total,
             paymentMethod: "manual",
-            paymentType: "subscription",
+            paymentType: correctPaymentType, // ✅ FIXED (was "subscription")
             status: "pending",
             referenceNumber: referenceNumber || `PAY-${Date.now()}`,
             billingId: bill._id,
@@ -5087,7 +5091,7 @@ export const submitProRatedPayment = async (
         billingId: bill._id,
         applicationId: bill.applicationId,
         amount: bill.total,
-        type: "pro-rated",
+        type: correctPaymentType, // ✅ Use correct type
       });
 
       eventService.emitDashboardUpdate({
@@ -5101,7 +5105,10 @@ export const submitProRatedPayment = async (
       return res.status(200).json({
         success: true,
         message: "Payment submitted! Awaiting admin confirmation.",
-        data: { status: "pending_confirmation" },
+        data: {
+          status: "pending_confirmation",
+          paymentType: correctPaymentType,
+        },
       });
     } catch (error) {
       await session.abortTransaction();
@@ -5503,10 +5510,15 @@ export const markBillAsPaid = async (
         }).lean();
       }
 
+      // ==================== FIX: PAYMENT TYPE FOR PRO-RATED ====================
+      const correctPaymentType = existingBill.isProRated
+        ? "pro_rated"
+        : "subscription";
+
       const paymentData: any = {
         amount: existingBill.total,
         paymentMethod: "manual",
-        paymentType: "subscription",
+        paymentType: correctPaymentType, // ✅ FIXED (was "subscription")
         status: "completed",
         referenceNumber: referenceNumber || `ADMIN-${Date.now()}`,
         billingId: existingBill._id,
@@ -5591,7 +5603,7 @@ export const markBillAsPaid = async (
         payment: payment[0],
         billingId: existingBill._id,
         applicationId: existingBill.applicationId,
-        type: existingBill.isProRated ? "pro-rated" : "monthly",
+        type: correctPaymentType, // ✅ Use correct type
       });
 
       eventService.emitDashboardUpdate({
@@ -5639,6 +5651,7 @@ export const markBillAsPaid = async (
           billId: existingBill._id,
           invoiceNumber: existingBill.invoiceNumber,
           paymentId: payment[0]._id,
+          paymentType: correctPaymentType, // ✅ Return correct type
         },
       });
     } catch (error) {
@@ -5709,10 +5722,15 @@ export const markBillAsFree = async (
         }).lean();
       }
 
+      // ==================== FIX: PAYMENT TYPE FOR PRO-RATED ====================
+      const correctPaymentType = existingBill.isProRated
+        ? "pro_rated"
+        : "subscription";
+
       const paymentData: any = {
         amount: 0,
         paymentMethod: "free",
-        paymentType: "subscription",
+        paymentType: correctPaymentType, // ✅ FIXED (was "subscription")
         status: "completed",
         referenceNumber: `FREE-${Date.now()}`,
         billingId: existingBill._id,
@@ -5818,7 +5836,7 @@ export const markBillAsFree = async (
         payment: payment[0],
         billingId: existingBill._id,
         applicationId: existingBill.applicationId,
-        type: existingBill.isProRated ? "pro-rated" : "monthly",
+        type: correctPaymentType, // ✅ Use correct type
       });
 
       eventService.emitDashboardUpdate({
@@ -5870,6 +5888,7 @@ export const markBillAsFree = async (
           invoiceNumber: existingBill.invoiceNumber,
           paymentId: payment[0]._id,
           isFree: true,
+          paymentType: correctPaymentType, // ✅ Return correct type
         },
       });
     } catch (error) {

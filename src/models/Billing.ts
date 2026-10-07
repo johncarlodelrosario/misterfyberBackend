@@ -132,4 +132,11 @@ BillingSchema.index({ "billingPeriod.start": 1 });
 BillingSchema.index({ status: 1 });
 BillingSchema.index({ createdAt: -1 });
 
-export default mongoose.model<IBilling>("Billing", BillingSchema);
+// ==================== IDEMPOTENT MODEL REGISTRATION ====================
+// ✅ Safe kahit i-import ng maraming beses
+// ✅ Prevent "OverwriteModelError" at "MissingSchemaError"
+const Billing =
+  (mongoose.models.Billing as mongoose.Model<IBilling>) ||
+  mongoose.model<IBilling>("Billing", BillingSchema);
+
+export default Billing;

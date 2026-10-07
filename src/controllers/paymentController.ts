@@ -1,4 +1,4 @@
-// backend/src/controllers/paymentController.ts - COMPLETE WITH FIXED FILTERING + INSTANT BUILDING ENRICHMENT
+// backend/src/controllers/paymentController.ts - COMPLETE FIXED - PRO-RATED PAYMENT TYPE CORRECTLY SET
 
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
@@ -26,6 +26,39 @@ interface AuthRequest extends Request {
   body: any;
 }
 
+// ==================== HELPER: DETERMINE CORRECT PAYMENT TYPE ====================
+function determinePaymentType(billing: any, requestedType?: string): string {
+  // If explicit type provided and valid, use it
+  if (
+    requestedType &&
+    ["subscription", "installation", "pro_rated", "others"].includes(
+      requestedType,
+    )
+  ) {
+    return requestedType;
+  }
+
+  if (!billing) return "subscription";
+
+  // Installation bill takes precedence
+  if (billing.isInstallationBill === true) {
+    return "installation";
+  }
+
+  // Installation fee included
+  if (billing.installationFee && billing.installationFee > 0) {
+    return "installation";
+  }
+
+  // Pro-rated bill
+  if (billing.isProRated === true) {
+    return "pro_rated";
+  }
+
+  // Default to subscription
+  return "subscription";
+}
+
 // Helper function to get populated customer data
 async function getPopulatedPayment(paymentId: string) {
   if (!mongoose.Types.ObjectId.isValid(paymentId)) {
@@ -46,6 +79,16 @@ async function getPopulatedPayment(paymentId: string) {
   if (!payment) return null;
 
   const result: any = { ...payment };
+
+  // Auto-correct paymentType based on billing
+  if (payment.billingId && typeof payment.billingId === "object") {
+    const billing = payment.billingId as any;
+    if (billing.isInstallationBill === true) {
+      result.paymentType = "installation";
+    } else if (billing.isProRated === true) {
+      result.paymentType = "pro_rated";
+    }
+  }
 
   if (payment.applicationId) {
     const application = await Application.findOne({
@@ -156,6 +199,9 @@ export const createPayment = async (
       return res.status(404).json({ message: "Billing record not found" });
     }
 
+    // ==================== FIX: DETERMINE CORRECT PAYMENT TYPE ====================
+    const correctPaymentType = determinePaymentType(billing, paymentType);
+
     let customerNameFinal = customerName || "";
     let customerEmailFinal = customerEmail || "";
     let customerPhoneFinal = customerPhone || "";
@@ -205,9 +251,7 @@ export const createPayment = async (
       userId,
       amount: Number(amount),
       paymentMethod: paymentMethod || "manual",
-      paymentType:
-        paymentType ||
-        (billing.isInstallationBill ? "installation" : "subscription"),
+      paymentType: correctPaymentType, // ✅ FIXED
       status: isFree ? "completed" : "pending",
       referenceNumber: referenceNumber || `MANUAL-${Date.now()}`,
       billingId,
@@ -285,6 +329,17 @@ export const getPayments = async (
     const enrichedPayments = await Promise.all(
       payments.map(async (payment) => {
         const enriched: any = { ...payment };
+
+        // Auto-correct paymentType based on billing
+        if (payment.billingId && typeof payment.billingId === "object") {
+          const billing = payment.billingId as any;
+          if (billing.isInstallationBill === true) {
+            enriched.paymentType = "installation";
+          } else if (billing.isProRated === true) {
+            enriched.paymentType = "pro_rated";
+          }
+        }
+
         if (payment.applicationId) {
           const application = await Application.findOne({
             applicationId: payment.applicationId,
@@ -485,6 +540,22 @@ export const getPaymentStats = async (
       },
     ]);
 
+    const proRatedRevenue = await Payment.aggregate([
+      {
+        $match: {
+          status: "completed",
+          paymentType: "pro_rated",
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: "$amount" },
+          count: { $sum: 1 },
+        },
+      },
+    ]);
+
     const installationFeeRevenue = await Payment.aggregate([
       {
         $match: {
@@ -538,6 +609,7 @@ export const getPaymentStats = async (
         daily: stats,
         totals: totalRevenue[0] || { total: 0, count: 0 },
         subscriptionRevenue: subscriptionRevenue[0] || { total: 0, count: 0 },
+        proRatedRevenue: proRatedRevenue[0] || { total: 0, count: 0 },
         installationFees: installationFeeRevenue[0] || { total: 0, count: 0 },
         thisMonth: thisMonthRevenue[0] || { total: 0, count: 0 },
         pending: pendingPayments[0] || { total: 0, count: 0 },
@@ -611,10 +683,6 @@ export const confirmPayment = async (
       return res.status(400).json({ message: "Payment already confirmed" });
     }
 
-    if (paymentType) {
-      payment.paymentType = paymentType;
-    }
-
     let readableApplicationId = "";
     let customerEmail = "";
     let customerName = "";
@@ -659,6 +727,30 @@ export const confirmPayment = async (
       }
     }
 
+    // ==================== FIX: AUTO-CORRECT PAYMENT TYPE ====================
+    const billing = await Billing.findById(payment.billingId).session(session);
+    if (billing) {
+      // Determine the correct payment type
+      if (paymentType) {
+        // Explicit override provided
+        payment.paymentType = paymentType;
+      } else if (billing.isInstallationBill === true) {
+        payment.paymentType = "installation";
+      } else if (billing.installationFee && billing.installationFee > 0) {
+        payment.paymentType = "installation";
+      } else if (billing.isProRated === true) {
+        payment.paymentType = "pro_rated";
+      } else if (
+        payment.paymentType !== "subscription" &&
+        payment.paymentType !== "installation" &&
+        payment.paymentType !== "pro_rated" &&
+        payment.paymentType !== "others"
+      ) {
+        payment.paymentType = "subscription";
+      }
+      // ✅ END FIX
+    }
+
     payment.status = "completed";
     payment.paidAt = new Date();
     payment.paymentDetails = {
@@ -678,7 +770,6 @@ export const confirmPayment = async (
     };
     await payment.save({ session });
 
-    const billing = await Billing.findById(payment.billingId).session(session);
     if (billing) {
       billing.status = "paid";
       billing.paymentId = payment._id;
@@ -763,6 +854,7 @@ export const confirmPayment = async (
         console.log(`   To: ${customerEmail}`);
         console.log(`   Payment ID: ${payment._id}`);
         console.log(`   Amount: ₱${payment.amount}`);
+        console.log(`   Payment Type: ${payment.paymentType}`);
         console.log(`   Location: ${location || "NONE"}`);
         console.log(`========================================`);
 
@@ -1051,6 +1143,19 @@ export const getPendingPayments = async (
     const enrichedPayments = payments.map((payment) => {
       const enriched: any = { ...payment };
 
+      // ==================== FIX: AUTO-CORRECT PAYMENT TYPE ====================
+      if (payment.billingId && typeof payment.billingId === "object") {
+        const billing = payment.billingId as any;
+        if (billing.isInstallationBill === true) {
+          enriched.paymentType = "installation";
+        } else if (billing.installationFee && billing.installationFee > 0) {
+          enriched.paymentType = "installation";
+        } else if (billing.isProRated === true) {
+          enriched.paymentType = "pro_rated";
+        }
+      }
+      // ✅ END FIX
+
       if (payment.applicationId && applicationMap.has(payment.applicationId)) {
         const app = applicationMap.get(payment.applicationId);
         enriched.application = {
@@ -1283,7 +1388,6 @@ export const getAllPaymentsAdmin = async (
     ]);
 
     // ==================== EFFICIENT BATCH ENRICHMENT ====================
-    // Collect unique application IDs and user IDs for batch lookups
     const appIdsSet = new Set<string>();
     const userIdsSet = new Set<string>();
 
@@ -1298,7 +1402,6 @@ export const getAllPaymentsAdmin = async (
       if (uid) userIdsSet.add(uid.toString());
     }
 
-    // Batch fetch applications with building info
     const appMap = new Map<string, any>();
     if (appIdsSet.size > 0) {
       const apps = await Application.find({
@@ -1314,6 +1417,19 @@ export const getAllPaymentsAdmin = async (
     // Enrich each payment
     const enrichedPayments = payments.map((payment) => {
       const enriched: any = { ...payment };
+
+      // ==================== FIX: AUTO-CORRECT PAYMENT TYPE ====================
+      if (payment.billingId && typeof payment.billingId === "object") {
+        const billing = payment.billingId as any;
+        if (billing.isInstallationBill === true) {
+          enriched.paymentType = "installation";
+        } else if (billing.installationFee && billing.installationFee > 0) {
+          enriched.paymentType = "installation";
+        } else if (billing.isProRated === true) {
+          enriched.paymentType = "pro_rated";
+        }
+      }
+      // ✅ END FIX
 
       // Attach application
       if (payment.applicationId && appMap.has(payment.applicationId)) {
@@ -1343,7 +1459,6 @@ export const getAllPaymentsAdmin = async (
           enriched.customerPhone = app.phoneNumber || "";
         }
 
-        // TOP-LEVEL propagation for instant frontend matching
         if ((app as any).buildingId) {
           enriched.buildingId = (app as any).buildingId;
         }
@@ -1385,7 +1500,6 @@ export const getAllPaymentsAdmin = async (
         enriched.customerName = payment.applicationId || "Unknown Customer";
       }
 
-      // Top-level customerName/email/phone for legacy consumers
       if (!enriched.customerName || enriched.customerName === "") {
         enriched.customerName = payment.customerName || "Unknown Customer";
       }
@@ -1424,6 +1538,14 @@ export const getAllPaymentsAdmin = async (
       ],
     };
 
+    const proRatedQuery = {
+      $and: [
+        ...(statsQuery.$and || [statsQuery]),
+        { status: "completed" },
+        { paymentType: "pro_rated" },
+      ],
+    };
+
     const installationQuery = {
       $and: [
         ...(statsQuery.$and || [statsQuery]),
@@ -1448,6 +1570,7 @@ export const getAllPaymentsAdmin = async (
       totalStats,
       monthlyStats,
       subscriptionStats,
+      proRatedStats,
       installationStats,
       pendingStats,
     ] = await Promise.all([
@@ -1465,6 +1588,12 @@ export const getAllPaymentsAdmin = async (
       ]),
       Payment.aggregate([
         { $match: subscriptionQuery },
+        {
+          $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } },
+        },
+      ]),
+      Payment.aggregate([
+        { $match: proRatedQuery },
         {
           $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } },
         },
@@ -1496,6 +1625,8 @@ export const getAllPaymentsAdmin = async (
         monthlyCount: monthlyStats[0]?.count || 0,
         subscription: subscriptionStats[0]?.total || 0,
         subscriptionCount: subscriptionStats[0]?.count || 0,
+        proRated: proRatedStats[0]?.total || 0,
+        proRatedCount: proRatedStats[0]?.count || 0,
         installationFees: installationStats[0]?.total || 0,
         installationFeeCount: installationStats[0]?.count || 0,
         pending: pendingStats[0]?.total || 0,
@@ -1528,7 +1659,7 @@ export const rejectPayment = async (
       .populate("userId", "firstName lastName email")
       .populate(
         "billingId",
-        "invoiceNumber total isInstallationBill installationFee",
+        "invoiceNumber total isInstallationBill installationFee isProRated",
       )
       .lean();
 
@@ -1870,6 +2001,102 @@ export const bulkDeleteCustomerPayments = async (
   }
 };
 
+// ==================== ONE-TIME MIGRATION: FIX PRO-RATED PAYMENT TYPES ====================
+// @desc    Fix all misclassified pro-rated payments in database
+// @route   POST /api/payments/admin/fix-pro-rated-types
+// @access  Private/Admin (super_admin only)
+export const fixProRatedPaymentTypes = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    if (req.user.role !== "super_admin") {
+      return res.status(403).json({
+        success: false,
+        message: "Only super_admin can run this migration",
+      });
+    }
+
+    console.log("🔧 Starting pro-rated payment type migration...");
+
+    // Find all completed payments with billingId populated
+    const payments = await Payment.find({
+      billingId: { $exists: true, $ne: null },
+    })
+      .populate("billingId", "isProRated isInstallationBill installationFee")
+      .lean();
+
+    let fixedToProRated = 0;
+    let fixedToInstallation = 0;
+    let fixedToSubscription = 0;
+    const details: any[] = [];
+
+    for (const payment of payments) {
+      const billing = payment.billingId as any;
+      if (!billing) continue;
+
+      let correctType = payment.paymentType;
+
+      if (billing.isInstallationBill === true) {
+        correctType = "installation";
+      } else if (billing.installationFee && billing.installationFee > 0) {
+        correctType = "installation";
+      } else if (billing.isProRated === true) {
+        correctType = "pro_rated";
+      } else if (
+        payment.paymentType !== "subscription" &&
+        payment.paymentType !== "installation" &&
+        payment.paymentType !== "pro_rated" &&
+        payment.paymentType !== "others"
+      ) {
+        correctType = "subscription";
+      }
+
+      if (correctType !== payment.paymentType) {
+        await Payment.updateOne(
+          { _id: payment._id },
+          { $set: { paymentType: correctType } },
+        );
+
+        if (correctType === "pro_rated") fixedToProRated++;
+        else if (correctType === "installation") fixedToInstallation++;
+        else if (correctType === "subscription") fixedToSubscription++;
+
+        details.push({
+          paymentId: payment._id,
+          referenceNumber: payment.referenceNumber,
+          oldType: payment.paymentType,
+          newType: correctType,
+        });
+
+        console.log(
+          `✅ Fixed ${payment.referenceNumber}: ${payment.paymentType} → ${correctType}`,
+        );
+      }
+    }
+
+    console.log(
+      `\n🎉 Migration complete: ${fixedToProRated} → pro_rated, ${fixedToInstallation} → installation, ${fixedToSubscription} → subscription`,
+    );
+
+    res.status(200).json({
+      success: true,
+      message: `Fixed ${fixedToProRated + fixedToInstallation + fixedToSubscription} payments`,
+      data: {
+        totalProcessed: payments.length,
+        fixedToProRated,
+        fixedToInstallation,
+        fixedToSubscription,
+        details,
+      },
+    });
+  } catch (error) {
+    console.error("Error in fixProRatedPaymentTypes:", error);
+    next(error);
+  }
+};
+
 export default {
   createPayment,
   getPayments,
@@ -1886,4 +2113,5 @@ export default {
   getInstallationPaymentSummary,
   deletePayment,
   bulkDeleteCustomerPayments,
+  fixProRatedPaymentTypes,
 };
