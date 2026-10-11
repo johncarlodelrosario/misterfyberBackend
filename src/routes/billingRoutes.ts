@@ -1,4 +1,4 @@
-// backend/src/routes/billingRoutes.ts - COMPLETE FIXED VERSION WITH PRICE EDIT AND DELETE BILL ROUTES
+// backend/src/routes/billingRoutes.ts - COMPLETE WITH DISCONNECT/RECONNECT
 
 import express from "express";
 import { optionalAuth, adminMiddleware } from "../middleware/auth";

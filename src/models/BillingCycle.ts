@@ -1,4 +1,4 @@
-// backend/src/models/BillingCycle.ts
+// backend/src/models/BillingCycle.ts - WITH disconnected STATUS
 import mongoose, { Document, Schema } from "mongoose";
 
 export interface IBillingCycle extends Document {
@@ -7,7 +7,13 @@ export interface IBillingCycle extends Document {
   billingStartDate: Date;
   billingEndDate: Date;
   nextBillingDate: Date;
-  status: "active" | "paused" | "cancelled" | "pending_activation";
+  // ✅ ADDED: "disconnected"
+  status:
+    | "active"
+    | "paused"
+    | "cancelled"
+    | "pending_activation"
+    | "disconnected";
   monthlyRate: number;
   currentProRatedAmount: number;
   proRatedPaid: boolean;
@@ -27,6 +33,9 @@ export interface IBillingCycle extends Document {
   pauseReason?: string;
   pauseUntil?: Date;
   disconnectReason?: string;
+  // ✅ NEW FIELDS
+  disconnectedAt?: Date;
+  reconnectedAt?: Date;
   isAfterCutoff?: boolean;
   cutoffDayUsed?: number;
   applicationId?: string;
@@ -50,9 +59,16 @@ const BillingCycleSchema = new Schema<IBillingCycle>(
     billingStartDate: { type: Date, required: true },
     billingEndDate: { type: Date, required: true },
     nextBillingDate: { type: Date, required: true },
+    // ✅ ADDED "disconnected" sa enum
     status: {
       type: String,
-      enum: ["active", "paused", "cancelled", "pending_activation"],
+      enum: [
+        "active",
+        "paused",
+        "cancelled",
+        "pending_activation",
+        "disconnected",
+      ],
       default: "pending_activation",
     },
     monthlyRate: { type: Number, required: true },
@@ -76,6 +92,9 @@ const BillingCycleSchema = new Schema<IBillingCycle>(
     pauseReason: { type: String },
     pauseUntil: { type: Date },
     disconnectReason: { type: String },
+    // ✅ NEW FIELDS
+    disconnectedAt: { type: Date },
+    reconnectedAt: { type: Date },
     isAfterCutoff: { type: Boolean, default: false },
     cutoffDayUsed: { type: Number },
     applicationId: { type: String, ref: "Application", index: true },
@@ -96,7 +115,7 @@ const BillingCycleSchema = new Schema<IBillingCycle>(
   { timestamps: true },
 );
 
-// INDEXES - Add these for performance
+// INDEXES
 BillingCycleSchema.index({ userId: 1 });
 BillingCycleSchema.index({ status: 1 });
 BillingCycleSchema.index({ applicationId: 1 });
@@ -105,8 +124,6 @@ BillingCycleSchema.index({ "pendingPlanChange.status": 1 });
 BillingCycleSchema.index({ createdAt: -1 });
 
 // ==================== IDEMPOTENT MODEL REGISTRATION ====================
-// ✅ Safe kahit i-import ng maraming beses
-// ✅ Prevent "OverwriteModelError" at "MissingSchemaError"
 const BillingCycle =
   (mongoose.models.BillingCycle as mongoose.Model<IBillingCycle>) ||
   mongoose.model<IBillingCycle>("BillingCycle", BillingCycleSchema);

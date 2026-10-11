@@ -1,4 +1,4 @@
-// models/application.model.ts - COMPLETE WITH INDEXES - REMOVED birthDate AND gender
+// models/application.model.ts - COMPLETE WITH disconnected STATUS
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IApplication extends Document {
@@ -19,10 +19,12 @@ export interface IApplication extends Document {
   tower?: string;
   macAddress?: string;
   planId: mongoose.Types.ObjectId;
-  status: "pending" | "approved" | "rejected" | "suspended";
+  // ✅ ADDED: "disconnected"
+  status: "pending" | "approved" | "rejected" | "suspended" | "disconnected";
   adminNotes?: string;
   billingStarted: boolean;
   billingCycleId?: mongoose.Types.ObjectId;
+  // ✅ ADDED: "disconnected"
   serviceStatus: "pending" | "active" | "suspended" | "disconnected";
   installationFee: number;
   installationFeePaid: boolean;
@@ -31,6 +33,10 @@ export interface IApplication extends Document {
   reviewedBy?: mongoose.Types.ObjectId;
   reviewedAt?: Date;
   approvalEmailSent?: boolean;
+  // ✅ NEW FIELDS for disconnect/reconnect
+  disconnectedAt?: Date;
+  disconnectReason?: string;
+  reconnectedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -159,9 +165,10 @@ const ApplicationSchema: Schema = new Schema(
       ref: "Plan",
       required: true,
     },
+    // ✅ ADDED "disconnected" sa enum
     status: {
       type: String,
-      enum: ["pending", "approved", "rejected", "suspended"],
+      enum: ["pending", "approved", "rejected", "suspended", "disconnected"],
       default: "pending",
     },
     adminNotes: {
@@ -175,6 +182,7 @@ const ApplicationSchema: Schema = new Schema(
       type: Schema.Types.ObjectId,
       ref: "BillingCycle",
     },
+    // ✅ ADDED "disconnected" sa enum
     serviceStatus: {
       type: String,
       enum: ["pending", "active", "suspended", "disconnected"],
@@ -206,6 +214,16 @@ const ApplicationSchema: Schema = new Schema(
     approvalEmailSent: {
       type: Boolean,
       default: false,
+    },
+    // ✅ NEW FIELDS
+    disconnectedAt: {
+      type: Date,
+    },
+    disconnectReason: {
+      type: String,
+    },
+    reconnectedAt: {
+      type: Date,
     },
   },
   {
@@ -261,10 +279,8 @@ ApplicationSchema.pre("validate", function (next) {
 });
 
 // ============================================================
-// ✅ CRITICAL INDEXES - PARA SUPER FAST!
+// ✅ CRITICAL INDEXES
 // ============================================================
-
-// ✅ Single Field Indexes
 ApplicationSchema.index({ applicationId: 1 }, { unique: true });
 ApplicationSchema.index({ status: 1 });
 ApplicationSchema.index({ createdAt: -1 });
@@ -275,13 +291,12 @@ ApplicationSchema.index({ planId: 1 });
 ApplicationSchema.index({ registeredUserId: 1 });
 ApplicationSchema.index({ billingStarted: 1 });
 ApplicationSchema.index({ macAddress: 1 });
+ApplicationSchema.index({ serviceStatus: 1 });
 
-// ✅ Compound Indexes - PARA SA FILTERING + SORTING! (PINAKAIMPORTANTE!)
-ApplicationSchema.index({ status: 1, createdAt: -1 }); // 👈 ETO ANG SUSI!
+ApplicationSchema.index({ status: 1, createdAt: -1 });
 ApplicationSchema.index({ buildingId: 1, status: 1 });
 ApplicationSchema.index({ status: 1, billingStarted: 1 });
 
-// ✅ Text Index - PARA SA SEARCH!
 ApplicationSchema.index(
   {
     applicationId: "text",

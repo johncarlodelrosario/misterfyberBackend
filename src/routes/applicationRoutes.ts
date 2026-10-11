@@ -1,4 +1,4 @@
-// routes/applicationRoutes.ts - COMPLETE FINAL FIXED - WITH PRODUCTION SUPPORT
+// routes/applicationRoutes.ts - COMPLETE FINAL FIXED - WITH PRODUCTION SUPPORT + DISCONNECTED STATUS
 import express, { Router, Request, Response, NextFunction } from "express";
 import { body } from "express-validator";
 import {
@@ -501,21 +501,28 @@ router.patch("/:id/tower", async (req: Request, res: Response) => {
 });
 
 // ============================================================
-// ✅ UPDATE STATUS
+// ✅ UPDATE STATUS - FIXED WITH disconnected
 // ============================================================
 router.patch("/:id/status", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
 
+    // ✅ ADDED "disconnected"
     if (
       !status ||
-      !["pending", "approved", "rejected", "suspended"].includes(status)
+      ![
+        "pending",
+        "approved",
+        "rejected",
+        "suspended",
+        "disconnected",
+      ].includes(status)
     ) {
       return res.status(400).json({
         success: false,
         message:
-          "Invalid status. Must be: pending, approved, rejected, suspended",
+          "Invalid status. Must be: pending, approved, rejected, suspended, disconnected",
       });
     }
 

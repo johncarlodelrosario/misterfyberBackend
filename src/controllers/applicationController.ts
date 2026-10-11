@@ -1,4 +1,4 @@
-// controllers/applicationController.ts - COMPLETE OPTIMIZED WITH AGGREGATION + NAME SORT
+// controllers/applicationController.ts - COMPLETE FIXED - ALLOW DUPLICATE EMAIL/PHONE + DISCONNECTED STATUS
 import { Request, Response, NextFunction } from "express";
 import Application from "../models/Application";
 import Plan from "../models/Plan";
@@ -190,7 +190,7 @@ export const getAllApplications = async (
     const search = getStringQuery(req.query.search);
     const buildingId = getStringQuery(req.query.buildingId);
     const forceRefresh = getStringQuery(req.query.forceRefresh);
-    const nameSort = getStringQuery(req.query.nameSort); // ✅ NEW
+    const nameSort = getStringQuery(req.query.nameSort);
 
     const pageNum = parseInt(page) || 1;
     const limitNum = parseInt(limit) || 20;
@@ -200,15 +200,12 @@ export const getAllApplications = async (
       `🔄 getAllApplications - page: ${pageNum}, limit: ${limitNum}, status: ${status || "all"}, search: ${search || "none"}, buildingId: ${buildingId || "none"}, nameSort: ${nameSort || "none"}, forceRefresh: ${forceRefresh || "false"}`,
     );
 
-    // ✅ BUILD FILTER PROPERLY
     const filter: any = {};
 
-    // Status filter
     if (status && status !== "all" && status !== "") {
       filter.status = status;
     }
 
-    // Building filter - convert to ObjectId properly
     if (buildingId && buildingId !== "" && buildingId !== "all") {
       if (mongoose.Types.ObjectId.isValid(buildingId)) {
         filter.buildingId = new mongoose.Types.ObjectId(buildingId);
@@ -218,7 +215,6 @@ export const getAllApplications = async (
       }
     }
 
-    // Search filter
     if (search && search.trim() !== "") {
       const searchTerm = search.trim();
       filter.$or = [
@@ -233,14 +229,9 @@ export const getAllApplications = async (
 
     console.log("🔍 Final filter:", JSON.stringify(filter, null, 2));
 
-    // ✅ STEP 1: Get total count separately (fast, no base64 data)
     const total = await Application.countDocuments(filter);
     console.log(`✅ Total count: ${total}`);
 
-    // ✅ STEP 2: Determine sort option based on nameSort param
-    // Default: newest first (createdAt: -1)
-    // asc: firstName A→Z, then lastName A→Z
-    // desc: firstName Z→A, then lastName Z→A
     let sortOption: any = { createdAt: -1 };
     if (nameSort === "asc") {
       sortOption = { firstName: 1, lastName: 1 };
@@ -249,7 +240,6 @@ export const getAllApplications = async (
     }
     console.log("📊 Sort option:", JSON.stringify(sortOption));
 
-    // ✅ STEP 3: Get paginated data - EXPLICITLY EXCLUDE base64 idImage
     const applications = await Application.find(filter)
       .select("-idImage")
       .populate("planId", "name price speed")
@@ -263,7 +253,6 @@ export const getAllApplications = async (
       `✅ Found ${applications.length} applications, Total: ${total} in ${elapsed}ms`,
     );
 
-    // ✅ STEP 4: THE REAL FIX - Use aggregation with $project + $regexMatch
     const appIds = applications.map((app: any) => app._id);
 
     let idImageMap = new Map<string, { hasImage: boolean; filename: string }>();
@@ -338,7 +327,6 @@ export const getAllApplications = async (
       });
     }
 
-    // ✅ STEP 5: Format data
     const formattedData = applications.map((app: any) => {
       const appIdStr = app._id.toString();
       const imgInfo = idImageMap.get(appIdStr) || {
@@ -399,6 +387,10 @@ export const getAllApplications = async (
         idImage: imgInfo.filename,
         idImageUrl: idImageUrl,
         hasIdImage: imgInfo.hasImage,
+        // ✅ Include disconnect fields
+        disconnectedAt: app.disconnectedAt || null,
+        disconnectReason: app.disconnectReason || null,
+        reconnectedAt: app.reconnectedAt || null,
       };
     });
 
@@ -618,18 +610,21 @@ export const getApplicationDashboardData = async (
 
     console.log("🔄 Fetching fresh application dashboard data...");
 
+    // ✅ ADDED disconnectedApplications
     const [
       totalApplications,
       pendingApplications,
       approvedApplications,
       rejectedApplications,
       suspendedApplications,
+      disconnectedApplications,
     ] = await Promise.all([
       Application.estimatedDocumentCount(),
       Application.countDocuments({ status: "pending" }),
       Application.countDocuments({ status: "approved" }),
       Application.countDocuments({ status: "rejected" }),
       Application.countDocuments({ status: "suspended" }),
+      Application.countDocuments({ status: "disconnected" }),
     ]);
 
     const recentApplications = await Application.find()
@@ -640,12 +635,14 @@ export const getApplicationDashboardData = async (
       .limit(10)
       .lean();
 
+    // ✅ ADDED disconnected sa stats
     const stats = {
       totalApplications,
       pendingApplications,
       approvedApplications,
       rejectedApplications,
       suspendedApplications,
+      disconnectedApplications,
       approvalRate:
         totalApplications > 0
           ? Math.round((approvedApplications / totalApplications) * 100)
@@ -658,11 +655,16 @@ export const getApplicationDashboardData = async (
         totalApplications > 0
           ? Math.round((rejectedApplications / totalApplications) * 100)
           : 0,
+      disconnectedRate:
+        totalApplications > 0
+          ? Math.round((disconnectedApplications / totalApplications) * 100)
+          : 0,
       statusDistribution: [
         { _id: "pending", count: pendingApplications },
         { _id: "approved", count: approvedApplications },
         { _id: "rejected", count: rejectedApplications },
         { _id: "suspended", count: suspendedApplications },
+        { _id: "disconnected", count: disconnectedApplications },
       ],
     };
 
@@ -701,12 +703,14 @@ export const getApplicationDashboardData = async (
         approvedApplications: 0,
         rejectedApplications: 0,
         suspendedApplications: 0,
+        disconnectedApplications: 0,
         totalUsers: 0,
         totalBuildings: 0,
         totalPlans: 0,
         approvalRate: 0,
         pendingRate: 0,
         rejectedRate: 0,
+        disconnectedRate: 0,
         statusDistribution: [],
       },
       recentApplications: [],
@@ -738,23 +742,30 @@ export const getApplicationStats = async (
       return res.status(200).json({ success: true, data: cachedStats });
     }
 
-    const [total, pending, approved, rejected, suspended] = await Promise.all([
-      Application.estimatedDocumentCount(),
-      Application.countDocuments({ status: "pending" }),
-      Application.countDocuments({ status: "approved" }),
-      Application.countDocuments({ status: "rejected" }),
-      Application.countDocuments({ status: "suspended" }),
-    ]);
+    // ✅ ADDED disconnected
+    const [total, pending, approved, rejected, suspended, disconnected] =
+      await Promise.all([
+        Application.estimatedDocumentCount(),
+        Application.countDocuments({ status: "pending" }),
+        Application.countDocuments({ status: "approved" }),
+        Application.countDocuments({ status: "rejected" }),
+        Application.countDocuments({ status: "suspended" }),
+        Application.countDocuments({ status: "disconnected" }),
+      ]);
 
+    // ✅ ADDED disconnected sa stats
     const stats = {
       totalApplications: total,
       pending,
       approved,
       rejected,
       suspended,
+      disconnected,
       approvalRate: total > 0 ? Math.round((approved / total) * 100) : 0,
       pendingRate: total > 0 ? Math.round((pending / total) * 100) : 0,
       rejectedRate: total > 0 ? Math.round((rejected / total) * 100) : 0,
+      disconnectedRate:
+        total > 0 ? Math.round((disconnected / total) * 100) : 0,
     };
 
     appCache.set(cacheKey, stats, 60);
@@ -767,7 +778,7 @@ export const getApplicationStats = async (
 };
 
 // ============================================================
-// ✅ SUBMIT APPLICATION - COMPLETE FIXED WITH PROPER 409
+// ✅ SUBMIT APPLICATION - FIXED: ALLOW DUPLICATE EMAIL/PHONE
 // ============================================================
 export const submitApplication = async (
   req: AuthRequest,
@@ -827,89 +838,11 @@ export const submitApplication = async (
     const normalizedEmail = email?.trim().toLowerCase();
     const normalizedPhoneNumber = phoneNumber?.trim();
 
-    const existingUser = await User.findOne({
-      email: normalizedEmail,
-    })
-      .session(session)
-      .lean();
-
-    if (existingUser) {
-      await session.abortTransaction();
-      session.endSession();
-      return res.status(409).json({
-        success: false,
-        message:
-          "This email address is already registered as a user. Please login or use a different email.",
-        alreadyRegistered: true,
-        email: normalizedEmail,
-      });
-    }
-
-    const existingApplicationByEmail = await Application.findOne({
-      email: normalizedEmail,
-    })
-      .session(session)
-      .lean();
-
-    if (existingApplicationByEmail) {
-      let message = "";
-      const status = existingApplicationByEmail.status;
-
-      switch (status) {
-        case "pending":
-          message =
-            "You already have a pending application. Please wait for approval before submitting another application.";
-          break;
-        case "approved":
-          message =
-            "You already have an approved application. Please create your account using your Application ID.";
-          break;
-        case "rejected":
-          message =
-            "Your previous application was rejected. Please contact support for assistance.";
-          break;
-        case "suspended":
-          message =
-            "Your account is suspended. Please contact support for assistance.";
-          break;
-        default:
-          message =
-            "You already have an existing application. Please check your status.";
-      }
-
-      await session.abortTransaction();
-      session.endSession();
-      return res.status(409).json({
-        success: false,
-        message: message,
-        applicationId: existingApplicationByEmail.applicationId,
-        status: existingApplicationByEmail.status,
-      });
-    }
-
-    const existingApplicationByPhone = await Application.findOne({
-      phoneNumber: normalizedPhoneNumber,
-    })
-      .session(session)
-      .lean();
-
-    if (existingApplicationByPhone) {
-      await session.abortTransaction();
-      session.endSession();
-      return res.status(409).json({
-        success: false,
-        message:
-          "This phone number is already associated with an existing application. Please use a different phone number.",
-        applicationId: existingApplicationByPhone.applicationId,
-        status: existingApplicationByPhone.status,
-      });
-    }
-
     const existingActiveServiceQuery: any = {
       buildingId: new mongoose.Types.ObjectId(buildingId),
       floor: floor?.toString().trim(),
       unitNumber: unitNumber?.toString().trim(),
-      status: { $in: ["approved", "pending"] },
+      status: { $in: ["approved", "pending", "disconnected"] },
     };
 
     if (tower && tower.toString().trim()) {
@@ -1113,7 +1046,7 @@ export const checkApplicationStatus = async (
     const { applicationId } = req.params;
     const application = await Application.findOne({ applicationId })
       .select(
-        "applicationId status idImage tower floor unitNumber notes createdAt adminNotes billingStarted billingCycleId registeredUserId firstName lastName middleName email phoneNumber idType idNumber macAddress buildingId buildingName",
+        "applicationId status idImage tower floor unitNumber notes createdAt adminNotes billingStarted billingCycleId registeredUserId firstName lastName middleName email phoneNumber idType idNumber macAddress buildingId buildingName serviceStatus disconnectedAt disconnectReason",
       )
       .populate("planId", "name price speed")
       .populate(
@@ -1154,6 +1087,10 @@ export const checkApplicationStatus = async (
         adminNotes: application.adminNotes,
         billingStarted: application.billingStarted || false,
         hasAccount: !!application.registeredUserId,
+        // ✅ Include disconnect info
+        serviceStatus: application.serviceStatus || "pending",
+        disconnectedAt: (application as any).disconnectedAt || null,
+        disconnectReason: (application as any).disconnectReason || null,
       },
     });
   } catch (error) {
@@ -1639,15 +1576,22 @@ export const updateApplication = async (
       updateFields.macAddress = updateData.macAddress?.trim() || "";
     }
 
+    // ✅ FIXED: Add "disconnected" to valid statuses
     if (updateData.status !== undefined) {
-      const validStatuses = ["pending", "approved", "rejected", "suspended"];
+      const validStatuses = [
+        "pending",
+        "approved",
+        "rejected",
+        "suspended",
+        "disconnected",
+      ];
       if (!validStatuses.includes(updateData.status)) {
         await session.abortTransaction();
         session.endSession();
         return res.status(400).json({
           success: false,
           message:
-            "Invalid status. Must be: pending, approved, rejected, suspended",
+            "Invalid status. Must be: pending, approved, rejected, suspended, disconnected",
         });
       }
       updateFields.status = updateData.status;
@@ -1705,44 +1649,6 @@ export const updateApplication = async (
         success: false,
         message: "No fields to update",
       });
-    }
-
-    if (
-      updateFields.email &&
-      updateFields.email !== existingApplication.email
-    ) {
-      const existingEmail = await Application.findOne({
-        email: updateFields.email,
-        _id: { $ne: id },
-      }).session(session);
-
-      if (existingEmail) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(400).json({
-          success: false,
-          message: "Email is already in use by another application",
-        });
-      }
-    }
-
-    if (
-      updateFields.phoneNumber &&
-      updateFields.phoneNumber !== existingApplication.phoneNumber
-    ) {
-      const existingPhone = await Application.findOne({
-        phoneNumber: updateFields.phoneNumber,
-        _id: { $ne: id },
-      }).session(session);
-
-      if (existingPhone) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(400).json({
-          success: false,
-          message: "Phone number is already in use by another application",
-        });
-      }
     }
 
     const updatedApplication = await Application.findByIdAndUpdate(
@@ -1883,15 +1789,22 @@ export const patchApplication = async (
       updateFields.macAddress = updateData.macAddress?.trim() || "";
     }
 
+    // ✅ FIXED: Add "disconnected" to valid statuses
     if (updateData.status !== undefined) {
-      const validStatuses = ["pending", "approved", "rejected", "suspended"];
+      const validStatuses = [
+        "pending",
+        "approved",
+        "rejected",
+        "suspended",
+        "disconnected",
+      ];
       if (!validStatuses.includes(updateData.status)) {
         await session.abortTransaction();
         session.endSession();
         return res.status(400).json({
           success: false,
           message:
-            "Invalid status. Must be: pending, approved, rejected, suspended",
+            "Invalid status. Must be: pending, approved, rejected, suspended, disconnected",
         });
       }
       updateFields.status = updateData.status;
@@ -1952,44 +1865,6 @@ export const patchApplication = async (
       "📝 Final update fields:",
       JSON.stringify(updateFields, null, 2),
     );
-
-    if (
-      updateFields.email &&
-      updateFields.email !== existingApplication.email
-    ) {
-      const existingEmail = await Application.findOne({
-        email: updateFields.email,
-        _id: { $ne: id },
-      }).session(session);
-
-      if (existingEmail) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(400).json({
-          success: false,
-          message: "Email is already in use by another application",
-        });
-      }
-    }
-
-    if (
-      updateFields.phoneNumber &&
-      updateFields.phoneNumber !== existingApplication.phoneNumber
-    ) {
-      const existingPhone = await Application.findOne({
-        phoneNumber: updateFields.phoneNumber,
-        _id: { $ne: id },
-      }).session(session);
-
-      if (existingPhone) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(400).json({
-          success: false,
-          message: "Phone number is already in use by another application",
-        });
-      }
-    }
 
     const updatedApplication = await Application.findByIdAndUpdate(
       id,
