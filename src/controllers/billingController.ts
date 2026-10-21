@@ -1,6 +1,12 @@
 // backend/src/controllers/billingController.ts - COMPLETE FIXED
+// ✅ FIX: Approved applications WITHOUT billing now ALWAYS appear in customers list
 // ✅ FIX: Disconnected customers STAY VISIBLE in main billing table (not hidden)
 // ✅ FIX: Application status = "disconnected" (NOT "rejected")
+// ✅ FIX: When a bill is marked PAID or FREE, subscriber receives email with invoice PDF attached
+// ✅ FIX: sendPaidOrFreeInvoiceEmail propagates isFree to emailService + pdfService
+// ✅ FIX: getDashboardData — removed .limit(1000) that dropped approved apps,
+//         applicationMap keyed by BOTH applicationId and _id, buildingObj fallback chain,
+//         dedupe between user & application customers by email/applicationId
 
 import { Request, Response, NextFunction } from "express";
 import Billing from "../models/Billing";
@@ -310,6 +316,153 @@ async function sendInvoiceToApplication(
 
     const location = await getLocationFromEntity(application);
     await emailService.sendInvoice(tempUser, bill, location);
+  }
+}
+
+// ============================================================
+// ✅ HELPER: Send paid/free invoice email with PDF attached.
+// ============================================================
+async function sendPaidOrFreeInvoiceEmail(
+  bill: any,
+  application: any,
+  payment: any,
+  options?: { isFree?: boolean },
+): Promise<boolean> {
+  try {
+    if (!application || !application.email) {
+      console.log(
+        `⚠️ No customer email for bill ${bill?.invoiceNumber} — skipping paid/free email`,
+      );
+      return false;
+    }
+
+    const location = await getLocationFromEntity(application);
+    const free = options?.isFree === true;
+
+    let invoiceDoc: any = null;
+    try {
+      invoiceDoc = await Invoice.findOne({ billingId: bill._id }).lean();
+    } catch (err) {
+      console.error("Error finding invoice for paid/free email:", err);
+    }
+
+    const invoiceData: any = invoiceDoc
+      ? {
+          ...invoiceDoc,
+          buildingName: application.buildingName || "",
+          isFree: free,
+          status: free ? "free" : invoiceDoc.status,
+          paymentMethod: free ? "free" : invoiceDoc.paymentMethod,
+        }
+      : {
+          _id: bill._id,
+          invoiceNumber: bill.invoiceNumber,
+          customerName:
+            `${application.firstName || ""} ${application.lastName || ""}`.trim() ||
+            application.email,
+          customerEmail: application.email,
+          customerAddress: application.buildingName || "N/A",
+          total: bill.total,
+          subtotal: bill.subtotal,
+          discountAmount: bill.discount || 0,
+          taxAmount: bill.tax || 0,
+          taxRate: 0,
+          items: bill.items || [],
+          invoiceType: bill.isInstallationBill
+            ? "installation"
+            : bill.isProRated
+              ? "pro-rated"
+              : "monthly",
+          isInstallationFee: !!bill.isInstallationBill,
+          isProRated: !!bill.isProRated,
+          dueDate: bill.dueDate,
+          paidAt: bill.paidAt || new Date(),
+          referenceNumber: payment?.referenceNumber,
+          location,
+          notes: bill.notes,
+          billingPeriod: bill.billingPeriod,
+          issuedDate: bill.createdAt || new Date(),
+          proRatedDays: bill.proRatedDays || 0,
+          planName: "",
+          buildingName: application.buildingName || "",
+          applicationId: bill.applicationId,
+          isFree: free,
+          status: free ? "free" : "paid",
+          paymentMethod: free ? "free" : "manual",
+        };
+
+    if (free) {
+      invoiceData.total = 0;
+      invoiceData.subtotal = 0;
+      invoiceData.discountAmount = 0;
+      invoiceData.taxAmount = 0;
+      if (Array.isArray(invoiceData.items)) {
+        invoiceData.items = invoiceData.items.map((item: any) => ({
+          ...item,
+          rate: 0,
+          amount: 0,
+        }));
+      }
+    }
+
+    const pdfFileName = `${invoiceData.invoiceNumber}.pdf`;
+    let pdfBuffer: Buffer;
+    try {
+      pdfBuffer = await generateInvoicePDF(invoiceData);
+    } catch (pdfError) {
+      console.error(
+        `❌ Could not generate PDF for ${invoiceData.invoiceNumber}:`,
+        pdfError,
+      );
+      pdfBuffer = Buffer.alloc(0);
+    }
+
+    if (pdfBuffer && pdfBuffer.length > 0) {
+      try {
+        const pdfDir = path.join(__dirname, "../../uploads/invoices");
+        if (!fs.existsSync(pdfDir)) {
+          fs.mkdirSync(pdfDir, { recursive: true });
+        }
+        fs.writeFileSync(path.join(pdfDir, pdfFileName), pdfBuffer);
+        if (invoiceDoc?._id) {
+          await Invoice.findByIdAndUpdate(invoiceDoc._id, {
+            pdfUrl: `/uploads/invoices/${pdfFileName}`,
+            pdfGeneratedAt: new Date(),
+            status: "paid",
+            paidAt: invoiceData.paidAt,
+          });
+        }
+      } catch (saveError) {
+        console.error("Failed to save paid PDF:", saveError);
+      }
+    }
+
+    const emailSent = await emailService.sendPaidInvoiceEmail(
+      invoiceData,
+      pdfBuffer,
+      pdfFileName,
+      payment,
+      location,
+      false,
+      undefined,
+      true,
+      free,
+    );
+
+    const label = free ? "FREE receipt" : "paid receipt";
+    if (emailSent) {
+      console.log(
+        `✅ ${label} email sent to ${application.email} (${invoiceData.invoiceNumber})`,
+      );
+    } else {
+      console.warn(
+        `⚠️ Failed to send ${label} email to ${application.email} (${invoiceData.invoiceNumber})`,
+      );
+    }
+    return emailSent;
+  } catch (error) {
+    console.error("❌ Error sending paid/free invoice email:", error);
+    return false;
   }
 }
 
@@ -796,7 +949,6 @@ async function createProRatedBill(
 // EXPORTED FUNCTIONS
 // ============================================================
 
-// ==================== GET BILLING SETTINGS ====================
 export const getBillingSettings = async (
   req: AuthRequest,
   res: Response,
@@ -830,7 +982,6 @@ export const getBillingSettings = async (
   }
 };
 
-// ==================== UPDATE BILLING SETTINGS ====================
 export const updateBillingSettings = async (
   req: AuthRequest,
   res: Response,
@@ -855,7 +1006,6 @@ export const updateBillingSettings = async (
   }
 };
 
-// ==================== GET BILLING SETTINGS ADMIN ====================
 export const getBillingSettingsAdmin = async (
   req: AuthRequest,
   res: Response,
@@ -891,7 +1041,6 @@ export const getBillingSettingsAdmin = async (
   }
 };
 
-// ==================== UPDATE BILLING SETTINGS ADMIN ====================
 export const updateBillingSettingsAdmin = async (
   req: AuthRequest,
   res: Response,
@@ -957,7 +1106,6 @@ export const updateBillingSettingsAdmin = async (
   }
 };
 
-// ==================== GET BILLING SUMMARY ADMIN ====================
 export const getBillingSummaryAdmin = async (
   req: AuthRequest,
   res: Response,
@@ -1057,7 +1205,6 @@ export const getBillingSummaryAdmin = async (
   }
 };
 
-// ==================== GET ALL BILLING CYCLES ====================
 export const getAllBillingCycles = async (
   req: AuthRequest,
   res: Response,
@@ -1101,7 +1248,6 @@ export const getAllBillingCycles = async (
   }
 };
 
-// ==================== GET ALL BILLS ====================
 export const getAllBills = async (
   req: AuthRequest,
   res: Response,
@@ -1151,7 +1297,6 @@ export const getAllBills = async (
   }
 };
 
-// ==================== GET PENDING PRO-RATED BILLS ====================
 export const getPendingProRatedBills = async (
   req: AuthRequest,
   res: Response,
@@ -1198,7 +1343,6 @@ export const getPendingProRatedBills = async (
   }
 };
 
-// ==================== GET PENDING INSTALLATION BILLS ====================
 export const getPendingInstallationBills = async (
   req: AuthRequest,
   res: Response,
@@ -1245,7 +1389,6 @@ export const getPendingInstallationBills = async (
   }
 };
 
-// ==================== GET PENDING ACTIVATIONS ====================
 export const getPendingActivations = async (
   req: AuthRequest,
   res: Response,
@@ -1293,7 +1436,6 @@ export const getPendingActivations = async (
   }
 };
 
-// ==================== GET APPLICATION CURRENT BILLING ====================
 export const getApplicationCurrentBilling = async (
   req: AuthRequest,
   res: Response,
@@ -1357,7 +1499,6 @@ export const getApplicationCurrentBilling = async (
   }
 };
 
-// ==================== GET APPLICATION BILLING HISTORY ====================
 export const getApplicationBillingHistory = async (
   req: AuthRequest,
   res: Response,
@@ -1405,7 +1546,6 @@ export const getApplicationBillingHistory = async (
   }
 };
 
-// ==================== GET APPLICATION BILLING STATUS ====================
 export const getApplicationBillingStatus = async (
   req: AuthRequest,
   res: Response,
@@ -1467,7 +1607,6 @@ export const getApplicationBillingStatus = async (
   }
 };
 
-// ==================== RECOVER MISSING BILLS ====================
 export const recoverMissingBills = async (
   req: AuthRequest,
   res: Response,
@@ -1601,7 +1740,6 @@ export const recoverMissingBills = async (
   }
 };
 
-// ==================== INITIALIZE BACKDATED BILLING ====================
 export const initializeBackdatedBilling = async (
   req: AuthRequest,
   res: Response,
@@ -2145,7 +2283,6 @@ export const initializeBackdatedBilling = async (
   });
 };
 
-// ==================== GET UNPAID BILLS REPORT ====================
 export const getUnpaidBillsReport = async (
   req: AuthRequest,
   res: Response,
@@ -2269,7 +2406,6 @@ export const getUnpaidBillsReport = async (
   }
 };
 
-// ==================== MANUALLY GENERATE BILLS FOR MONTH ====================
 export const manuallyGenerateBillsForMonth = async (
   req: AuthRequest,
   res: Response,
@@ -2392,7 +2528,6 @@ export const manuallyGenerateBillsForMonth = async (
   }
 };
 
-// ==================== GET LOCATION EMAILS ====================
 export const getLocationEmails = async (req: AuthRequest, res: Response) => {
   try {
     const emails = {
@@ -2417,7 +2552,6 @@ export const getLocationEmails = async (req: AuthRequest, res: Response) => {
   }
 };
 
-// ==================== TEST LOCATION EMAIL ====================
 export const testLocationEmail = async (req: AuthRequest, res: Response) => {
   try {
     const { location, email } = req.body;
@@ -2460,7 +2594,6 @@ export const testLocationEmail = async (req: AuthRequest, res: Response) => {
   }
 };
 
-// ==================== GET BUILDING INSTALLATION FEE ====================
 export const getBuildingInstallationFee = async (
   req: AuthRequest,
   res: Response,
@@ -2499,8 +2632,12 @@ export const getBuildingInstallationFee = async (
 };
 
 // ==================== GET DASHBOARD DATA - OPTIMIZED NO N+1 ====================
-// ✅ FIX: Disconnected customers STAY VISIBLE in main customers list
-// ✅ FIX: They are still in "customers" array but flagged with isDisconnected: true
+// ✅ FIX: Approved applications WITHOUT billing now ALWAYS appear in customers list
+// ✅ FIX: Removed .limit(1000) on applications — it was silently dropping approved apps
+// ✅ FIX: applicationMap keyed by BOTH applicationId and _id
+// ✅ FIX: buildingObj resolves even if buildingId isn't populated
+// ✅ FIX: Dedupe user vs application customers by email
+// ✅ FIX: Disconnected customers STAY VISIBLE in main billing table
 export const getDashboardData = async (
   req: AuthRequest,
   res: Response,
@@ -2527,14 +2664,12 @@ export const getDashboardData = async (
       BillingCycle.find({})
         .populate("planId", "name price")
         .sort({ createdAt: -1 })
-        .limit(1000)
         .lean(),
 
       Billing.find({
         status: { $in: ["sent", "overdue", "pending_confirmation"] },
       })
         .sort({ dueDate: 1 })
-        .limit(1000)
         .lean(),
 
       User.find({})
@@ -2542,25 +2677,20 @@ export const getDashboardData = async (
           "firstName lastName email username phoneNumber status planId building unitNumber floor",
         )
         .populate("planId", "name price")
-        .limit(1000)
         .lean(),
 
-      // ✅ FIX: Include ALL statuses (approved, pending, suspended, disconnected)
+      // ✅ FIX: include ALL relevant statuses so approved-no-billing shows up
       Application.find({
         status: { $in: ["approved", "pending", "suspended", "disconnected"] },
       })
         .select(
-          "firstName lastName email phoneNumber status applicationId planId buildingId buildingName unitNumber floor installationFee installationFeePaid billingStarted serviceStatus",
+          "firstName lastName email phoneNumber status applicationId planId buildingId buildingName tower floor unitNumber installationFee installationFeePaid billingStarted serviceStatus disconnectedAt disconnectReason",
         )
         .populate("planId", "name price")
         .populate("buildingId", "buildingName streetAddress city")
-        .limit(1000)
         .lean(),
 
-      Payment.find({ status: "pending" })
-        .sort({ createdAt: -1 })
-        .limit(100)
-        .lean(),
+      Payment.find({ status: "pending" }).sort({ createdAt: -1 }).lean(),
 
       Application.find({
         status: "approved",
@@ -2570,9 +2700,11 @@ export const getDashboardData = async (
         ],
         billingStarted: { $ne: true },
       })
-        .select("firstName lastName email applicationId planId buildingName")
+        .select(
+          "firstName lastName email applicationId planId buildingId buildingName",
+        )
         .populate("planId", "name price")
-        .limit(100)
+        .populate("buildingId", "buildingName streetAddress city")
         .lean(),
 
       Billing.find({
@@ -2581,7 +2713,6 @@ export const getDashboardData = async (
         status: { $in: ["sent", "overdue"] },
       })
         .sort({ dueDate: 1 })
-        .limit(100)
         .lean(),
 
       Billing.find({
@@ -2590,7 +2721,6 @@ export const getDashboardData = async (
         isInstallationBill: false,
       })
         .sort({ createdAt: -1 })
-        .limit(100)
         .lean(),
 
       BillingCycle.find({
@@ -2600,10 +2730,10 @@ export const getDashboardData = async (
       })
         .populate("planId", "name price")
         .sort({ proRatedPaidAt: -1 })
-        .limit(100)
         .lean(),
     ]);
 
+    // ✅ FIX: applicationMap keyed by BOTH applicationId and _id
     const allAppIds = new Set<string>();
     billingCycles.forEach(
       (c) => c.applicationId && allAppIds.add(c.applicationId),
@@ -2620,47 +2750,63 @@ export const getDashboardData = async (
     );
 
     const applicationIdsArray = Array.from(allAppIds);
-    const allApplications =
+    const referencedApplications =
       applicationIdsArray.length > 0
         ? await Application.find({
             applicationId: { $in: applicationIdsArray },
           })
             .select(
-              "firstName lastName email applicationId phoneNumber buildingName location serviceStatus",
+              "firstName lastName email applicationId phoneNumber buildingName location serviceStatus buildingId",
             )
+            .populate("buildingId", "buildingName streetAddress city")
             .lean()
         : [];
 
-    const applicationMap = new Map(
-      allApplications.map((a) => [a.applicationId, a]),
-    );
+    const applicationMap = new Map<string, any>();
+    [...referencedApplications, ...applications].forEach((a: any) => {
+      if (a.applicationId) applicationMap.set(a.applicationId, a);
+      if (a._id) applicationMap.set(String(a._id), a);
+    });
 
-    const enrichedCycles = billingCycles.map((cycle) => ({
-      ...cycle,
-      applicationData: applicationMap.get(cycle.applicationId) || null,
-    }));
+    const enrichedCycles = billingCycles.map((cycle) => {
+      const appData =
+        applicationMap.get(cycle.applicationId) ||
+        applicationMap.get(String(cycle.applicationId)) ||
+        null;
+      return { ...cycle, applicationData: appData };
+    });
 
-    const enrichedBills = bills.map((bill) => ({
-      ...bill,
-      applicationData: applicationMap.get(bill.applicationId) || null,
-    }));
+    const enrichedBills = bills.map((bill) => {
+      const appData =
+        applicationMap.get(bill.applicationId) ||
+        applicationMap.get(String(bill.applicationId)) ||
+        null;
+      return { ...bill, applicationData: appData };
+    });
 
-    const enrichedPendingInstallation = pendingInstallationBills.map(
-      (bill) => ({
-        ...bill,
-        applicationData: applicationMap.get(bill.applicationId) || null,
-      }),
-    );
+    const enrichedPendingInstallation = pendingInstallationBills.map((bill) => {
+      const appData =
+        applicationMap.get(bill.applicationId) ||
+        applicationMap.get(String(bill.applicationId)) ||
+        null;
+      return { ...bill, applicationData: appData };
+    });
 
-    const enrichedPendingProRated = pendingProRated.map((bill) => ({
-      ...bill,
-      applicationData: applicationMap.get(bill.applicationId) || null,
-    }));
+    const enrichedPendingProRated = pendingProRated.map((bill) => {
+      const appData =
+        applicationMap.get(bill.applicationId) ||
+        applicationMap.get(String(bill.applicationId)) ||
+        null;
+      return { ...bill, applicationData: appData };
+    });
 
-    const enrichedPendingActivations = pendingActivations.map((cycle) => ({
-      ...cycle,
-      applicationData: applicationMap.get(cycle.applicationId) || null,
-    }));
+    const enrichedPendingActivations = pendingActivations.map((cycle) => {
+      const appData =
+        applicationMap.get(cycle.applicationId) ||
+        applicationMap.get(String(cycle.applicationId)) ||
+        null;
+      return { ...cycle, applicationData: appData };
+    });
 
     // ==================== USER CUSTOMERS ====================
     const userCustomers = users.map((user: any) => {
@@ -2684,9 +2830,7 @@ export const getDashboardData = async (
         const foundBuilding = buildings.find(
           (b) => b.buildingName === buildingObj.buildingName,
         );
-        if (foundBuilding) {
-          buildingObj = foundBuilding;
-        }
+        if (foundBuilding) buildingObj = foundBuilding;
       }
 
       const isDisconnected = user.status === "disconnected";
@@ -2712,24 +2856,28 @@ export const getDashboardData = async (
         unitNumber: user.unitNumber,
         floor: user.floor,
         isDisconnected: isDisconnected,
-        // ✅ FIX: Don't hide bills - just flag as disconnected
         hiddenBills: [],
         visibleUnpaidBills: userBills,
       };
     });
 
     // ==================== APPLICATION CUSTOMERS ====================
+    // ✅ FIX: Approved apps WITHOUT billing are included.
     const applicationCustomers = applications
-      .filter(
-        (app: any) =>
-          app.status === "approved" ||
-          app.billingStarted === true ||
-          app.status === "suspended" ||
-          app.status === "disconnected",
-      )
+      .filter((app: any) => {
+        if (app.status === "approved") return true;
+        if (app.status === "suspended") return true;
+        if (app.status === "disconnected") return true;
+        if (app.billingStarted === true) return true;
+        if (app.status === "pending" && app.billingStarted === true)
+          return true;
+        return false;
+      })
       .map((app: any) => {
         const appBills = enrichedBills.filter(
-          (bill) => bill.applicationId === app.applicationId,
+          (bill) =>
+            bill.applicationId === app.applicationId ||
+            String(bill.applicationId) === String(app._id),
         );
         const totalBalance = appBills.reduce(
           (sum, bill) => sum + (bill.total || 0),
@@ -2740,21 +2888,22 @@ export const getDashboardData = async (
             bill.status === "overdue" || new Date(bill.dueDate) < new Date(),
         );
         const appCycle = enrichedCycles.find(
-          (cycle) => cycle.applicationId === app.applicationId,
+          (cycle) =>
+            cycle.applicationId === app.applicationId ||
+            String(cycle.applicationId) === String(app._id),
         );
 
-        let buildingObj = null;
+        let buildingObj: any = null;
         if (app.buildingId) {
           if (typeof app.buildingId === "object" && app.buildingId._id) {
             buildingObj = app.buildingId;
           } else if (typeof app.buildingId === "string") {
             const foundBuilding = buildings.find(
               (b) =>
-                b._id === app.buildingId || b.buildingName === app.buildingId,
+                String(b._id) === String(app.buildingId) ||
+                b.buildingName === app.buildingId,
             );
-            if (foundBuilding) {
-              buildingObj = foundBuilding;
-            }
+            if (foundBuilding) buildingObj = foundBuilding;
           }
         }
         if (!buildingObj && app.buildingName) {
@@ -2771,10 +2920,11 @@ export const getDashboardData = async (
         const isDisconnected =
           app.status === "disconnected" || app.serviceStatus === "disconnected";
 
-        // ✅ FIX: Status field should reflect disconnected state
         let displayStatus: string;
         if (isDisconnected) {
           displayStatus = "disconnected";
+        } else if (app.status === "suspended") {
+          displayStatus = "suspended";
         } else if (app.billingStarted) {
           displayStatus = "billing_started";
         } else {
@@ -2801,22 +2951,45 @@ export const getDashboardData = async (
           building: buildingObj,
           unitNumber: app.unitNumber,
           floor: app.floor,
+          tower: app.tower,
           isDisconnected: isDisconnected,
           serviceStatus: app.serviceStatus || "active",
-          // ✅ FIX: Don't hide bills - keep them visible
+          disconnectedAt: app.disconnectedAt,
+          disconnectReason: app.disconnectReason,
           hiddenBills: [],
           visibleUnpaidBills: appBills,
         };
       });
 
     // ==================== ALL CUSTOMERS (INCLUDING DISCONNECTED) ====================
-    // ✅ FIX: Disconnected customers stay in the main "customers" array
-    const allCustomers = [...userCustomers, ...applicationCustomers];
+    // ✅ FIX: Dedupe user vs application entries by email
+    const seenApplicationIds = new Set<string>();
+    const dedupedApplicationCustomers = applicationCustomers.filter((c) => {
+      const key = c.applicationId || String(c._id);
+      if (seenApplicationIds.has(key)) return false;
+      seenApplicationIds.add(key);
+      return true;
+    });
 
-    // Sort by balance
+    const seenUserKeys = new Set<string>();
+    const dedupedUserCustomers = userCustomers.filter((c) => {
+      const key = c.email || String(c._id);
+      const matchingApp = dedupedApplicationCustomers.find(
+        (a) => a.email?.toLowerCase() === c.email?.toLowerCase(),
+      );
+      if (matchingApp) return false;
+      if (seenUserKeys.has(key)) return false;
+      seenUserKeys.add(key);
+      return true;
+    });
+
+    const allCustomers = [
+      ...dedupedUserCustomers,
+      ...dedupedApplicationCustomers,
+    ];
+
     allCustomers.sort((a, b) => b.currentBalance - a.currentBalance);
 
-    // ✅ FIX: Also provide separate arrays for filtering (but main array includes all)
     const activeCustomers = allCustomers.filter(
       (c) => !c.isDisconnected && c.status !== "disconnected",
     );
@@ -2858,7 +3031,7 @@ export const getDashboardData = async (
     ).length;
 
     const stats = {
-      totalCustomers: allCustomers.length, // ✅ Include ALL customers
+      totalCustomers: allCustomers.length,
       totalBalance: totalBalance,
       customersWithBalanceCount: customersWithBalance,
       overdueCustomersCount: overdueCustomers,
@@ -2876,9 +3049,7 @@ export const getDashboardData = async (
     };
 
     const dashboardData = {
-      // ✅ FIX: Main customers array includes ALL (active + disconnected)
       customers: allCustomers,
-      // ✅ Also provide separate arrays for any UI that needs them
       activeCustomers: activeCustomers,
       disconnectedCustomers: disconnectedCustomers,
       allCustomers: allCustomers,
@@ -2894,7 +3065,9 @@ export const getDashboardData = async (
 
     const elapsed = Date.now() - startTime;
     console.log(
-      `✅ Dashboard data fetched in ${elapsed}ms: ${allCustomers.length} total (${activeCustomers.length} active, ${disconnectedCustomers.length} disconnected)`,
+      `✅ Dashboard data fetched in ${elapsed}ms: ${allCustomers.length} total ` +
+        `(${activeCustomers.length} active, ${disconnectedCustomers.length} disconnected) ` +
+        `— ${dedupedApplicationCustomers.length} apps, ${dedupedUserCustomers.length} users`,
     );
 
     res.status(200).json({
@@ -4058,8 +4231,6 @@ export const resumeBilling = async (
 };
 
 // ==================== DISCONNECT CLIENT ====================
-// ✅ FIX: Application status = "disconnected" (NOT "rejected")
-// ✅ FIX: Customer STAYS in billing table (visible as disconnected)
 export const disconnectClient = async (
   req: AuthRequest,
   res: Response,
@@ -4091,7 +4262,6 @@ export const disconnectClient = async (
 
       const disconnectDate = new Date();
 
-      // ✅ FIX: Application status = "disconnected" (NOT "rejected")
       await Application.updateOne(
         { applicationId: application.applicationId },
         {
@@ -4105,7 +4275,6 @@ export const disconnectClient = async (
         { session },
       );
 
-      // ✅ Update billing cycle status to disconnected (bills preserved)
       await BillingCycle.updateOne(
         { applicationId: application.applicationId },
         {
@@ -4117,9 +4286,6 @@ export const disconnectClient = async (
         },
         { session },
       );
-
-      // ✅ DO NOT delete bills - they are preserved
-      // ✅ DO NOT change billingStarted - customer stays in billing table
 
       await session.commitTransaction();
 
@@ -4645,6 +4811,20 @@ export const confirmProRatedPayment = async (
         forceRefresh: true,
         timestamp: Date.now(),
       });
+
+      try {
+        await sendPaidOrFreeInvoiceEmail(
+          proRatedBill,
+          application,
+          payment[0],
+          { isFree: false },
+        );
+      } catch (emailErr) {
+        console.error(
+          "Failed to send paid receipt for pro-rated confirm:",
+          emailErr,
+        );
+      }
 
       return res
         .status(200)
@@ -5284,7 +5464,9 @@ export const markInstallationBillAsPaid = async (
         application = await Application.findOne({
           applicationId: installationBill.applicationId,
         })
-          .select("firstName lastName email phoneNumber applicationId")
+          .select(
+            "firstName lastName email phoneNumber applicationId buildingName",
+          )
           .session(session)
           .lean();
       }
@@ -5398,14 +5580,29 @@ export const markInstallationBillAsPaid = async (
         timestamp: Date.now(),
       });
 
+      let emailSent = false;
+      if (application) {
+        try {
+          emailSent = await sendPaidOrFreeInvoiceEmail(
+            installationBill,
+            application,
+            payment[0],
+            { isFree: false },
+          );
+        } catch (emailErr) {
+          console.error("Failed to send installation paid receipt:", emailErr);
+        }
+      }
+
       return res.status(200).json({
         success: true,
-        message: `Installation bill ${installationBill.invoiceNumber} marked as paid`,
+        message: `Installation bill ${installationBill.invoiceNumber} marked as paid${emailSent ? " and receipt emailed to subscriber" : ""}`,
         data: {
           billId: installationBill._id,
           invoiceNumber: installationBill.invoiceNumber,
           paymentId: payment[0]._id,
           installationFeePaid: true,
+          emailSent,
         },
       });
     } catch (error) {
@@ -5580,14 +5777,29 @@ export const markBillAsPaid = async (
         timestamp: Date.now(),
       });
 
+      let emailSent = false;
+      if (application) {
+        try {
+          emailSent = await sendPaidOrFreeInvoiceEmail(
+            existingBill,
+            application,
+            payment[0],
+            { isFree: false },
+          );
+        } catch (emailErr) {
+          console.error("Failed to send paid receipt:", emailErr);
+        }
+      }
+
       return res.status(200).json({
         success: true,
-        message: `Bill ${existingBill.invoiceNumber} marked as paid`,
+        message: `Bill ${existingBill.invoiceNumber} marked as paid${emailSent ? " and receipt emailed to subscriber" : ""}`,
         data: {
           billId: existingBill._id,
           invoiceNumber: existingBill.invoiceNumber,
           paymentId: payment[0]._id,
           paymentType: correctPaymentType,
+          emailSent,
         },
       });
     } catch (error) {
@@ -5782,15 +5994,30 @@ export const markBillAsFree = async (
         timestamp: Date.now(),
       });
 
+      let emailSent = false;
+      if (application) {
+        try {
+          emailSent = await sendPaidOrFreeInvoiceEmail(
+            existingBill,
+            application,
+            payment[0],
+            { isFree: true },
+          );
+        } catch (emailErr) {
+          console.error("Failed to send free receipt:", emailErr);
+        }
+      }
+
       return res.status(200).json({
         success: true,
-        message: `Bill ${existingBill.invoiceNumber} marked as FREE`,
+        message: `Bill ${existingBill.invoiceNumber} marked as FREE${emailSent ? " and receipt emailed to subscriber" : ""}`,
         data: {
           billId: existingBill._id,
           invoiceNumber: existingBill.invoiceNumber,
           paymentId: payment[0]._id,
           isFree: true,
           paymentType: correctPaymentType,
+          emailSent,
         },
       });
     } catch (error) {
@@ -5858,7 +6085,9 @@ export const markInstallationBillAsFree = async (
         application = await Application.findOne({
           applicationId: installationBill.applicationId,
         })
-          .select("firstName lastName email phoneNumber applicationId")
+          .select(
+            "firstName lastName email phoneNumber applicationId buildingName",
+          )
           .session(session)
           .lean();
       }
@@ -5993,15 +6222,30 @@ export const markInstallationBillAsFree = async (
         timestamp: Date.now(),
       });
 
+      let emailSent = false;
+      if (application) {
+        try {
+          emailSent = await sendPaidOrFreeInvoiceEmail(
+            installationBill,
+            application,
+            payment[0],
+            { isFree: true },
+          );
+        } catch (emailErr) {
+          console.error("Failed to send installation free receipt:", emailErr);
+        }
+      }
+
       return res.status(200).json({
         success: true,
-        message: `Installation bill ${installationBill.invoiceNumber} marked as FREE`,
+        message: `Installation bill ${installationBill.invoiceNumber} marked as FREE${emailSent ? " and receipt emailed to subscriber" : ""}`,
         data: {
           billId: installationBill._id,
           invoiceNumber: installationBill.invoiceNumber,
           paymentId: payment[0]._id,
           installationFeePaid: true,
           isFree: true,
+          emailSent,
         },
       });
     } catch (error) {

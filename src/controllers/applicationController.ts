@@ -1,4 +1,7 @@
-// controllers/applicationController.ts - COMPLETE FIXED - ALLOW DUPLICATE EMAIL/PHONE + DISCONNECTED STATUS
+// controllers/applicationController.ts - COMPLETE FIXED - WILCONNECT EMAIL FIX
+// ✅ FIX: approveApplication now explicitly sets billingStarted:false and serviceStatus:"pending"
+//         so approved apps WITHOUT billing are ALWAYS visible in getDashboardData
+// ✅ FIX: Unsets disconnectedAt/disconnectReason on approval so stale flags don't leak
 import { Request, Response, NextFunction } from "express";
 import Application from "../models/Application";
 import Plan from "../models/Plan";
@@ -42,6 +45,15 @@ const getStringQuery = (param: any): string => {
   if (typeof param === "string") return param;
   if (Array.isArray(param)) return param[0] || "";
   return String(param);
+};
+
+// ============ HELPER: Detect Wilconnect building ============
+const WILCONNECT_BUILDINGS = ["el pueblo", "vitalez", "newport"];
+
+const isWilconnectBuilding = (buildingName?: string): boolean => {
+  if (!buildingName) return false;
+  const normalized = buildingName.toLowerCase().trim();
+  return WILCONNECT_BUILDINGS.some((b) => normalized.includes(b));
 };
 
 // ============ GET IMAGE URL ============
@@ -387,7 +399,6 @@ export const getAllApplications = async (
         idImage: imgInfo.filename,
         idImageUrl: idImageUrl,
         hasIdImage: imgInfo.hasImage,
-        // ✅ Include disconnect fields
         disconnectedAt: app.disconnectedAt || null,
         disconnectReason: app.disconnectReason || null,
         reconnectedAt: app.reconnectedAt || null,
@@ -610,7 +621,6 @@ export const getApplicationDashboardData = async (
 
     console.log("🔄 Fetching fresh application dashboard data...");
 
-    // ✅ ADDED disconnectedApplications
     const [
       totalApplications,
       pendingApplications,
@@ -635,7 +645,6 @@ export const getApplicationDashboardData = async (
       .limit(10)
       .lean();
 
-    // ✅ ADDED disconnected sa stats
     const stats = {
       totalApplications,
       pendingApplications,
@@ -742,7 +751,6 @@ export const getApplicationStats = async (
       return res.status(200).json({ success: true, data: cachedStats });
     }
 
-    // ✅ ADDED disconnected
     const [total, pending, approved, rejected, suspended, disconnected] =
       await Promise.all([
         Application.estimatedDocumentCount(),
@@ -753,7 +761,6 @@ export const getApplicationStats = async (
         Application.countDocuments({ status: "disconnected" }),
       ]);
 
-    // ✅ ADDED disconnected sa stats
     const stats = {
       totalApplications: total,
       pending,
@@ -973,9 +980,15 @@ export const submitApplication = async (
     const fullImageUrl = getImageUrl(application.idImage);
     const populatedPlan = populatedApplication[0]?.plan;
 
+    const buildingNameForEmail = building.buildingName || "";
+
     setImmediate(() => {
       emailService
-        .sendApplicationReceived(application, populatedPlan)
+        .sendApplicationReceived(
+          application,
+          populatedPlan,
+          buildingNameForEmail,
+        )
         .then(() =>
           console.log(`📧 Welcome email sent to ${application.email}`),
         )
@@ -1087,7 +1100,6 @@ export const checkApplicationStatus = async (
         adminNotes: application.adminNotes,
         billingStarted: application.billingStarted || false,
         hasAccount: !!application.registeredUserId,
-        // ✅ Include disconnect info
         serviceStatus: application.serviceStatus || "pending",
         disconnectedAt: (application as any).disconnectedAt || null,
         disconnectReason: (application as any).disconnectReason || null,
@@ -1135,7 +1147,11 @@ export const getApplication = async (
 };
 
 // ============================================================
-// ✅ APPROVE APPLICATION
+// ✅ APPROVE APPLICATION - FIXED
+// ✅ FIX: Guarantees billingStarted defaults to false (not undefined)
+//         so getDashboardData's filter picks it up correctly.
+// ✅ FIX: Uses $unset on disconnectedAt/disconnectReason so approved apps
+//         are never hidden by stale disconnect flags.
 // ============================================================
 export const approveApplication = async (
   req: AuthRequest,
@@ -1149,8 +1165,11 @@ export const approveApplication = async (
     const { adminNotes } = req.body;
 
     const application = await Application.findById(req.params.id)
-      .select("applicationId firstName lastName email status planId")
+      .select(
+        "applicationId firstName lastName email status planId buildingId buildingName tower floor unitNumber billingStarted registeredUserId",
+      )
       .populate("planId", "name price")
+      .populate("buildingId", "buildingName")
       .lean()
       .session(session);
 
@@ -1171,6 +1190,8 @@ export const approveApplication = async (
       });
     }
 
+    // ✅ FIX: Explicitly set billingStarted:false + serviceStatus:"pending"
+    // so the app is visible in the billing dashboard as "Approved / Not Billing"
     await Application.updateOne(
       { _id: req.params.id },
       {
@@ -1180,6 +1201,12 @@ export const approveApplication = async (
           reviewedBy: req.user?._id || null,
           reviewedAt: new Date(),
           approvalEmailSent: true,
+          billingStarted: false,
+          serviceStatus: "pending",
+        },
+        $unset: {
+          disconnectedAt: "",
+          disconnectReason: "",
         },
       },
       { session },
@@ -1192,10 +1219,49 @@ export const approveApplication = async (
     dashboardCache = null;
     dashboardCacheTime = 0;
 
+    // Resolve building name for email
+    let buildingNameForEmail = "";
+    if (application.buildingId && typeof application.buildingId === "object") {
+      buildingNameForEmail = (application.buildingId as any).buildingName || "";
+    }
+    if (!buildingNameForEmail) {
+      buildingNameForEmail = application.buildingName || "";
+    }
+
+    if (!buildingNameForEmail && application.buildingId) {
+      try {
+        const buildingId =
+          typeof application.buildingId === "object"
+            ? (application.buildingId as any)._id
+            : application.buildingId;
+        const building = await Building.findById(buildingId).lean();
+        if (building) {
+          buildingNameForEmail = building.buildingName || "";
+        }
+      } catch (e) {
+        console.error("Error fetching building for email:", e);
+      }
+    }
+
+    console.log(`📧 Application ${application.applicationId}:`);
+    console.log(`   buildingNameForEmail: "${buildingNameForEmail}"`);
+    console.log(
+      `   isWilconnect: ${isWilconnectBuilding(buildingNameForEmail)}`,
+    );
+
     const plan = application.planId;
+    const applicationForEmail = {
+      ...application,
+      buildingName: buildingNameForEmail,
+    };
+
     setImmediate(() => {
       emailService
-        .sendApplicationApproved(application, plan)
+        .sendApplicationApproved(
+          applicationForEmail,
+          plan,
+          buildingNameForEmail,
+        )
         .then(() =>
           console.log(`📧 Approval email sent to ${application.email}`),
         )
@@ -1206,10 +1272,13 @@ export const approveApplication = async (
 
     res.status(200).json({
       success: true,
-      message: "Application approved successfully",
+      message:
+        "Application approved successfully. It will now appear in the Billing dashboard.",
       data: {
         applicationId: application.applicationId,
         status: "approved",
+        billingStarted: false,
+        appearsInBillingDashboard: true,
       },
     });
   } catch (error) {
@@ -1221,7 +1290,7 @@ export const approveApplication = async (
 };
 
 // ============================================================
-// ✅ REJECT APPLICATION
+// ✅ REJECT APPLICATION - FIXED WILCONNECT DETECTION
 // ============================================================
 export const rejectApplication = async (
   req: AuthRequest,
@@ -1235,7 +1304,10 @@ export const rejectApplication = async (
     const { adminNotes } = req.body;
 
     const application = await Application.findById(req.params.id)
-      .select("applicationId firstName lastName email status")
+      .select(
+        "applicationId firstName lastName email status buildingId buildingName",
+      )
+      .populate("buildingId", "buildingName")
       .lean()
       .session(session);
 
@@ -1276,11 +1348,39 @@ export const rejectApplication = async (
     dashboardCache = null;
     dashboardCacheTime = 0;
 
+    let buildingNameForEmail = "";
+    if (application.buildingId && typeof application.buildingId === "object") {
+      buildingNameForEmail = (application.buildingId as any).buildingName || "";
+    }
+    if (!buildingNameForEmail) {
+      buildingNameForEmail = application.buildingName || "";
+    }
+    if (!buildingNameForEmail && application.buildingId) {
+      try {
+        const buildingId =
+          typeof application.buildingId === "object"
+            ? (application.buildingId as any)._id
+            : application.buildingId;
+        const building = await Building.findById(buildingId).lean();
+        if (building) {
+          buildingNameForEmail = building.buildingName || "";
+        }
+      } catch (e) {
+        console.error("Error fetching building for email:", e);
+      }
+    }
+
+    const applicationForEmail = {
+      ...application,
+      buildingName: buildingNameForEmail,
+    };
+
     setImmediate(() => {
       emailService
         .sendApplicationRejected(
-          application,
+          applicationForEmail,
           adminNotes || "No specific reason provided",
+          buildingNameForEmail,
         )
         .then(() =>
           console.log(`📧 Rejection email sent to ${application.email}`),
@@ -1576,7 +1676,6 @@ export const updateApplication = async (
       updateFields.macAddress = updateData.macAddress?.trim() || "";
     }
 
-    // ✅ FIXED: Add "disconnected" to valid statuses
     if (updateData.status !== undefined) {
       const validStatuses = [
         "pending",
@@ -1789,7 +1888,6 @@ export const patchApplication = async (
       updateFields.macAddress = updateData.macAddress?.trim() || "";
     }
 
-    // ✅ FIXED: Add "disconnected" to valid statuses
     if (updateData.status !== undefined) {
       const validStatuses = [
         "pending",
@@ -2216,9 +2314,16 @@ export const startBillingForApplication = async (
     dashboardCache = null;
     dashboardCacheTime = 0;
 
+    const buildingNameForEmail = application.buildingName || "";
+
     setImmediate(() => {
       emailService
-        .sendBillWithoutAccount(application, bill[0], plan)
+        .sendBillWithoutAccount(
+          application,
+          bill[0],
+          plan,
+          buildingNameForEmail,
+        )
         .then(() => console.log(`📧 Bill email sent to ${application.email}`))
         .catch((err) => console.error("❌ Bill email failed:", err));
     });

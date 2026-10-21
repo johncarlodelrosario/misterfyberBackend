@@ -1,4 +1,4 @@
-// models/application.model.ts - COMPLETE WITH disconnected STATUS
+// models/application.model.ts - COMPLETE WITH disconnected STATUS + ALL CAPS NAMES
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IApplication extends Document {
@@ -40,6 +40,12 @@ export interface IApplication extends Document {
   createdAt: Date;
   updatedAt: Date;
 }
+
+// ✅ NEW HELPER: Convert any string to ALL CAPS safely
+const toAllCaps = (value: string): string => {
+  if (!value || typeof value !== "string") return "";
+  return value.trim().toUpperCase();
+};
 
 const getBuildingCode = (buildingName: string): string => {
   if (!buildingName) return "UNK";
@@ -106,13 +112,16 @@ const ApplicationSchema: Schema = new Schema(
     firstName: {
       type: String,
       required: true,
+      set: toAllCaps, // ✅ ALL CAPS
     },
     lastName: {
       type: String,
       required: true,
+      set: toAllCaps, // ✅ ALL CAPS
     },
     middleName: {
       type: String,
+      set: toAllCaps, // ✅ ALL CAPS
     },
     email: {
       type: String,

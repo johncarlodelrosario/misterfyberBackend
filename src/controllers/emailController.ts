@@ -1,4 +1,5 @@
 // backend/src/controllers/manualEmailController.ts - COMPLETE FIXED VERSION
+// FIXED: Timezone handling, billIds support, template support, HARD DELETE, LATEST FIRST sorting
 
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
@@ -14,6 +15,31 @@ import emailService, {
 } from "../services/emailService";
 
 type AuthRequest = Request & { user?: any };
+
+// ============================================================
+// SENDER TYPES
+// ============================================================
+export type SenderType =
+  | "admin"
+  | "collection"
+  | "workselpueblo"
+  | "fbsilkresidence";
+
+// ============================================================
+// SENDER EMAIL CONFIGURATION (from .env with fallbacks)
+// ============================================================
+const ADDITIONAL_SENDER_EMAILS = {
+  workselpueblo:
+    process.env.SENDER_EMAIL_WORKSELPUEBLO || "workselpueblo@gmail.com",
+  fbsilkresidence:
+    process.env.SENDER_EMAIL_FBSILKRESIDENCE || "fbsilkresidence@gmail.com",
+};
+
+const ADDITIONAL_SENDER_NAMES = {
+  workselpueblo: process.env.SENDER_NAME_WORKSELPUEBLO || "Workselpueblo",
+  fbsilkresidence:
+    process.env.SENDER_NAME_FBSILKRESIDENCE || "FB Silk Residence",
+};
 
 // ============================================================
 // CHECK ADMIN
@@ -48,6 +74,151 @@ function extractLocationFromBuildingName(buildingName?: string): string {
   if (name.includes("breeze")) return "breeze";
   if (name.includes("sil") || name.includes("silk")) return "sil";
   return "other";
+}
+
+// ============================================================
+// HELPER: Get sender type from request body
+// ============================================================
+function getSenderTypeFromRequest(body: any): SenderType {
+  if (body.senderType && typeof body.senderType === "string") {
+    const validTypes: SenderType[] = [
+      "admin",
+      "collection",
+      "workselpueblo",
+      "fbsilkresidence",
+    ];
+    if (validTypes.includes(body.senderType as SenderType)) {
+      return body.senderType as SenderType;
+    }
+  }
+
+  if (body.useAdminSender === true) {
+    return "admin";
+  }
+
+  return "collection";
+}
+
+// ============================================================
+// HELPER: Get sender info by type
+// ============================================================
+function getSenderInfoByType(
+  senderType: SenderType,
+  location?: string,
+): { email: string; name: string; label: string } {
+  switch (senderType) {
+    case "admin":
+      return {
+        email: process.env.ADMIN_EMAIL || "admin@misterfyber.com",
+        name: "Mister Fyber Admin",
+        label: "Admin",
+      };
+
+    case "workselpueblo":
+      return {
+        email: ADDITIONAL_SENDER_EMAILS.workselpueblo,
+        name: ADDITIONAL_SENDER_NAMES.workselpueblo,
+        label: "Workselpueblo",
+      };
+
+    case "fbsilkresidence":
+      return {
+        email: ADDITIONAL_SENDER_EMAILS.fbsilkresidence,
+        name: ADDITIONAL_SENDER_NAMES.fbsilkresidence,
+        label: "FB Silk Residence",
+      };
+
+    case "collection":
+    default:
+      const collectionEmail = location
+        ? getCollectionEmailByLocation(location)
+        : process.env.COLLECTION_EMAIL_DEFAULT || "admin@misterfyber.com";
+
+      let name = "Mister Fyber Collection";
+      let label = "Collection";
+
+      if (collectionEmail.includes("breeze")) {
+        name = "Mister Fyber Breeze Collection";
+        label = "Breeze Collection";
+      } else if (
+        collectionEmail.includes("sil") ||
+        collectionEmail.includes("silk")
+      ) {
+        name = "Mister Fyber SIL Collection";
+        label = "SIL Collection";
+      }
+
+      return { email: collectionEmail, name, label };
+  }
+}
+
+// ============================================================
+// HELPER: Get all available sender options
+// ============================================================
+function getAllSenderOptions(location?: string): {
+  value: SenderType;
+  label: string;
+  email: string;
+  icon: string;
+}[] {
+  const options: {
+    value: SenderType;
+    label: string;
+    email: string;
+    icon: string;
+  }[] = [];
+
+  if (location && location !== "other") {
+    const collectionEmail = getCollectionEmailByLocation(location);
+    let locationName = location.charAt(0).toUpperCase() + location.slice(1);
+    options.push({
+      value: "collection",
+      label: `${locationName} Collection`,
+      email: collectionEmail,
+      icon: "📍",
+    });
+  } else {
+    options.push({
+      value: "collection",
+      label: "Collection",
+      email: process.env.COLLECTION_EMAIL_DEFAULT || "admin@misterfyber.com",
+      icon: "📍",
+    });
+  }
+
+  options.push({
+    value: "admin",
+    label: "Admin",
+    email: process.env.ADMIN_EMAIL || "admin@misterfyber.com",
+    icon: "👤",
+  });
+
+  options.push({
+    value: "workselpueblo",
+    label: ADDITIONAL_SENDER_NAMES.workselpueblo,
+    email: ADDITIONAL_SENDER_EMAILS.workselpueblo,
+    icon: "🏢",
+  });
+
+  options.push({
+    value: "fbsilkresidence",
+    label: ADDITIONAL_SENDER_NAMES.fbsilkresidence,
+    email: ADDITIONAL_SENDER_EMAILS.fbsilkresidence,
+    icon: "🏠",
+  });
+
+  return options;
+}
+
+// ============================================================
+// HELPER: Parse scheduledFor date
+// ============================================================
+function parseScheduledDate(scheduledFor: string): Date {
+  const parsed = new Date(scheduledFor);
+  if (isNaN(parsed.getTime())) {
+    throw new Error(`Invalid date format: ${scheduledFor}`);
+  }
+  return parsed;
 }
 
 // ============================================================
@@ -171,7 +342,7 @@ function generateEmailPreview(
         </div>
         <div class="footer">
           <p>Mister Fyber - Your trusted internet provider</p>
-          <p><small>Need help? Contact us at <a href="mailto:admin@misterfyber.com">admin@misterfyber.com</a></small></p>
+          <p><small>Need help? Contact us at <a href="mailto:${process.env.SUPPORT_EMAIL || "admin@misterfyber.com"}">${process.env.SUPPORT_EMAIL || "admin@misterfyber.com"}</a></small></p>
         </div>
       </div>
     </body>
@@ -192,7 +363,6 @@ export const getCustomersForEmail = async (
   try {
     const { search, status, hasBilling, forceRefresh, location } = req.query;
 
-    // ✅ ALWAYS no-cache headers
     res.set({
       "Cache-Control": "no-store, no-cache, must-revalidate, private",
       Pragma: "no-cache",
@@ -225,7 +395,6 @@ export const getCustomersForEmail = async (
       }
     }
 
-    // ✅ STEP 1: Get all applications
     const applications = await Application.find(query)
       .select(
         "firstName lastName email phoneNumber applicationId status buildingName buildingId",
@@ -254,7 +423,6 @@ export const getCustomersForEmail = async (
 
     const applicationIds = applications.map((app) => app.applicationId);
 
-    // ✅ STEP 2: Batch fetch billing cycles
     const billingCycles = await BillingCycle.find({
       applicationId: { $in: applicationIds },
     })
@@ -265,7 +433,6 @@ export const getCustomersForEmail = async (
       billingCycles.map((bc) => bc.applicationId),
     );
 
-    // ✅ STEP 3: Batch fetch unpaid bills count per application
     const unpaidBillsAgg = await Billing.aggregate([
       {
         $match: {
@@ -285,7 +452,6 @@ export const getCustomersForEmail = async (
       unpaidBillsAgg.map((item) => item._id),
     );
 
-    // ✅ STEP 4: Batch fetch last bill per application
     const lastBillsAgg = await Billing.aggregate([
       {
         $match: {
@@ -307,7 +473,6 @@ export const getCustomersForEmail = async (
       lastBillsAgg.map((item) => [item._id, item.lastBill]),
     );
 
-    // ✅ STEP 5: Build enhanced customers
     const enhancedCustomers = applications.map((app) => {
       const lastBill = lastBillMap.get(app.applicationId);
       const location = extractLocationFromBuildingName(app.buildingName);
@@ -397,7 +562,31 @@ export const getCustomerBills = async (
 };
 
 // ============================================================
-// SEND MANUAL EMAIL
+// GET SENDER OPTIONS (NEW ENDPOINT)
+// ============================================================
+export const getSenderOptions = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!checkAdmin(req, res)) return;
+
+  try {
+    const { location } = req.query as { location?: string };
+
+    const options = getAllSenderOptions(location);
+
+    res.status(200).json({
+      success: true,
+      data: options,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ============================================================
+// SEND MANUAL EMAIL - UPDATED WITH SENDER TYPE
 // ============================================================
 export const sendManualEmail = async (
   req: AuthRequest,
@@ -421,7 +610,15 @@ export const sendManualEmail = async (
       attachments,
       priority,
       useAdminSender,
+      senderType: rawSenderType,
     } = req.body;
+
+    const senderType = getSenderTypeFromRequest(req.body);
+
+    console.log("📧 sendManualEmail called");
+    console.log("   Application ID:", applicationId);
+    console.log("   Subject:", subject);
+    console.log("   Sender Type:", senderType);
 
     if (!applicationId) {
       await session.abortTransaction();
@@ -499,15 +696,8 @@ export const sendManualEmail = async (
       }));
     }
 
-    let senderInfo = "";
-    if (useAdminSender) {
-      senderInfo = "Sent from: Admin (admin@misterfyber.com)";
-    } else if (location && location !== "other") {
-      const collectionEmail = getCollectionEmailByLocation(location);
-      senderInfo = `Sent from: Collection (${collectionEmail})`;
-    } else {
-      senderInfo = "Sent from: Admin (admin@misterfyber.com)";
-    }
+    const senderInfo = getSenderInfoByType(senderType, location);
+    const senderInfoText = `Sent from: ${senderInfo.label} (${senderInfo.email})`;
 
     const emailHtml = generateEmailPreview(
       subject,
@@ -515,7 +705,7 @@ export const sendManualEmail = async (
       includeBilling && billingDataArray.length > 0,
       billingDataArray,
       application,
-      senderInfo,
+      senderInfoText,
       richTextContent,
     );
 
@@ -543,7 +733,10 @@ export const sendManualEmail = async (
           emailHtml,
           true,
           location,
-          { useAdminSender: useAdminSender === true },
+          {
+            useAdminSender: senderType === "admin",
+            senderType: senderType,
+          },
         );
 
         if (!emailSent) {
@@ -567,7 +760,8 @@ export const sendManualEmail = async (
               <p><strong>Subject:</strong> ${subject}</p>
               <p><strong>Sent At:</strong> ${new Date().toLocaleString()}</p>
               <p><strong>Sent By:</strong> ${req.user?.email || req.user?.username || "Admin"}</p>
-              <p><strong>Sender Type:</strong> ${useAdminSender ? "Admin" : "Collection"}</p>
+              <p><strong>Sender Type:</strong> ${senderInfo.label}</p>
+              <p><strong>Sender Email:</strong> ${senderInfo.email}</p>
               <p><strong>Location:</strong> ${location || "NONE"}</p>
             </div>
           `;
@@ -601,7 +795,7 @@ export const sendManualEmail = async (
       sentBy: req.user?.username || req.user?.email || "Admin",
       sentByEmail: req.user?.email || "admin@misterfyber.com",
       adminCopySent: adminCopySent || false,
-      senderType: useAdminSender ? "admin" : "collection",
+      senderType: senderType,
       location: location || "unknown",
       collectionEmail:
         location && location !== "other"
@@ -632,7 +826,7 @@ export const sendManualEmail = async (
 
     res.status(200).json({
       success: true,
-      message: `Email sent successfully to ${application.firstName} ${application.lastName}`,
+      message: `Email sent successfully to ${application.firstName} ${application.lastName} via ${senderInfo.label}`,
       data: {
         to: application.email,
         toName: `${application.firstName} ${application.lastName}`,
@@ -640,7 +834,9 @@ export const sendManualEmail = async (
         sentAt: new Date().toISOString(),
         adminCopySent,
         recordId: sentRecord._id,
-        senderType: useAdminSender ? "admin" : "collection",
+        senderType: senderType,
+        senderLabel: senderInfo.label,
+        senderEmail: senderInfo.email,
         location: location || "unknown",
         billsIncluded: billingDataArray.length,
         totalAmount: billingDataArray.reduce(
@@ -658,7 +854,7 @@ export const sendManualEmail = async (
 };
 
 // ============================================================
-// SEND BULK EMAILS
+// SEND BULK EMAILS - UPDATED WITH SENDER TYPE
 // ============================================================
 export const sendBulkEmails = async (
   req: AuthRequest,
@@ -678,7 +874,14 @@ export const sendBulkEmails = async (
       sendCopyToAdmin,
       useAdminSender,
       locationFilter,
+      senderType: rawSenderType,
     } = req.body;
+
+    const senderType = getSenderTypeFromRequest(req.body);
+
+    console.log("📧 sendBulkEmails called");
+    console.log("   Recipients:", applicationIds?.length || 0);
+    console.log("   Sender Type:", senderType);
 
     if (
       !applicationIds ||
@@ -706,9 +909,7 @@ export const sendBulkEmails = async (
       });
     }
 
-    console.log(
-      `📧 Bulk Email - Using admin sender: ${useAdminSender ? "YES" : "NO"}`,
-    );
+    console.log(`📧 Bulk Email - Sender type: ${senderType}`);
 
     const applications = await Application.find({
       applicationId: { $in: applicationIds },
@@ -797,15 +998,8 @@ export const sendBulkEmails = async (
         const billingDataArray = billsByApplication.get(applicationId) || [];
         const selectedBillIds = billingDataArray.map((b) => b._id);
 
-        let senderInfo = "";
-        if (useAdminSender) {
-          senderInfo = "Sent from: Admin (admin@misterfyber.com)";
-        } else if (location && location !== "other") {
-          const collectionEmail = getCollectionEmailByLocation(location);
-          senderInfo = `Sent from: Collection (${collectionEmail})`;
-        } else {
-          senderInfo = "Sent from: Admin (admin@misterfyber.com)";
-        }
+        const senderInfo = getSenderInfoByType(senderType, location);
+        const senderInfoText = `Sent from: ${senderInfo.label} (${senderInfo.email})`;
 
         const emailHtml = generateEmailPreview(
           subject,
@@ -813,7 +1007,7 @@ export const sendBulkEmails = async (
           includeBilling && billingDataArray.length > 0,
           billingDataArray,
           application,
-          senderInfo,
+          senderInfoText,
           richTextContent,
         );
 
@@ -831,7 +1025,10 @@ export const sendBulkEmails = async (
                 emailHtml,
                 true,
                 location,
-                { useAdminSender: useAdminSender === true },
+                {
+                  useAdminSender: senderType === "admin",
+                  senderType: senderType,
+                },
               );
             }
           } else {
@@ -861,7 +1058,7 @@ export const sendBulkEmails = async (
           sentBy: req.user?.username || req.user?.email || "Admin",
           sentByEmail: req.user?.email || "admin@misterfyber.com",
           adminCopySent: false,
-          senderType: useAdminSender ? "admin" : "collection",
+          senderType: senderType,
           location: location || "unknown",
           collectionEmail:
             location && location !== "other"
@@ -909,16 +1106,20 @@ export const sendBulkEmails = async (
       }
     }
 
+    const finalSenderInfo = getSenderInfoByType(senderType);
+
     res.status(200).json({
       success: true,
-      message: `Bulk email completed. Sent: ${successCount}, Failed: ${failCount}`,
+      message: `Bulk email completed via ${finalSenderInfo.label}. Sent: ${successCount}, Failed: ${failCount}`,
       data: {
         total: applicationIds.length,
         successCount,
         failCount,
         results,
         failedEmails: failCount > 0 ? failedEmails : undefined,
-        senderType: useAdminSender ? "admin" : "collection",
+        senderType: senderType,
+        senderLabel: finalSenderInfo.label,
+        senderEmail: finalSenderInfo.email,
       },
     });
   } catch (error) {
@@ -1148,7 +1349,7 @@ export const deleteEmailTemplate = async (
 };
 
 // ============================================================
-// PREVIEW EMAIL
+// PREVIEW EMAIL - UPDATED WITH SENDER TYPE
 // ============================================================
 export const previewEmail = async (
   req: AuthRequest,
@@ -1166,7 +1367,13 @@ export const previewEmail = async (
       applicationId,
       billIds,
       useAdminSender,
+      senderType: rawSenderType,
     } = req.body;
+
+    const senderType = getSenderTypeFromRequest(req.body);
+
+    console.log("📧 previewEmail called");
+    console.log("   Sender Type:", senderType);
 
     let customerData = null;
     let billingDataArray: any[] = [];
@@ -1215,15 +1422,8 @@ export const previewEmail = async (
       }
     }
 
-    let senderInfo = "";
-    if (useAdminSender) {
-      senderInfo = "Sent from: Admin (admin@misterfyber.com)";
-    } else if (location && location !== "other") {
-      const collectionEmail = getCollectionEmailByLocation(location);
-      senderInfo = `Sent from: Collection (${collectionEmail})`;
-    } else {
-      senderInfo = "Sent from: Admin (admin@misterfyber.com)";
-    }
+    const senderInfo = getSenderInfoByType(senderType, location);
+    const senderInfoText = `Sent from: ${senderInfo.label} (${senderInfo.email})`;
 
     const previewHtml = generateEmailPreview(
       subject,
@@ -1231,7 +1431,7 @@ export const previewEmail = async (
       includeBilling && billingDataArray.length > 0,
       billingDataArray,
       customerData,
-      senderInfo,
+      senderInfoText,
       richTextContent,
     );
 
@@ -1242,7 +1442,10 @@ export const previewEmail = async (
         subject,
         message,
         location: location || "unknown",
-        senderInfo: senderInfo,
+        senderInfo: senderInfoText,
+        senderType: senderType,
+        senderLabel: senderInfo.label,
+        senderEmail: senderInfo.email,
         billsIncluded: billingDataArray.length,
         totalAmount: billingDataArray.reduce(
           (sum, bill) => sum + (bill.total || 0),
@@ -1256,7 +1459,7 @@ export const previewEmail = async (
 };
 
 // ============================================================
-// SEND REMINDER TO UNPAID
+// SEND REMINDER TO UNPAID - UPDATED WITH SENDER TYPE
 // ============================================================
 export const sendReminderToUnpaid = async (
   req: AuthRequest,
@@ -1266,7 +1469,17 @@ export const sendReminderToUnpaid = async (
   if (!checkAdmin(req, res)) return;
 
   try {
-    const { customMessage, includeDueDateReminder, useAdminSender } = req.body;
+    const {
+      customMessage,
+      includeDueDateReminder,
+      useAdminSender,
+      senderType: rawSenderType,
+    } = req.body;
+
+    const senderType = getSenderTypeFromRequest(req.body);
+
+    console.log("📧 sendReminderToUnpaid called");
+    console.log("   Sender Type:", senderType);
 
     const isConfigured = emailService.isConfigured();
     if (!isConfigured && process.env.NODE_ENV !== "development") {
@@ -1344,15 +1557,8 @@ export const sendReminderToUnpaid = async (
         reminderMessage += `\n\nYou have ${customerBills.length} unpaid bill(s) totaling ₱${totalAmount.toLocaleString()}.`;
       }
 
-      let senderInfo = "";
-      if (useAdminSender) {
-        senderInfo = "Sent from: Admin (admin@misterfyber.com)";
-      } else if (location && location !== "other") {
-        const collectionEmail = getCollectionEmailByLocation(location);
-        senderInfo = `Sent from: Collection (${collectionEmail})`;
-      } else {
-        senderInfo = "Sent from: Admin (admin@misterfyber.com)";
-      }
+      const senderInfo = getSenderInfoByType(senderType, location);
+      const senderInfoText = `Sent from: ${senderInfo.label} (${senderInfo.email})`;
 
       const emailHtml = generateEmailPreview(
         "Payment Reminder - Unpaid Bill(s)",
@@ -1360,7 +1566,7 @@ export const sendReminderToUnpaid = async (
         true,
         customerBills,
         application,
-        senderInfo,
+        senderInfoText,
       );
 
       let emailSent = false;
@@ -1377,7 +1583,10 @@ export const sendReminderToUnpaid = async (
               emailHtml,
               true,
               location,
-              { useAdminSender: useAdminSender === true },
+              {
+                useAdminSender: senderType === "admin",
+                senderType: senderType,
+              },
             );
           }
         } else {
@@ -1410,7 +1619,7 @@ export const sendReminderToUnpaid = async (
         sentBy: req.user?.username || req.user?.email || "Admin",
         sentByEmail: req.user?.email || "admin@misterfyber.com",
         adminCopySent: false,
-        senderType: useAdminSender ? "admin" : "collection",
+        senderType: senderType,
         location: location || "unknown",
         collectionEmail:
           location && location !== "other"
@@ -1438,15 +1647,19 @@ export const sendReminderToUnpaid = async (
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
 
+    const finalSenderInfo = getSenderInfoByType(senderType);
+
     res.status(200).json({
       success: true,
-      message: `Sent reminders to ${sentCount} customers with unpaid bills (${failCount} failed)`,
+      message: `Sent reminders to ${sentCount} customers via ${finalSenderInfo.label} (${failCount} failed)`,
       data: {
         sentCount,
         failCount,
         totalCustomers: uniqueApplicationIds.length,
         results,
-        senderType: useAdminSender ? "admin" : "collection",
+        senderType: senderType,
+        senderLabel: finalSenderInfo.label,
+        senderEmail: finalSenderInfo.email,
       },
     });
   } catch (error) {
@@ -1557,7 +1770,7 @@ export const deleteSentRecord = async (
 };
 
 // ============================================================
-// SCHEDULE EMAIL
+// ✅ FIXED: SCHEDULE EMAIL - PROPER TIMEZONE HANDLING
 // ============================================================
 export const scheduleEmail = async (
   req: AuthRequest,
@@ -1574,13 +1787,22 @@ export const scheduleEmail = async (
       message,
       richTextContent,
       includeBilling,
+      billIds,
       billType,
       sendCopyToAdmin,
       useAdminSender,
       scheduledFor,
       locationFilter,
       recurring,
+      senderType: rawSenderType,
     } = req.body;
+
+    const senderType = getSenderTypeFromRequest(req.body);
+
+    console.log("📧 scheduleEmail called");
+    console.log("   Name:", name);
+    console.log("   Sender Type:", senderType);
+    console.log("   Raw scheduledFor:", scheduledFor);
 
     if (!name) {
       return res.status(400).json({
@@ -1603,10 +1825,25 @@ export const scheduleEmail = async (
       });
     }
 
-    const scheduleDate = new Date(scheduledFor);
+    let scheduleDate: Date;
+    try {
+      scheduleDate = parseScheduledDate(scheduledFor);
+    } catch (dateError: any) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid schedule date: ${dateError.message}`,
+      });
+    }
 
-    console.log(`📅 Schedule date received: ${scheduledFor}`);
-    console.log(`📅 Date object: ${scheduleDate.toISOString()}`);
+    console.log(`📅 Parsed schedule date (UTC): ${scheduleDate.toISOString()}`);
+
+    const now = new Date();
+    if (scheduleDate.getTime() <= now.getTime() - 60000) {
+      return res.status(400).json({
+        success: false,
+        message: "Scheduled time must be in the future",
+      });
+    }
 
     let targetApplicationIds = applicationIds || [];
     if (targetApplicationIds.length === 0 && locationFilter) {
@@ -1638,6 +1875,17 @@ export const scheduleEmail = async (
       });
     }
 
+    let validatedBillIds: string[] = [];
+    if (
+      includeBilling &&
+      billIds &&
+      Array.isArray(billIds) &&
+      billIds.length > 0
+    ) {
+      validatedBillIds = billIds;
+      console.log(`📋 Bill IDs provided: ${validatedBillIds.length}`);
+    }
+
     const schedule = new EmailSchedule({
       name,
       applicationIds: targetApplicationIds,
@@ -1645,9 +1893,11 @@ export const scheduleEmail = async (
       message,
       richTextContent: richTextContent || message,
       includeBilling: includeBilling || false,
+      billIds: validatedBillIds,
       billType: billType || "unpaid",
       sendCopyToAdmin: sendCopyToAdmin || false,
-      useAdminSender: useAdminSender || false,
+      useAdminSender: senderType === "admin",
+      senderType: senderType,
       scheduledFor: scheduleDate,
       status: "pending",
       totalRecipients: targetApplicationIds.length,
@@ -1661,15 +1911,20 @@ export const scheduleEmail = async (
 
     console.log(`✅ Email scheduled at: ${scheduleDate.toISOString()}`);
 
+    const senderInfo = getSenderInfoByType(senderType);
+
     res.status(200).json({
       success: true,
-      message: `Email scheduled successfully for ${scheduleDate.toLocaleString()}`,
+      message: `Email scheduled successfully for ${scheduleDate.toLocaleString()} via ${senderInfo.label}`,
       data: {
         scheduleId: schedule._id,
         name: schedule.name,
         scheduledFor: schedule.scheduledFor,
         totalRecipients: schedule.totalRecipients,
         status: schedule.status,
+        senderType: senderType,
+        senderLabel: senderInfo.label,
+        senderEmail: senderInfo.email,
       },
     });
   } catch (error) {
@@ -1697,8 +1952,9 @@ export const getScheduledEmails = async (
     const limitNum = parseInt(limit as string) || 50;
     const skip = (pageNum - 1) * limitNum;
 
+    // ✅ FIX: Palitan ang sort. Dapat createdAt: -1 para pinaka-bago ang nasa taas.
     const schedules = await EmailSchedule.find(query)
-      .sort({ scheduledFor: 1 })
+      .sort({ createdAt: -1 }) // <--- ITO ANG BINAGO
       .skip(skip)
       .limit(limitNum)
       .lean();
@@ -1713,9 +1969,13 @@ export const getScheduledEmails = async (
       message: schedule.message,
       richTextContent: schedule.richTextContent,
       includeBilling: schedule.includeBilling,
+      billIds: schedule.billIds || [],
       billType: schedule.billType,
       sendCopyToAdmin: schedule.sendCopyToAdmin,
       useAdminSender: schedule.useAdminSender,
+      senderType:
+        (schedule as any).senderType ||
+        (schedule.useAdminSender ? "admin" : "collection"),
       scheduledFor: schedule.scheduledFor,
       status: schedule.status,
       sentCount: schedule.sentCount,
@@ -1772,15 +2032,21 @@ export const updateScheduledEmail = async (
       });
     }
 
+    if (updates.senderType || updates.useAdminSender !== undefined) {
+      const newSenderType = getSenderTypeFromRequest(updates);
+      (schedule as any).senderType = newSenderType;
+      schedule.useAdminSender = newSenderType === "admin";
+    }
+
     const allowedFields = [
       "name",
       "subject",
       "message",
       "richTextContent",
       "includeBilling",
+      "billIds",
       "billType",
       "sendCopyToAdmin",
-      "useAdminSender",
       "scheduledFor",
       "locationFilter",
       "recurring",
@@ -1793,14 +2059,21 @@ export const updateScheduledEmail = async (
     }
 
     if (updates.scheduledFor) {
-      const newDate = new Date(updates.scheduledFor);
-      if (newDate <= new Date()) {
+      try {
+        const newDate = parseScheduledDate(updates.scheduledFor);
+        if (newDate.getTime() <= Date.now() - 60000) {
+          return res.status(400).json({
+            success: false,
+            message: "Scheduled time must be in the future",
+          });
+        }
+        schedule.scheduledFor = newDate;
+      } catch (dateError: any) {
         return res.status(400).json({
           success: false,
-          message: "Scheduled time must be in the future",
+          message: `Invalid schedule date: ${dateError.message}`,
         });
       }
-      schedule.scheduledFor = newDate;
     }
 
     await schedule.save();
@@ -1816,7 +2089,7 @@ export const updateScheduledEmail = async (
 };
 
 // ============================================================
-// DELETE SCHEDULED EMAIL
+// DELETE SCHEDULED EMAIL (HARD DELETE)
 // ============================================================
 export const deleteScheduledEmail = async (
   req: AuthRequest,
@@ -1843,12 +2116,12 @@ export const deleteScheduledEmail = async (
       });
     }
 
-    schedule.status = "cancelled";
-    await schedule.save();
+    // ✅ TOTOO NANG BUBURAHIN SA DATABASE
+    await EmailSchedule.findByIdAndDelete(scheduleId);
 
     res.status(200).json({
       success: true,
-      message: "Scheduled email cancelled successfully",
+      message: "Scheduled email deleted successfully",
     });
   } catch (error) {
     next(error);
@@ -1982,6 +2255,7 @@ export const forceProcessSchedules = async (
 export default {
   getCustomersForEmail,
   getCustomerBills,
+  getSenderOptions,
   sendManualEmail,
   sendBulkEmails,
   saveEmailTemplate,

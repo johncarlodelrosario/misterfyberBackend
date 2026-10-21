@@ -1,4 +1,4 @@
-// routes/applicationRoutes.ts - COMPLETE FINAL FIXED - WITH PRODUCTION SUPPORT + DISCONNECTED STATUS
+// routes/applicationRoutes.ts - COMPLETE FINAL FIXED - WITH COMPRESSION
 import express, { Router, Request, Response, NextFunction } from "express";
 import { body } from "express-validator";
 import {
@@ -22,7 +22,7 @@ import {
   getAllApplications,
 } from "../controllers/applicationController";
 import { protect, authorize } from "../middleware/auth";
-import { uploadIdCard } from "../middleware/upload";
+import { uploadIdCardSingle } from "../middleware/upload"; // ✅ Use compression middleware
 import Application from "../models/Application";
 import mongoose from "mongoose";
 import NodeCache from "node-cache";
@@ -41,7 +41,7 @@ const PRODUCTION_URL =
 console.log(`📸 Image URL base: ${PRODUCTION_URL}`);
 
 // ============================================================
-// ✅ FIXED: getImageUrl - returns the full URL for any image path
+// ✅ FIXED: getImageUrl
 // ============================================================
 function getImageUrl(imagePath?: string): string {
   if (!imagePath) return "";
@@ -87,10 +87,10 @@ router.get("/address/provinces/:regionCode", getProvincesByRegion);
 router.get("/address/cities/:provinceCode", getCitiesByProvince);
 router.get("/address/barangays/:cityCode", getBarangaysByCity);
 
-// ✅ SUBMIT APPLICATION - WITH PROPER VALIDATION
+// ✅ SUBMIT APPLICATION - WITH COMPRESSION MIDDLEWARE
 router.post(
   "/",
-  uploadIdCard.single("idImage"),
+  uploadIdCardSingle, // ✅ This now compresses server-side
   [
     body("firstName")
       .notEmpty()
@@ -173,7 +173,7 @@ router.get("/dashboard/data", getApplicationDashboardData);
 router.get("/dashboard/stats", getApplicationStats);
 
 // ============================================================
-// ✅ MAIN GET - USING CONTROLLER (FIXED FILTER + NAME SORT)
+// ✅ MAIN GET
 // ============================================================
 router.get("/", getAllApplications);
 
@@ -340,20 +340,24 @@ router.post(
 );
 
 // ============================================================
-// ✅ UPDATE APPLICATION - PUT (FULL UPDATE)
+// ✅ UPDATE APPLICATION - PUT (FULL UPDATE) WITH COMPRESSION
 // ============================================================
-router.put("/:id", async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    await updateApplication(req as any, res, next);
-  } catch (error) {
-    console.error("Error updating application:", error);
-    res.status(500).json({
-      success: false,
-      message: "Error updating application",
-      error: error instanceof Error ? error.message : "Unknown error",
-    });
-  }
-});
+router.put(
+  "/:id",
+  uploadIdCardSingle, // ✅ Add compression middleware
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      await updateApplication(req as any, res, next);
+    } catch (error) {
+      console.error("Error updating application:", error);
+      res.status(500).json({
+        success: false,
+        message: "Error updating application",
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  },
+);
 
 // ============================================================
 // ✅ PATCH APPLICATION - PARTIAL UPDATE
@@ -501,14 +505,13 @@ router.patch("/:id/tower", async (req: Request, res: Response) => {
 });
 
 // ============================================================
-// ✅ UPDATE STATUS - FIXED WITH disconnected
+// ✅ UPDATE STATUS
 // ============================================================
 router.patch("/:id/status", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
 
-    // ✅ ADDED "disconnected"
     if (
       !status ||
       ![

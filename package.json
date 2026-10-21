@@ -10,7 +10,16 @@
     "prod": "npm run build && npm start",
     "clean": "rm -rf dist",
     "rebuild": "npm run clean && npm run build",
-    "postinstall": "npm run build"
+    "postinstall": "npm run build",
+    "capitalize-names": "ts-node src/scripts/capitalizeNames.ts",
+    "compress:images:dry": "DRY_RUN=true ts-node src/scripts/compress-existing-images.ts",
+    "compress:images": "DRY_RUN=false ts-node src/scripts/compress-existing-images.ts",
+    "compress:mongo:dry": "DRY_RUN=true ts-node src/scripts/compress-mongodb-images.ts",
+    "compress:mongo": "DRY_RUN=false ts-node src/scripts/compress-mongodb-images.ts",
+    "compress:local:dry": "DRY_RUN=true ts-node src/scripts/compress-local-uploads.ts",
+    "compress:local": "DRY_RUN=false ts-node src/scripts/compress-local-uploads.ts",
+    "compress:all:dry": "npm run compress:images:dry && npm run compress:mongo:dry && npm run compress:local:dry",
+    "compress:all": "npm run compress:images && npm run compress:mongo && npm run compress:local"
   },
   "dependencies": {
     "@getbrevo/brevo": "^5.0.4",

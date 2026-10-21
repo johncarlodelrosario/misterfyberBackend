@@ -1,3 +1,7 @@
+// backend/src/controllers/adminController.ts - COMPLETE FIXED VERSION
+// FIXED: toggleCustomerEmailAlerts() now verifies the save actually persisted
+// FIXED: Both toggle and preference use the LOGGED-IN admin by ID
+
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import User from "../models/User";
@@ -1081,16 +1085,28 @@ export const getCustomersWithoutAccounts = async (
   }
 };
 
-// ==================== CUSTOMER EMAIL ALERTS TOGGLE ====================
-// CRITICAL FIX: NO DEFAULTS - EXACT VALUE ONLY
+// ============================================================
+// ⭐⭐⭐ FIXED: TOGGLE CUSTOMER EMAIL ALERTS ⭐⭐⭐
+// ============================================================
+// CRITICAL FIX: Uses the LOGGED-IN admin's ID + verifies save
 export const toggleCustomerEmailAlerts = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ) => {
   try {
-    const adminId = req.user?.id;
+    const adminId = req.user?.id || req.user?._id;
     const { enabled } = req.body;
+
+    console.log(`🔄 Toggle customer emails - Admin ID: ${adminId}`);
+    console.log(`   Requested value: ${enabled}`);
+
+    if (!adminId) {
+      return res.status(401).json({
+        success: false,
+        message: "Admin ID not found in request",
+      });
+    }
 
     if (typeof enabled !== "boolean") {
       return res.status(400).json({
@@ -1099,6 +1115,7 @@ export const toggleCustomerEmailAlerts = async (
       });
     }
 
+    // ✅ Find the CURRENT admin (the one making the request)
     const admin = await Admin.findById(adminId);
 
     if (!admin) {
@@ -1108,18 +1125,33 @@ export const toggleCustomerEmailAlerts = async (
       });
     }
 
-    // Set EXACTLY what admin sends - NO DEFAULTS, NO OVERRIDES
+    // ✅ Set the EXACT value
     admin.customerEmailAlertsEnabled = enabled;
     await admin.save();
+
+    console.log(
+      `✅ Toggled customer emails for ${admin.email}: ${enabled ? "ENABLED" : "DISABLED"}`,
+    );
+
+    // ✅ Double-check the value was actually saved
+    const verifyAdmin = await Admin.findById(adminId);
+    const verifiedValue = verifyAdmin?.customerEmailAlertsEnabled === true;
+
+    if (verifiedValue !== enabled) {
+      console.error(
+        `❌ WARNING: Save mismatch! Expected ${enabled} but got ${verifiedValue}`,
+      );
+    }
 
     // Clear cache
     dashboardCache = null;
 
     return res.status(200).json({
       success: true,
-      message: `Customer email alerts ${enabled ? "enabled" : "disabled"} successfully`,
+      message: `Customer email alerts ${verifiedValue ? "enabled" : "disabled"} successfully`,
       data: {
-        customerEmailAlertsEnabled: admin.customerEmailAlertsEnabled,
+        customerEmailAlertsEnabled: verifiedValue,
+        adminEmail: admin.email,
       },
     });
   } catch (error) {
@@ -1128,17 +1160,26 @@ export const toggleCustomerEmailAlerts = async (
   }
 };
 
-// ==================== GET CUSTOMER EMAIL ALERTS PREFERENCE ====================
+// ============================================================
+// ⭐⭐⭐ FIXED: GET CUSTOMER EMAIL ALERTS PREFERENCE ⭐⭐⭐
+// ============================================================
 export const getCustomerEmailAlertsPreference = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ) => {
   try {
-    const adminId = req.user?.id;
+    const adminId = req.user?.id || req.user?._id;
+
+    if (!adminId) {
+      return res.status(401).json({
+        success: false,
+        message: "Admin ID not found",
+      });
+    }
 
     const admin = await Admin.findById(adminId).select(
-      "customerEmailAlertsEnabled",
+      "email customerEmailAlertsEnabled",
     );
 
     if (!admin) {
@@ -1148,11 +1189,18 @@ export const getCustomerEmailAlertsPreference = async (
       });
     }
 
-    // Return EXACT value from database - could be undefined, false, or true
+    // ✅ Return the CURRENT admin's value
+    const isEnabled = admin.customerEmailAlertsEnabled === true;
+
+    console.log(
+      `📧 Preference check for ${admin.email}: ${isEnabled ? "ON" : "OFF"}`,
+    );
+
     return res.status(200).json({
       success: true,
       data: {
-        customerEmailAlertsEnabled: admin.customerEmailAlertsEnabled,
+        customerEmailAlertsEnabled: isEnabled,
+        adminEmail: admin.email,
       },
     });
   } catch (error) {

@@ -1,9 +1,11 @@
+// middleware/upload.ts
 import multer from "multer";
 import path from "path";
 import fs from "fs";
 import { Request } from "express";
 import { v2 as cloudinary } from "cloudinary";
 import streamifier from "streamifier";
+import sharp from "sharp";
 
 // Configure Cloudinary
 cloudinary.config({
@@ -34,12 +36,12 @@ const createUploadDirs = () => {
 };
 createUploadDirs();
 
-// Memory storage muna bago i-upload sa Cloudinary
+// Memory storage before uploading to Cloudinary
 const memoryStorage = multer.memoryStorage();
 
 // File filter function
 const fileFilter = (req: any, file: any, cb: any) => {
-  const allowedTypes = /jpeg|jpg|png|gif|pdf/;
+  const allowedTypes = /jpeg|jpg|png|gif|webp|pdf/;
   const extname = allowedTypes.test(
     path.extname(file.originalname).toLowerCase(),
   );
@@ -48,13 +50,52 @@ const fileFilter = (req: any, file: any, cb: any) => {
   if (mimetype && extname) {
     return cb(null, true);
   } else {
-    cb(new Error("Only images (jpeg, jpg, png, gif) and PDFs are allowed"));
+    cb(
+      new Error("Only images (jpeg, jpg, png, gif, webp) and PDFs are allowed"),
+    );
   }
 };
 
 const limits = {
   fileSize: 5 * 1024 * 1024, // 5MB
   files: 5,
+};
+
+// ============================================================
+// ✅ SERVER-SIDE IMAGE COMPRESSION WITH SHARP
+// ============================================================
+const compressImageBuffer = async (
+  buffer: Buffer,
+  mimetype: string,
+): Promise<{ buffer: Buffer; mimetype: string }> => {
+  // Only compress images, not PDFs
+  if (mimetype === "application/pdf") {
+    return { buffer, mimetype };
+  }
+
+  try {
+    console.log(
+      `🗜️ Server compressing image: ${(buffer.length / 1024).toFixed(0)}KB`,
+    );
+
+    const compressedBuffer = await sharp(buffer)
+      .rotate() // ✅ Auto-rotate based on EXIF (fix sideways photos)
+      .resize(1280, 1280, {
+        fit: "inside",
+        withoutEnlargement: true,
+      })
+      .jpeg({ quality: 75, progressive: true, mozjpeg: true })
+      .toBuffer();
+
+    console.log(
+      `✅ Server compressed: ${(buffer.length / 1024).toFixed(0)}KB → ${(compressedBuffer.length / 1024).toFixed(0)}KB`,
+    );
+
+    return { buffer: compressedBuffer, mimetype: "image/jpeg" };
+  } catch (error) {
+    console.error("❌ Sharp compression failed:", error);
+    return { buffer, mimetype };
+  }
 };
 
 // Helper function to upload buffer to Cloudinary
@@ -72,6 +113,12 @@ const uploadToCloudinary = (
         folder: folder,
         public_id: safeName,
         resource_type: "auto",
+        // ✅ Cloudinary also compresses
+        transformation: [
+          { width: 1280, height: 1280, crop: "limit" },
+          { quality: "auto:good" },
+          { fetch_format: "auto" },
+        ],
       },
       (error, result) => {
         if (error) reject(error);
@@ -83,32 +130,7 @@ const uploadToCloudinary = (
   });
 };
 
-// Local storage fallback
-const idCardLocalStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadPath = path.join(process.cwd(), "uploads/id-cards/");
-    cb(null, uploadPath);
-  },
-  filename: (req, file, cb) => {
-    const originalName = file.originalname;
-    const safeName = originalName.replace(/\s/g, "_");
-    cb(null, safeName);
-  },
-});
-
-const paymentLocalStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadPath = path.join(process.cwd(), "uploads/payments/");
-    cb(null, uploadPath);
-  },
-  filename: (req, file, cb) => {
-    const originalName = file.originalname;
-    const safeName = originalName.replace(/\s/g, "_");
-    cb(null, safeName);
-  },
-});
-
-// Use Cloudinary (auto-detect kung may credentials)
+// Use Cloudinary (auto-detect if credentials exist)
 const useCloudinary = !!(
   process.env.CLOUDINARY_CLOUD_NAME &&
   process.env.CLOUDINARY_API_KEY &&
@@ -136,44 +158,55 @@ export const uploadMultiple = multer({
   limits: limits,
 });
 
-// Middleware to process Cloudinary upload after multer
+// ============================================================
+// ✅ MIDDLEWARE: Process upload with compression
+// ============================================================
 export const processIdCardUpload = async (req: any, res: any, next: any) => {
   if (!req.file) return next();
 
-  if (useCloudinary) {
-    try {
+  try {
+    // ✅ STEP 1: Compress the image buffer with Sharp
+    const { buffer: compressedBuffer, mimetype: compressedMimetype } =
+      await compressImageBuffer(req.file.buffer, req.file.mimetype);
+
+    req.file.buffer = compressedBuffer;
+    req.file.mimetype = compressedMimetype;
+    req.file.originalname =
+      req.file.originalname.replace(/\.[^/.]+$/, "") + ".jpg";
+
+    if (useCloudinary) {
+      // ✅ STEP 2: Upload to Cloudinary
       const imageUrl = await uploadToCloudinary(
-        req.file.buffer,
+        compressedBuffer,
         "misterfyber/id-cards",
         req.file.originalname,
       );
       req.file.cloudinaryUrl = imageUrl;
       req.file.path = imageUrl;
+      console.log(`✅ Uploaded to Cloudinary: ${imageUrl}`);
       next();
-    } catch (error) {
-      console.error("Cloudinary upload error:", error);
-      next(error);
+    } else {
+      // ✅ STEP 2: Save locally
+      const filename = req.file.originalname.replace(/\s/g, "_");
+      const filepath = path.join(process.cwd(), "uploads/id-cards", filename);
+      fs.writeFileSync(filepath, compressedBuffer);
+      req.file.path = `uploads/id-cards/${filename}`;
+      console.log(`✅ Saved locally: ${req.file.path}`);
+      next();
     }
-  } else {
-    // Save locally
-    const localStorage = multer.diskStorage({
-      destination: (req, file, cb) => {
-        cb(null, path.join(process.cwd(), "uploads/id-cards/"));
-      },
-      filename: (req, file, cb) => {
-        const safeName = file.originalname.replace(/\s/g, "_");
-        cb(null, safeName);
-      },
-    });
-    const upload = multer({ storage: localStorage }).single("idImage");
-    upload(req, res, next);
+  } catch (error) {
+    console.error("Upload processing error:", error);
+    next(error);
   }
 };
 
+// ============================================================
+// ✅ EXPORT: Single upload with compression
+// ============================================================
 export const uploadIdCardSingle = (req: any, res: any, next: any) => {
   uploadIdCard.single("idImage")(req, res, (err: any) => {
     if (err) return next(err);
-    if (req.file && useCloudinary) {
+    if (req.file) {
       processIdCardUpload(req, res, next);
     } else {
       next();
@@ -181,8 +214,17 @@ export const uploadIdCardSingle = (req: any, res: any, next: any) => {
   });
 };
 
-export const uploadPaymentProofSingle =
-  uploadPaymentProof.single("paymentProof");
+export const uploadPaymentProofSingle = (req: any, res: any, next: any) => {
+  uploadPaymentProof.single("paymentProof")(req, res, (err: any) => {
+    if (err) return next(err);
+    if (req.file) {
+      processIdCardUpload(req, res, next);
+    } else {
+      next();
+    }
+  });
+};
+
 export const uploadMultipleFiles = uploadMultiple.array("files", 5);
 
 export const getFileUrl = (filePath: string, req?: Request): string => {

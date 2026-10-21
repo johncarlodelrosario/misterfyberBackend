@@ -1,4 +1,5 @@
-// backend/src/services/schedulerService.ts
+// backend/src/services/schedulerService.ts - COMPLETE FIXED VERSION
+// UPDATED: Supports specific billIds, senderType (workselpueblo, fbsilkresidence), and recurring schedules properly.
 
 import mongoose from "mongoose";
 import EmailSchedule from "../models/EmailSchedule";
@@ -7,7 +8,71 @@ import Application from "../models/Application";
 import Billing from "../models/Billing";
 import emailService, { getCollectionEmailByLocation } from "./emailService";
 
-// Generate email preview HTML
+// ============================================================
+// SENDER TYPES & HELPERS (Synced with manualEmailController)
+// ============================================================
+type SenderType = "admin" | "collection" | "workselpueblo" | "fbsilkresidence";
+
+function extractLocationFromBuildingName(buildingName?: string): string {
+  if (!buildingName) return "other";
+  const name = buildingName.toLowerCase().trim();
+  if (name.includes("breeze")) return "breeze";
+  if (name.includes("sil") || name.includes("silk")) return "sil";
+  return "other";
+}
+
+function getSenderInfoByType(
+  senderType: SenderType,
+  location?: string,
+): { email: string; name: string; label: string } {
+  switch (senderType) {
+    case "admin":
+      return {
+        email: process.env.ADMIN_EMAIL || "admin@misterfyber.com",
+        name: "Mister Fyber Admin",
+        label: "Admin",
+      };
+    case "workselpueblo":
+      return {
+        email:
+          process.env.SENDER_EMAIL_WORKSELPUEBLO || "workselpueblo@gmail.com",
+        name: process.env.SENDER_NAME_WORKSELPUEBLO || "Workselpueblo",
+        label: "Workselpueblo",
+      };
+    case "fbsilkresidence":
+      return {
+        email:
+          process.env.SENDER_EMAIL_FBSILKRESIDENCE ||
+          "fbsilkresidence@gmail.com",
+        name: process.env.SENDER_NAME_FBSILKRESIDENCE || "FB Silk Residence",
+        label: "FB Silk Residence",
+      };
+    case "collection":
+    default:
+      const collectionEmail = location
+        ? getCollectionEmailByLocation(location)
+        : process.env.COLLECTION_EMAIL_DEFAULT || "admin@misterfyber.com";
+
+      let name = "Mister Fyber Collection";
+      let label = "Collection";
+
+      if (collectionEmail.includes("breeze")) {
+        name = "Mister Fyber Breeze Collection";
+        label = "Breeze Collection";
+      } else if (
+        collectionEmail.includes("sil") ||
+        collectionEmail.includes("silk")
+      ) {
+        name = "Mister Fyber SIL Collection";
+        label = "SIL Collection";
+      }
+      return { email: collectionEmail, name, label };
+  }
+}
+
+// ============================================================
+// EMAIL PREVIEW GENERATOR
+// ============================================================
 function generateEmailPreview(
   subject: string,
   message: string,
@@ -29,12 +94,7 @@ function generateEmailPreview(
 
   let locationBadge = "";
   if (customerData && customerData.buildingName) {
-    const buildingName = customerData.buildingName.toLowerCase().trim();
-    let location = "other";
-    if (buildingName.includes("breeze")) location = "breeze";
-    else if (buildingName.includes("sil") || buildingName.includes("silk"))
-      location = "sil";
-
+    const location = extractLocationFromBuildingName(customerData.buildingName);
     if (location !== "other") {
       locationBadge = `
         <div style="display: inline-block; background: ${location === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin: 10px 0;">
@@ -52,7 +112,7 @@ function generateEmailPreview(
     );
 
     let billsHtml = "";
-    billingDataArray.forEach((bill, index) => {
+    billingDataArray.forEach((bill) => {
       billsHtml += `
         <div style="border-bottom: 1px solid #e0e0e0; padding-bottom: 12px; margin-bottom: 12px;">
           <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -129,7 +189,7 @@ function generateEmailPreview(
         </div>
         <div class="footer">
           <p>Mister Fyber - Your trusted internet provider</p>
-          <p><small>Need help? Contact us at <a href="mailto:admin@misterfyber.com">admin@misterfyber.com</a></small></p>
+          <p><small>Need help? Contact us at <a href="mailto:${process.env.SUPPORT_EMAIL || "admin@misterfyber.com"}">${process.env.SUPPORT_EMAIL || "admin@misterfyber.com"}</a></small></p>
         </div>
       </div>
     </body>
@@ -137,9 +197,9 @@ function generateEmailPreview(
   `;
 }
 
-/**
- * Process a single scheduled email
- */
+// ============================================================
+// PROCESS SINGLE SCHEDULE
+// ============================================================
 async function processScheduledEmail(schedule: any): Promise<void> {
   console.log(
     `📧 Processing scheduled email: ${schedule._id} - ${schedule.name}`,
@@ -155,6 +215,9 @@ async function processScheduledEmail(schedule: any): Promise<void> {
   const errors: string[] = [];
 
   const applicationIds = schedule.applicationIds || [];
+  const senderType: SenderType =
+    (schedule as any).senderType ||
+    (schedule.useAdminSender ? "admin" : "collection");
 
   for (const applicationId of applicationIds) {
     try {
@@ -166,42 +229,42 @@ async function processScheduledEmail(schedule: any): Promise<void> {
       }
 
       // Get location
-      let location = "";
-      if (application.buildingName) {
-        const buildingName = application.buildingName.toLowerCase().trim();
-        if (buildingName.includes("breeze")) {
-          location = "breeze";
-        } else if (
-          buildingName.includes("sil") ||
-          buildingName.includes("silk")
-        ) {
-          location = "sil";
-        }
-      }
+      const location = extractLocationFromBuildingName(
+        application.buildingName,
+      );
 
-      // Fetch bills if needed
+      // Fetch bills if needed (✅ FIX: Prioritize specific billIds if provided)
       let billingDataArray: any[] = [];
       if (schedule.includeBilling) {
-        let billQuery: any = { applicationId: application.applicationId };
-        if (schedule.billType === "unpaid") {
-          billQuery.status = { $in: ["sent", "overdue"] };
-        } else if (schedule.billType === "latest") {
-          const latestBill = await Billing.findOne({
-            applicationId: application.applicationId,
-          })
-            .sort({ createdAt: -1 })
-            .lean();
-          if (latestBill) {
-            billingDataArray = [latestBill];
-          }
-        } else if (schedule.billType === "installation") {
-          billQuery.isInstallationBill = true;
-          billQuery.installationFeePaid = false;
-        }
+        if (schedule.billIds && schedule.billIds.length > 0) {
+          // Kunin lang ang mga specific na bill na pinili sa UI
+          billingDataArray = await Billing.find({
+            _id: { $in: schedule.billIds },
+            applicationId: application.applicationId, // Siguraduhing pag-aari ni customer
+          }).lean();
+        } else {
+          // Fallback sa billType kung walang specific billIds
+          let billQuery: any = { applicationId: application.applicationId };
 
-        if (billingDataArray.length === 0 && schedule.billType !== "latest") {
-          const bills = await Billing.find(billQuery).lean();
-          billingDataArray = bills;
+          if (schedule.billType === "unpaid") {
+            billQuery.status = { $in: ["sent", "overdue"] };
+          } else if (schedule.billType === "latest") {
+            const latestBill = await Billing.findOne({
+              applicationId: application.applicationId,
+            })
+              .sort({ createdAt: -1 })
+              .lean();
+            if (latestBill) {
+              billingDataArray = [latestBill];
+            }
+          } else if (schedule.billType === "installation") {
+            billQuery.isInstallationBill = true;
+            billQuery.installationFeePaid = false;
+          }
+
+          if (billingDataArray.length === 0 && schedule.billType !== "latest") {
+            billingDataArray = await Billing.find(billQuery).lean();
+          }
         }
 
         if (billingDataArray.length > 0) {
@@ -214,15 +277,9 @@ async function processScheduledEmail(schedule: any): Promise<void> {
         }
       }
 
-      let senderInfo = "";
-      if (schedule.useAdminSender) {
-        senderInfo = "Sent from: Admin (admin@misterfyber.com)";
-      } else if (location) {
-        const collectionEmail = getCollectionEmailByLocation(location);
-        senderInfo = `Sent from: Collection (${collectionEmail})`;
-      } else {
-        senderInfo = "Sent from: Admin (admin@misterfyber.com)";
-      }
+      // Get sender info
+      const senderInfo = getSenderInfoByType(senderType, location);
+      const senderInfoText = `Sent from: ${senderInfo.label} (${senderInfo.email})`;
 
       const emailHtml = generateEmailPreview(
         schedule.subject,
@@ -230,7 +287,7 @@ async function processScheduledEmail(schedule: any): Promise<void> {
         schedule.includeBilling && billingDataArray.length > 0,
         billingDataArray,
         application,
-        senderInfo,
+        senderInfoText,
         schedule.richTextContent,
       );
 
@@ -238,6 +295,7 @@ async function processScheduledEmail(schedule: any): Promise<void> {
       let emailError = null;
 
       try {
+        // ✅ FIX: Pass senderType correctly
         emailSent = await emailService.sendEmail(
           application.email,
           schedule.subject,
@@ -245,7 +303,8 @@ async function processScheduledEmail(schedule: any): Promise<void> {
           true,
           location,
           {
-            useAdminSender: schedule.useAdminSender === true,
+            useAdminSender: senderType === "admin",
+            senderType: senderType,
           },
         );
 
@@ -271,16 +330,18 @@ async function processScheduledEmail(schedule: any): Promise<void> {
         recipientCount: 1,
         includeBilling: schedule.includeBilling || false,
         billType: schedule.billType,
+        billIds: billingDataArray.map((b) => b._id), // ✅ Save IDs
         billCount: billingDataArray.length,
         error: emailError || (emailSent ? undefined : "Failed to send email"),
         sentBy: schedule.createdBy || "Scheduler",
         sentByEmail: schedule.createdByEmail || "scheduler@misterfyber.com",
         adminCopySent: false,
-        senderType: schedule.useAdminSender ? "admin" : "collection",
+        senderType: senderType, // ✅ Save correct senderType
         location: location || "unknown",
-        collectionEmail: location
-          ? getCollectionEmailByLocation(location)
-          : null,
+        collectionEmail:
+          location && location !== "other"
+            ? getCollectionEmailByLocation(location)
+            : null,
         isScheduled: true,
         scheduleId: schedule._id.toString(),
       });
@@ -294,7 +355,6 @@ async function processScheduledEmail(schedule: any): Promise<void> {
         errors.push(`Failed to send to ${application.email}: ${emailError}`);
       }
 
-      // Add small delay between emails
       await new Promise((resolve) => setTimeout(resolve, 500));
     } catch (error: any) {
       failedCount++;
@@ -303,7 +363,6 @@ async function processScheduledEmail(schedule: any): Promise<void> {
     }
   }
 
-  // Update schedule
   schedule.sentCount = sentCount;
   schedule.failedCount = failedCount;
 
@@ -326,9 +385,9 @@ async function processScheduledEmail(schedule: any): Promise<void> {
   );
 }
 
-/**
- * Process all pending scheduled emails
- */
+// ============================================================
+// PROCESS ALL PENDING SCHEDULES
+// ============================================================
 export async function processScheduledEmails(): Promise<void> {
   console.log("🔄 Checking for scheduled emails to process...");
   console.log(`🕐 Current server time: ${new Date().toISOString()}`);
@@ -345,14 +404,12 @@ export async function processScheduledEmails(): Promise<void> {
     console.log(`📧 Found ${schedules.length} pending schedules to process`);
 
     if (schedules.length === 0) {
-      console.log("📭 No pending scheduled emails to process");
       return;
     }
 
     for (const schedule of schedules) {
       console.log(`📧 Processing: ${schedule.name} (${schedule._id})`);
       console.log(`   Scheduled for: ${schedule.scheduledFor}`);
-      console.log(`   Recipients: ${schedule.totalRecipients}`);
 
       try {
         await processScheduledEmail(schedule);
@@ -361,15 +418,11 @@ export async function processScheduledEmails(): Promise<void> {
         if (schedule.recurring && schedule.recurring.enabled) {
           const { frequency, interval, endDate } = schedule.recurring;
 
-          // Check if end date has passed
           if (endDate && new Date(endDate) <= new Date()) {
-            console.log(
-              `⏹️ Recurring schedule ${schedule._id} has ended (end date: ${endDate})`,
-            );
+            console.log(`⏹️ Recurring schedule ${schedule._id} has ended`);
             continue;
           }
 
-          // Calculate next schedule date
           let nextDate = new Date(schedule.scheduledFor);
           if (frequency === "daily") {
             nextDate.setDate(nextDate.getDate() + interval);
@@ -379,7 +432,6 @@ export async function processScheduledEmails(): Promise<void> {
             nextDate.setMonth(nextDate.getMonth() + interval);
           }
 
-          // Check if next date is beyond end date
           if (endDate && nextDate > new Date(endDate)) {
             console.log(
               `⏹️ Recurring schedule ${schedule._id} has reached end date`,
@@ -387,7 +439,6 @@ export async function processScheduledEmails(): Promise<void> {
             continue;
           }
 
-          // Create a new schedule for the next occurrence
           const newSchedule = new EmailSchedule({
             name: `${schedule.name} (Recurring)`,
             applicationIds: schedule.applicationIds,
@@ -395,9 +446,11 @@ export async function processScheduledEmails(): Promise<void> {
             message: schedule.message,
             richTextContent: schedule.richTextContent,
             includeBilling: schedule.includeBilling,
+            billIds: schedule.billIds, // ✅ Copy billIds
             billType: schedule.billType,
             sendCopyToAdmin: schedule.sendCopyToAdmin,
             useAdminSender: schedule.useAdminSender,
+            senderType: (schedule as any).senderType, // ✅ Copy senderType
             scheduledFor: nextDate,
             status: "pending",
             totalRecipients: schedule.totalRecipients,
@@ -424,9 +477,9 @@ export async function processScheduledEmails(): Promise<void> {
   }
 }
 
-/**
- * Start the email scheduler
- */
+// ============================================================
+// START SCHEDULER
+// ============================================================
 export function startScheduler(): void {
   console.log("🚀 Starting email scheduler...");
 
@@ -438,6 +491,5 @@ export function startScheduler(): void {
 
   console.log("✅ Email scheduler started, running every minute");
 
-  // Return the interval so it can be cleared if needed
   return interval as any;
 }

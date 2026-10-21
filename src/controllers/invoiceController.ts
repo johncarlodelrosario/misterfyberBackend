@@ -9,6 +9,7 @@ import BillingCycle from "../models/BillingCycle";
 import Payment from "../models/Payment";
 import User from "../models/User";
 import Plan from "../models/Plan";
+import Building from "../models/Building";
 import emailService, {
   getCollectionEmailByLocation,
   getLocationFromEntity,
@@ -19,7 +20,78 @@ import path from "path";
 
 type AuthRequest = Request & { user?: any };
 
-// Helper function to check admin access
+// ==================== WILCONNECT BUILDINGS ====================
+const WILCONNECT_BUILDINGS = ["el pueblo", "vitalez", "newport"];
+
+interface BrandInfo {
+  isWilconnect: boolean;
+  companyName: string;
+  companyAddress: string;
+  companyVat: string;
+  companyContact: string;
+  bankName: string;
+  accountName: string;
+  accountNumber: string;
+}
+
+function getBrandForBuilding(buildingName?: string): BrandInfo {
+  const normalized = (buildingName || "").toLowerCase().trim();
+  const isWilconnect = WILCONNECT_BUILDINGS.some((b) => normalized.includes(b));
+
+  if (isWilconnect) {
+    console.log(
+      `🏢 invoiceController Brand: WILCONNECT (building: "${buildingName}")`,
+    );
+    return {
+      isWilconnect: true,
+      companyName: "WILCONNECT NETWORK CORPORATION",
+      companyAddress:
+        "UNIT 6 BLDG 2 G/F EL PUEBLO CONDO, ANONAS ST., STA. MESA, MANILA",
+      companyVat: "697-461-165-00000",
+      companyContact: "0969-341-4876",
+      bankName: "BDO",
+      accountName: "WILCONNECT NETWORK CORPORATION",
+      accountNumber: "013448002421",
+    };
+  }
+
+  console.log(
+    `🏢 invoiceController Brand: FYBERBLIZZ (building: "${buildingName || "N/A"}")`,
+  );
+  return {
+    isWilconnect: false,
+    companyName: "Fyberblizz Network Corporation",
+    companyAddress:
+      "UNIT 6 BLDG 2 G/F EL PUEBLO CONDO, ANONAS ST., STA. MESA, MANILA",
+    companyVat: "697-461-165-00000",
+    companyContact: "0969-341-4876",
+    bankName: "BDO",
+    accountName: "FYBERBLIZZ NETWORK CORPORATION",
+    accountNumber: "013448002421",
+  };
+}
+
+async function getBrandForApplication(application: any): Promise<BrandInfo> {
+  if (!application) return getBrandForBuilding();
+
+  if (application.buildingName) {
+    return getBrandForBuilding(application.buildingName);
+  }
+
+  if (application.buildingId) {
+    try {
+      const building = await Building.findById(application.buildingId).lean();
+      if (building && (building as any).buildingName) {
+        return getBrandForBuilding((building as any).buildingName);
+      }
+    } catch (err) {
+      console.error("Error resolving building for brand:", err);
+    }
+  }
+
+  return getBrandForBuilding();
+}
+
 function checkAdmin(req: AuthRequest, res: Response): boolean {
   if (!req.user || !req.user.role) {
     res.status(401).json({
@@ -108,21 +180,19 @@ export const createInvoiceFromBilling = async (
       });
     }
 
-    // Get user for email
     const user = await User.findOne({ email: application.email }).lean();
 
-    // Get location for the invoice
     const location = await getLocationFromEntity(application);
     const collectionEmail = getCollectionEmailByLocation(location);
 
-    // Prepare invoice data
+    const brand = await getBrandForApplication(application);
+
     const invoiceItems = [];
     let subtotal = 0;
     let isInstallationFee = false;
     let isProRated = false;
     let proRatedDays = 0;
 
-    // If billing exists, use its items
     if (billing && billing.items) {
       for (const item of billing.items) {
         invoiceItems.push({
@@ -149,11 +219,9 @@ export const createInvoiceFromBilling = async (
         subtotal += item.amount;
       }
     } else {
-      // Create default items
       const plan = await Plan.findById(application.planId).lean();
       const monthlyRate = (plan as any)?.price || 0;
 
-      // Pro-rated
       if (billing?.isProRated) {
         isProRated = true;
         proRatedDays = billing.proRatedDays || 0;
@@ -170,7 +238,6 @@ export const createInvoiceFromBilling = async (
         subtotal += proRatedAmount;
       }
 
-      // Installation fee
       const installationFeeAmount = billing?.installationFee || 0;
       if (installationFeeAmount > 0) {
         invoiceItems.push({
@@ -184,7 +251,6 @@ export const createInvoiceFromBilling = async (
         isInstallationFee = true;
       }
 
-      // Monthly subscription
       if (!billing?.isProRated || billing?.isProRated === false) {
         invoiceItems.push({
           description: `Monthly Subscription - ${formatDateForDisplay(billing?.billingPeriod.start || new Date())} to ${formatDateForDisplay(billing?.billingPeriod.end || new Date())}`,
@@ -197,7 +263,6 @@ export const createInvoiceFromBilling = async (
       }
     }
 
-    // Determine invoice type
     let invoiceTypeFinal = "monthly";
     if (isInstallationFee && isProRated) {
       invoiceTypeFinal = "combined";
@@ -230,11 +295,10 @@ export const createInvoiceFromBilling = async (
       customerAddress: customerAddress,
       customerEmail: application.email,
       customerPhone: application.phoneNumber || "",
-      companyName: "Fyberblizz Network Corporation",
-      companyAddress:
-        "UNIT 6 BLDG 2 G/F EL PUEBLO CONDO, ANONAS ST., STA. MESA, MANILA",
-      companyVat: "697-461-165-00000",
-      companyContact: "0969-341-4876",
+      companyName: brand.companyName,
+      companyAddress: brand.companyAddress,
+      companyVat: brand.companyVat,
+      companyContact: brand.companyContact,
       companyEmail: collectionEmail,
       billingPeriod: {
         start: billing?.billingPeriod?.start || new Date(),
@@ -248,9 +312,9 @@ export const createInvoiceFromBilling = async (
       taxAmount: 0,
       discountAmount: 0,
       total: total,
-      bankName: "BDO",
-      accountName: "FYBERBLIZZ NETWORK CORPORATION",
-      accountNumber: "013448002421",
+      bankName: brand.bankName,
+      accountName: brand.accountName,
+      accountNumber: brand.accountNumber,
       status: "draft",
       billingId: billing?._id,
       billingCycleId: billing?.billingCycleId,
@@ -267,7 +331,6 @@ export const createInvoiceFromBilling = async (
 
     const invoice = await Invoice.create(invoiceData);
 
-    // Send invoice with PDF
     try {
       const pdfBuffer = await generateInvoicePDF(invoice);
       const pdfDir = path.join(__dirname, "../../uploads/invoices");
@@ -285,7 +348,6 @@ export const createInvoiceFromBilling = async (
         status: "sent",
       });
 
-      // Send email with PDF using emailService
       await emailService.sendInvoiceWithPDF(
         invoice,
         pdfBuffer,
@@ -296,7 +358,6 @@ export const createInvoiceFromBilling = async (
       invoice.status = "sent";
     } catch (emailError) {
       console.error("Failed to send invoice email:", emailError);
-      // Still return the invoice, just note that email failed
     }
 
     res.status(201).json({
@@ -504,7 +565,17 @@ export const markInvoiceAsPaid = async (
       });
     }
 
-    // Get location for email
+    // Detect FREE from invoice fields so the receipt shows FREE
+    const invoiceAny: any = invoice;
+    const invoiceIsFree =
+      invoiceAny.isFree === true ||
+      (invoiceAny.paymentMethod &&
+        String(invoiceAny.paymentMethod).toLowerCase() === "free") ||
+      (invoiceAny.status &&
+        String(invoiceAny.status).toLowerCase() === "free") ||
+      (invoiceAny.invoiceType &&
+        String(invoiceAny.invoiceType).toLowerCase() === "free");
+
     let location = "";
     try {
       const application = await Application.findOne({
@@ -519,17 +590,18 @@ export const markInvoiceAsPaid = async (
 
     const collectionEmail = getCollectionEmailByLocation(location);
 
-    // Create payment record
     const payment = await Payment.create(
       [
         {
-          amount: invoice.total,
-          paymentMethod: "manual",
+          amount: invoiceIsFree ? 0 : invoice.total,
+          paymentMethod: invoiceIsFree ? "free" : "manual",
           paymentType: invoice.isInstallationFee
             ? "installation"
             : "subscription",
           status: "completed",
-          referenceNumber: referenceNumber || `INV-${Date.now()}`,
+          referenceNumber:
+            referenceNumber ||
+            (invoiceIsFree ? `FREE-${Date.now()}` : `INV-${Date.now()}`),
           billingId: invoice.billingId,
           applicationId: invoice.applicationId,
           userId: invoice.userId,
@@ -537,14 +609,24 @@ export const markInvoiceAsPaid = async (
           customerEmail: invoice.customerEmail,
           customerPhone: invoice.customerPhone,
           paymentDetails: {
-            gateway: "manual",
+            gateway: invoiceIsFree ? "free" : "manual",
             gatewayResponse: {
               confirmedBy: req.user?._id,
               confirmedAt: new Date(),
-              notes: notes || "Marked as paid via invoice",
+              notes:
+                notes ||
+                (invoiceIsFree
+                  ? "Marked as free via invoice"
+                  : "Marked as paid via invoice"),
               invoiceNumber: invoice.invoiceNumber,
+              isFree: invoiceIsFree,
             },
-            notes: notes || "Payment from invoice",
+            notes:
+              notes ||
+              (invoiceIsFree
+                ? "Free receipt from invoice"
+                : "Payment from invoice"),
+            isFree: invoiceIsFree,
           },
           paidAt: new Date(),
         },
@@ -552,13 +634,23 @@ export const markInvoiceAsPaid = async (
       { session },
     );
 
-    // Update invoice status
     invoice.status = "paid";
     invoice.paidAt = new Date();
     invoice.paymentId = payment[0]._id;
+    if (invoiceIsFree) {
+      invoice.paymentMethod = "free";
+      invoice.total = 0;
+      invoice.subtotal = 0;
+      if (Array.isArray(invoice.items)) {
+        invoice.items = invoice.items.map((item: any) => ({
+          ...item,
+          rate: 0,
+          amount: 0,
+        }));
+      }
+    }
     await invoice.save({ session });
 
-    // Update billing record
     if (invoice.billingId) {
       await Billing.findByIdAndUpdate(
         invoice.billingId,
@@ -574,7 +666,6 @@ export const markInvoiceAsPaid = async (
       );
     }
 
-    // Update billing cycle
     if (invoice.billingCycleId) {
       const billingCycle = await BillingCycle.findById(
         invoice.billingCycleId,
@@ -583,7 +674,7 @@ export const markInvoiceAsPaid = async (
         billingCycle.paymentHistory = billingCycle.paymentHistory || [];
         billingCycle.paymentHistory.push({
           billingId: invoice.billingId || invoice._id,
-          amount: invoice.total,
+          amount: invoiceIsFree ? 0 : invoice.total,
           paidAt: new Date(),
         });
         if (invoice.isInstallationFee) {
@@ -593,7 +684,6 @@ export const markInvoiceAsPaid = async (
       }
     }
 
-    // Update application
     if (invoice.applicationId) {
       const application = await Application.findOne({
         applicationId: invoice.applicationId,
@@ -609,12 +699,15 @@ export const markInvoiceAsPaid = async (
     await session.commitTransaction();
 
     // ============================================================
-    // SEND PAYMENT CONFIRMATION EMAIL WITH PAID INVOICE ATTACHMENT
+    // SEND PAYMENT CONFIRMATION EMAIL WITH PAID/FREE INVOICE ATTACHMENT
+    // forceSend = true — receipt ALWAYS goes out
+    // isFree     — renders FREE stamp/watermark in PDF and FREE header
     // ============================================================
     try {
-      console.log(`📧 Sending paid invoice email for ${invoice.invoiceNumber}`);
+      console.log(
+        `📧 Sending ${invoiceIsFree ? "FREE" : "paid"} invoice email for ${invoice.invoiceNumber}`,
+      );
 
-      // Get application for location
       const application = await Application.findOne({
         applicationId: invoice.applicationId,
       }).lean();
@@ -624,7 +717,6 @@ export const markInvoiceAsPaid = async (
         userLocation = await getLocationFromEntity(application);
       }
 
-      // Generate PDF for the paid invoice
       let pdfBuffer: Buffer;
       let pdfFileName = `${invoice.invoiceNumber}.pdf`;
 
@@ -633,7 +725,12 @@ export const markInvoiceAsPaid = async (
         if (fs.existsSync(filePath)) {
           pdfBuffer = fs.readFileSync(filePath);
         } else {
-          pdfBuffer = await generateInvoicePDF(invoice);
+          pdfBuffer = await generateInvoicePDF({
+            ...invoice.toObject(),
+            isFree: invoiceIsFree,
+            status: invoiceIsFree ? "free" : invoice.status,
+            paymentMethod: invoiceIsFree ? "free" : invoice.paymentMethod,
+          } as any);
           const pdfDir = path.join(__dirname, "../../uploads/invoices");
           if (!fs.existsSync(pdfDir)) {
             fs.mkdirSync(pdfDir, { recursive: true });
@@ -646,7 +743,12 @@ export const markInvoiceAsPaid = async (
           });
         }
       } else {
-        pdfBuffer = await generateInvoicePDF(invoice);
+        pdfBuffer = await generateInvoicePDF({
+          ...invoice.toObject(),
+          isFree: invoiceIsFree,
+          status: invoiceIsFree ? "free" : invoice.status,
+          paymentMethod: invoiceIsFree ? "free" : invoice.paymentMethod,
+        } as any);
         const pdfDir = path.join(__dirname, "../../uploads/invoices");
         if (!fs.existsSync(pdfDir)) {
           fs.mkdirSync(pdfDir, { recursive: true });
@@ -659,40 +761,47 @@ export const markInvoiceAsPaid = async (
         });
       }
 
-      // Send payment confirmation email with invoice PDF ATTACHMENT
-      // Use the dedicated sendPaidInvoiceEmail method
       const emailSent = await emailService.sendPaidInvoiceEmail(
-        invoice,
+        {
+          ...invoice.toObject(),
+          buildingName:
+            (application && (application as any).buildingName) || "",
+          isFree: invoiceIsFree,
+          status: invoiceIsFree ? "free" : invoice.status,
+          paymentMethod: invoiceIsFree ? "free" : invoice.paymentMethod,
+        } as any,
         pdfBuffer,
         pdfFileName,
         payment[0],
         userLocation,
         false, // useAdminSender
+        undefined, // senderType
+        true, // forceSend — receipts are transactional
+        invoiceIsFree, // isFree — renders FREE instead of PAID
       );
 
       if (emailSent) {
         console.log(
-          `✅ Payment confirmation email sent to ${invoice.customerEmail} with paid invoice attachment`,
+          `✅ ${invoiceIsFree ? "FREE" : "Paid"} invoice email sent to ${invoice.customerEmail}`,
         );
       } else {
         console.warn(
-          `⚠️ Failed to send payment confirmation email to ${invoice.customerEmail}`,
+          `⚠️ Failed to send ${invoiceIsFree ? "FREE" : "paid"} invoice email to ${invoice.customerEmail}`,
         );
       }
     } catch (emailError) {
       console.error("Failed to send payment confirmation email:", emailError);
-      // Don't fail the transaction if email fails
     }
 
-    // Get updated invoice for response
     const updatedInvoice = await Invoice.findById(invoiceId).lean();
 
     res.status(200).json({
       success: true,
-      message: `Invoice ${updatedInvoice?.invoiceNumber} marked as paid and confirmation email sent`,
+      message: `Invoice ${updatedInvoice?.invoiceNumber} marked as ${invoiceIsFree ? "FREE" : "paid"} and confirmation email sent`,
       data: {
         invoice: updatedInvoice,
         payment: payment[0],
+        isFree: invoiceIsFree,
       },
     });
   } catch (error) {

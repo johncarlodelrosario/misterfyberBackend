@@ -40,13 +40,114 @@ export interface InvoiceData {
   isInstallationFee: boolean;
   isProRated: boolean;
   proRatedDays?: number;
+  // Optional: hint fields for brand resolution
+  buildingName?: string;
+  location?: string;
+  // Status fields (for PAID / FREE stamp/watermark)
+  status?: string; // "draft" | "sent" | "paid" | "overdue" | "cancelled" | "free"
+  paidAt?: Date | string | null;
+  // 🆕 Free marker
+  isFree?: boolean;
 }
 
-function formatDateForPDF(date: Date): string {
+// ==================== WILCONNECT BRAND RESOLUTION ====================
+const WILCONNECT_BUILDINGS = ["el pueblo", "vitalez", "newport"];
+
+interface PdfBrand {
+  isWilconnect: boolean;
+  companyName: string;
+  companyAddress: string;
+  companyVat: string;
+  companyContact: string;
+  bankName: string;
+  accountName: string;
+  accountNumber: string;
+}
+
+function getBrandForPdf(invoiceData: InvoiceData): PdfBrand {
+  const hint = [
+    (invoiceData as any)?.buildingName,
+    (invoiceData as any)?.location,
+    invoiceData?.customerAddress,
+    invoiceData?.companyName,
+    invoiceData?.accountName,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  const isWilconnect =
+    hint.includes("wilconnect") ||
+    WILCONNECT_BUILDINGS.some((b) => hint.includes(b));
+
+  if (isWilconnect) {
+    return {
+      isWilconnect: true,
+      companyName: "WILCONNECT NETWORK CORPORATION",
+      companyAddress:
+        "UNIT 6 BLDG 2 G/F EL PUEBLO CONDO, ANONAS ST., STA. MESA, MANILA",
+      companyVat: "697-461-165-00000",
+      companyContact: "0969-341-4876",
+      bankName: "BDO",
+      accountName: "WILCONNECT NETWORK CORPORATION",
+      accountNumber: "013448002421",
+    };
+  }
+
+  return {
+    isWilconnect: false,
+    companyName: "FYBERBLIZZ NETWORK CORPORATION",
+    companyAddress:
+      "UNIT 6 BLDG 2 G/F EL PUEBLO CONDO, ANONAS ST., STA. MESA, MANILA",
+    companyVat: "697-461-165-00000",
+    companyContact: "0969-341-4876",
+    bankName: "BDO",
+    accountName: "FYBERBLIZZ NETWORK CORPORATION",
+    accountNumber: "013448002421",
+  };
+}
+
+// ==================== PAID / FREE DETECTION ====================
+function isPaidInvoice(invoiceData: InvoiceData): boolean {
+  if (!invoiceData) return false;
+  if (invoiceData.isFree === true) return false; // free wins
+  if (invoiceData.status && invoiceData.status.toLowerCase() === "free")
+    return false;
+  if (invoiceData.status && invoiceData.status.toLowerCase() === "paid") {
+    return true;
+  }
+  if (invoiceData.paidAt) {
+    return true;
+  }
+  return false;
+}
+
+// 🆕 Free detection
+function isFreeInvoice(invoiceData: InvoiceData): boolean {
+  if (!invoiceData) return false;
+  if (invoiceData.isFree === true) return true;
+  if (invoiceData.status && invoiceData.status.toLowerCase() === "free")
+    return true;
+  if (
+    invoiceData.paymentMethod &&
+    invoiceData.paymentMethod.toLowerCase() === "free"
+  )
+    return true;
+  if (
+    invoiceData.invoiceType &&
+    invoiceData.invoiceType.toLowerCase() === "free"
+  )
+    return true;
+  return false;
+}
+
+function formatDateForPDF(date: Date | string | null | undefined): string {
   if (!date) return "N/A";
-  const month = date.getMonth() + 1;
-  const day = date.getDate();
-  const year = date.getFullYear();
+  const d = date instanceof Date ? date : new Date(date);
+  if (isNaN(d.getTime())) return "N/A";
+  const month = d.getMonth() + 1;
+  const day = d.getDate();
+  const year = d.getFullYear();
   return `${month}/${day}/${year}`;
 }
 
@@ -57,9 +158,22 @@ function formatCurrency(amount: number): string {
 export async function generateInvoicePDF(
   invoiceData: InvoiceData,
 ): Promise<Buffer> {
+  // ==================== RESOLVE BRAND & PAID/FREE STATE ====================
+  const brand = getBrandForPdf(invoiceData);
+  const free = isFreeInvoice(invoiceData);
+  const paid = !free && isPaidInvoice(invoiceData);
+
+  const bankName = invoiceData.bankName || brand.bankName;
+  const accountName = invoiceData.accountName || brand.accountName;
+  const accountNumber = invoiceData.accountNumber || brand.accountNumber;
+
+  const resolvedCompanyName = brand.companyName;
+  const resolvedCompanyAddress = brand.companyAddress;
+  const resolvedCompanyVat = brand.companyVat;
+  const resolvedCompanyContact = brand.companyContact;
+
   return new Promise((resolve, reject) => {
     try {
-      // Create a new PDF document
       const doc = new PDFDocument({
         size: "A4",
         margin: 50,
@@ -71,39 +185,97 @@ export async function generateInvoicePDF(
       doc.on("end", () => resolve(Buffer.concat(chunks)));
       doc.on("error", reject);
 
+      const pageWidth = doc.page.width;
+      const pageHeight = doc.page.height;
+
+      // ============================================================
+      // WATERMARK (PAID or FREE) — drawn FIRST so it appears behind
+      // ============================================================
+      if (paid || free) {
+        try {
+          const watermarkText = free ? "FREE" : "PAID";
+          const watermarkColor = free ? "#0ea5e9" : "#28a745"; // sky blue for free
+          const fontSize = free ? 140 : 130;
+
+          doc.save();
+          doc.translate(pageWidth / 2, pageHeight / 2);
+          doc.rotate(-30);
+          doc
+            .font("Helvetica-Bold")
+            .fontSize(fontSize)
+            .fillColor(watermarkColor)
+            .opacity(0.13)
+            .text(watermarkText, -320, -80, {
+              width: 640,
+              align: "center",
+            });
+          doc.restore();
+          doc.opacity(1);
+        } catch (wmErr) {
+          console.error("Watermark draw error:", wmErr);
+        }
+      }
+
       // ==================== HEADER ====================
-      // Company Name
       doc
         .font("Helvetica-Bold")
         .fontSize(22)
         .fillColor("#1a237e")
-        .text(invoiceData.companyName, 50, 45, { align: "center" });
+        .text(resolvedCompanyName, 50, 45, { align: "center" });
 
-      // Company Address
       doc
         .font("Helvetica")
         .fontSize(10)
         .fillColor("#333")
-        .text(invoiceData.companyAddress, 50, 75, { align: "center" });
+        .text(resolvedCompanyAddress, 50, 75, { align: "center" });
 
-      // Company VAT and Contact
       doc
         .font("Helvetica")
         .fontSize(10)
         .fillColor("#333")
         .text(
-          `VAT-REG.: ${invoiceData.companyVat} | CONTACT NO.: ${invoiceData.companyContact}`,
+          `VAT-REG.: ${resolvedCompanyVat} | CONTACT NO.: ${resolvedCompanyContact}`,
           50,
           92,
           { align: "center" },
         );
 
-      // Company Email
       doc
         .font("Helvetica")
         .fontSize(10)
         .fillColor("#333")
         .text(invoiceData.companyEmail, 50, 109, { align: "center" });
+
+      // ==================== PAID / FREE BANNER (top-right) ====================
+      if (paid || free) {
+        try {
+          const badgeX = 440;
+          const badgeY = 138;
+          const badgeW = 110;
+          const badgeH = 26;
+          const badgeBg = free ? "#0ea5e9" : "#28a745";
+          const badgeStroke = free ? "#0369a1" : "#1e7e34";
+          const badgeText = free ? "🎁 FREE" : "✅ PAID";
+
+          doc.save();
+          doc
+            .roundedRect(badgeX, badgeY, badgeW, badgeH, 6)
+            .fillAndStroke(badgeBg, badgeStroke);
+
+          doc
+            .font("Helvetica-Bold")
+            .fontSize(13)
+            .fillColor("#ffffff")
+            .text(badgeText, badgeX, badgeY + 6, {
+              width: badgeW,
+              align: "center",
+            });
+
+          doc.restore();
+        } catch (badgeErr) {
+          console.error("Status badge draw error:", badgeErr);
+        }
+      }
 
       // ==================== DIVIDER ====================
       doc.moveTo(50, 130).lineTo(550, 130).stroke("#1a237e");
@@ -115,7 +287,6 @@ export async function generateInvoicePDF(
         .fillColor("#1a237e")
         .text("INVOICE", 50, 150);
 
-      // Invoice Number
       doc
         .font("Helvetica")
         .fontSize(12)
@@ -124,7 +295,6 @@ export async function generateInvoicePDF(
           align: "right",
         });
 
-      // Invoice Type
       doc
         .font("Helvetica")
         .fontSize(10)
@@ -178,15 +348,39 @@ export async function generateInvoicePDF(
         doc.text(`Pro-rated Days: ${invoiceData.proRatedDays} days`, 350, 286);
       }
 
+      // Paid At (only when paid, not free)
+      if (paid && invoiceData.paidAt) {
+        doc
+          .font("Helvetica-Bold")
+          .fontSize(10)
+          .fillColor("#28a745")
+          .text(
+            `Paid At: ${formatDateForPDF(invoiceData.paidAt)}`,
+            350,
+            invoiceData.isProRated && invoiceData.proRatedDays ? 304 : 286,
+          );
+      }
+
+      // 🆕 Waived label (only when free)
+      if (free) {
+        doc
+          .font("Helvetica-Bold")
+          .fontSize(10)
+          .fillColor("#0ea5e9")
+          .text(
+            "Fully Waived / Free of Charge",
+            350,
+            invoiceData.isProRated && invoiceData.proRatedDays ? 304 : 286,
+          );
+      }
+
       // ==================== ITEMS TABLE ====================
       const tableY = Math.max(detailY + 20, 340);
 
-      // Table Header
       const col1 = 50;
       const col2 = 250;
       const col3 = 380;
       const col4 = 460;
-      const col5 = 530;
       const rowHeight = 25;
 
       doc
@@ -201,18 +395,39 @@ export async function generateInvoicePDF(
         .text("Rate", col3 + 10, tableY + 7)
         .text("Amount", col4 + 10, tableY + 7);
 
-      // Table Rows
       let currentY = tableY + rowHeight;
       const maxItemsPerPage = 15;
       let itemCount = 0;
 
       for (const item of invoiceData.items) {
         if (itemCount >= maxItemsPerPage) {
-          // Add new page if too many items
           doc.addPage();
           currentY = 80;
 
-          // Recreate table header on new page
+          if (paid || free) {
+            try {
+              const watermarkText = free ? "FREE" : "PAID";
+              const watermarkColor = free ? "#0ea5e9" : "#28a745";
+              const fontSize = free ? 140 : 130;
+              doc.save();
+              doc.translate(pageWidth / 2, pageHeight / 2);
+              doc.rotate(-30);
+              doc
+                .font("Helvetica-Bold")
+                .fontSize(fontSize)
+                .fillColor(watermarkColor)
+                .opacity(0.13)
+                .text(watermarkText, -320, -80, {
+                  width: 640,
+                  align: "center",
+                });
+              doc.restore();
+              doc.opacity(1);
+            } catch (wmErr) {
+              console.error("Watermark draw error (new page):", wmErr);
+            }
+          }
+
           doc
             .font("Helvetica-Bold")
             .fontSize(10)
@@ -229,7 +444,6 @@ export async function generateInvoicePDF(
           itemCount = 0;
         }
 
-        // Alternate row colors
         const bgColor = itemCount % 2 === 0 ? "#f8f9fa" : "#ffffff";
         doc.fillColor(bgColor).rect(col1, currentY, 500, rowHeight).fill();
 
@@ -251,7 +465,6 @@ export async function generateInvoicePDF(
       // ==================== SUMMARY ====================
       const summaryY = currentY + 20;
 
-      // Subtotal
       doc
         .font("Helvetica")
         .fontSize(10)
@@ -261,7 +474,6 @@ export async function generateInvoicePDF(
           align: "right",
         });
 
-      // Discount
       if (invoiceData.discountAmount > 0) {
         doc
           .text(
@@ -277,7 +489,6 @@ export async function generateInvoicePDF(
           );
       }
 
-      // Tax
       if (invoiceData.taxAmount > 0) {
         const taxY =
           invoiceData.discountAmount > 0 ? summaryY + 40 : summaryY + 20;
@@ -288,7 +499,6 @@ export async function generateInvoicePDF(
           });
       }
 
-      // Total
       const totalY =
         summaryY +
         (invoiceData.discountAmount > 0
@@ -305,52 +515,100 @@ export async function generateInvoicePDF(
           align: "right",
         });
 
+      // Paid / Free label under TOTAL
+      if (paid) {
+        doc
+          .font("Helvetica-Bold")
+          .fontSize(11)
+          .fillColor("#28a745")
+          .text("PAID", 380, totalY + 22)
+          .text(formatCurrency(invoiceData.total), 480, totalY + 22, {
+            align: "right",
+          });
+      } else if (free) {
+        doc
+          .font("Helvetica-Bold")
+          .fontSize(11)
+          .fillColor("#0ea5e9")
+          .text("FREE", 380, totalY + 22)
+          .text("Php 0.00", 480, totalY + 22, {
+            align: "right",
+          });
+      }
+
       // ==================== DIVIDER ====================
       doc
-        .moveTo(50, totalY + 40)
-        .lineTo(550, totalY + 40)
+        .moveTo(50, totalY + (paid || free ? 60 : 40))
+        .lineTo(550, totalY + (paid || free ? 60 : 40))
         .stroke("#ccc");
 
-      // ==================== PAYMENT INSTRUCTIONS ====================
-      const paymentY = totalY + 60;
+      // ==================== PAYMENT STATUS SECTION ====================
+      // ✅ REMOVED: The "Payment Method (Bank Transfer)" block is no longer rendered.
+      // Only the PAID / FREE status text remains.
+      const paymentY = totalY + (paid || free ? 80 : 60);
 
-      if (
-        invoiceData.bankName &&
-        invoiceData.accountName &&
-        invoiceData.accountNumber
-      ) {
+      if (free) {
         doc
           .font("Helvetica-Bold")
           .fontSize(12)
-          .fillColor("#333")
-          .text("Payment Method (Bank Transfer):", 50, paymentY);
-
-        doc
-          .font("Helvetica")
-          .fontSize(11)
-          .fillColor("#333")
-          .text(`Bank Name: ${invoiceData.bankName}`, 50, paymentY + 25)
-          .text(`Account Name: ${invoiceData.accountName}`, 50, paymentY + 45)
-          .text(
-            `Account Number: ${invoiceData.accountNumber}`,
-            50,
-            paymentY + 65,
-          );
+          .fillColor("#0ea5e9")
+          .text("🎁 FREE OF CHARGE", 50, paymentY);
 
         doc
           .font("Helvetica")
           .fontSize(10)
+          .fillColor("#333")
+          .text(
+            `This invoice has been marked as FREE (waived)${invoiceData.paidAt ? ` on ${formatDateForPDF(invoiceData.paidAt)}` : ""}.`,
+            50,
+            paymentY + 22,
+            { width: 500 },
+          );
+
+        doc
+          .font("Helvetica")
+          .fontSize(9)
           .fillColor("#555")
           .text(
-            `Kindly send your proof of payment via Viber ${invoiceData.companyContact} or at ${invoiceData.companyEmail} after completing the transaction.`,
+            "No payment is required. This document serves as your official receipt for the waived charge.",
             50,
-            paymentY + 95,
+            paymentY + 42,
+            { width: 500 },
+          );
+      } else if (paid) {
+        doc
+          .font("Helvetica-Bold")
+          .fontSize(12)
+          .fillColor("#28a745")
+          .text("✅ PAYMENT RECEIVED", 50, paymentY);
+
+        doc
+          .font("Helvetica")
+          .fontSize(10)
+          .fillColor("#333")
+          .text(
+            `This invoice has been fully settled${invoiceData.paidAt ? ` on ${formatDateForPDF(invoiceData.paidAt)}` : ""}.`,
+            50,
+            paymentY + 22,
+            { width: 500 },
+          );
+
+        doc
+          .font("Helvetica")
+          .fontSize(9)
+          .fillColor("#555")
+          .text(
+            "Thank you for your payment. This document serves as your official receipt.",
+            50,
+            paymentY + 42,
             { width: 500 },
           );
       }
+      // NOTE: When the invoice is unpaid (not paid, not free), no bank transfer
+      // instructions are rendered anymore — that section has been removed.
 
       // ==================== NOTES ====================
-      let notesY = paymentY + 140;
+      let notesY = paymentY + (paid || free ? 90 : 40);
 
       if (invoiceData.notes) {
         doc
@@ -386,15 +644,20 @@ export async function generateInvoicePDF(
       }
 
       // ==================== FOOTER ====================
-      const pageHeight = doc.page.height;
       doc
         .font("Helvetica")
         .fontSize(9)
         .fillColor("#666")
-        .text("Thank you for choosing our service!", 50, pageHeight - 50, {
-          align: "center",
-          width: 500,
-        })
+        .text(
+          free
+            ? "🎁 Free of charge — Thank you for choosing our service!"
+            : paid
+              ? "✅ Payment received — Thank you for choosing our service!"
+              : "Thank you for choosing our service!",
+          50,
+          pageHeight - 50,
+          { align: "center", width: 500 },
+        )
         .text(
           "This is a computer-generated invoice. No signature required.",
           50,

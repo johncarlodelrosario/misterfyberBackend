@@ -1,6 +1,12 @@
-// models/EmailSchedule.ts
+// models/EmailSchedule.ts - UPDATED WITH senderType
 
 import mongoose, { Schema, Document } from "mongoose";
+
+export type SenderType =
+  | "admin"
+  | "collection"
+  | "workselpueblo"
+  | "fbsilkresidence";
 
 export interface IEmailSchedule extends Document {
   name: string;
@@ -13,6 +19,7 @@ export interface IEmailSchedule extends Document {
   billType?: "unpaid" | "latest" | "installation";
   sendCopyToAdmin: boolean;
   useAdminSender: boolean;
+  senderType?: SenderType; // NEW FIELD
   scheduledFor: Date;
   status: "pending" | "processing" | "sent" | "failed" | "cancelled";
   sentCount: number;
@@ -76,6 +83,11 @@ const EmailScheduleSchema = new Schema<IEmailSchedule>(
     useAdminSender: {
       type: Boolean,
       default: false,
+    },
+    senderType: {
+      type: String,
+      enum: ["admin", "collection", "workselpueblo", "fbsilkresidence"],
+      default: "collection",
     },
     scheduledFor: {
       type: Date,

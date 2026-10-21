@@ -1,6 +1,12 @@
-// models/EmailSentRecord.ts
+// models/EmailSentRecord.ts - UPDATED WITH senderType
 
 import mongoose, { Schema, Document } from "mongoose";
+
+export type SenderType =
+  | "admin"
+  | "collection"
+  | "workselpueblo"
+  | "fbsilkresidence";
 
 export interface IEmailSentRecord extends Document {
   applicationId: string;
@@ -21,7 +27,7 @@ export interface IEmailSentRecord extends Document {
   sentBy: string;
   sentByEmail: string;
   adminCopySent?: boolean;
-  senderType?: "admin" | "collection";
+  senderType?: SenderType;
   location?: string;
   collectionEmail?: string;
   scheduleId?: string;
@@ -107,7 +113,7 @@ const EmailSentRecordSchema = new Schema<IEmailSentRecord>(
     },
     senderType: {
       type: String,
-      enum: ["admin", "collection"],
+      enum: ["admin", "collection", "workselpueblo", "fbsilkresidence"],
       default: "collection",
     },
     location: {

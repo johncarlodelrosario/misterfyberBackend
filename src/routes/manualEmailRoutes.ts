@@ -4,6 +4,7 @@ import { Router } from "express";
 import {
   getCustomersForEmail,
   getCustomerBills,
+  getSenderOptions, // ✅ ADD THIS
   sendManualEmail,
   sendBulkEmails,
   saveEmailTemplate,
@@ -38,6 +39,11 @@ router.use(adminOnly);
 // ============================================================
 router.get("/customers", getCustomersForEmail);
 router.get("/customers/:applicationId/bills", getCustomerBills);
+
+// ============================================================
+// SENDER OPTIONS ROUTE (NEW)
+// ============================================================
+router.get("/sender-options", getSenderOptions);
 
 // ============================================================
 // SEND EMAIL ROUTES
