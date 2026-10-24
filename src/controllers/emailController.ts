@@ -1,5 +1,6 @@
 // backend/src/controllers/manualEmailController.ts - COMPLETE FIXED VERSION
-// FIXED: Timezone handling, billIds support, template support, HARD DELETE, LATEST FIRST sorting
+// FIXED: Timezone handling, billIds support, template support, HARD DELETE, LATEST FIRST sorting, and sender safety
+// NEW: Wilconnect buildings (Vitalez, El Pueblo, Newport) use workselpueblo@fyberblizz.com
 
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
@@ -17,6 +18,17 @@ import emailService, {
 type AuthRequest = Request & { user?: any };
 
 // ============================================================
+// WILCONNECT BUILDINGS - Use workselpueblo@fyberblizz.com
+// ============================================================
+const WILCONNECT_BUILDINGS = ["el pueblo", "vitalez", "newport"];
+
+function isWilconnectBuilding(buildingName?: string): boolean {
+  if (!buildingName) return false;
+  const normalized = buildingName.toLowerCase().trim();
+  return WILCONNECT_BUILDINGS.some((b) => normalized.includes(b));
+}
+
+// ============================================================
 // SENDER TYPES
 // ============================================================
 export type SenderType =
@@ -28,11 +40,29 @@ export type SenderType =
 // ============================================================
 // SENDER EMAIL CONFIGURATION (from .env with fallbacks)
 // ============================================================
+const getSafeSenderEmail = (envKey: string, fallback: string): string => {
+  const envValue = process.env[envKey];
+  if (envValue && envValue.trim().length > 0) {
+    if (envKey === "SENDER_EMAIL_WORKSELPUEBLO" && envValue.includes("gmail")) {
+      console.warn(
+        `⚠️ WARNING: ${envKey} is set to a Gmail address. Using fallback instead.`,
+      );
+      return fallback;
+    }
+    return envValue.trim();
+  }
+  return fallback;
+};
+
 const ADDITIONAL_SENDER_EMAILS = {
-  workselpueblo:
-    process.env.SENDER_EMAIL_WORKSELPUEBLO || "workselpueblo@gmail.com",
-  fbsilkresidence:
-    process.env.SENDER_EMAIL_FBSILKRESIDENCE || "fbsilkresidence@gmail.com",
+  workselpueblo: getSafeSenderEmail(
+    "SENDER_EMAIL_WORKSELPUEBLO",
+    "workselpueblo@fyberblizz.com",
+  ),
+  fbsilkresidence: getSafeSenderEmail(
+    "SENDER_EMAIL_FBSILKRESIDENCE",
+    "fbsilkresidence@gmail.com",
+  ),
 };
 
 const ADDITIONAL_SENDER_NAMES = {
@@ -100,12 +130,25 @@ function getSenderTypeFromRequest(body: any): SenderType {
 }
 
 // ============================================================
-// HELPER: Get sender info by type
+// HELPER: Get sender info by type - WITH WILCONNECT OVERRIDE
 // ============================================================
 function getSenderInfoByType(
   senderType: SenderType,
   location?: string,
+  buildingName?: string,
 ): { email: string; name: string; label: string } {
+  // ✅ CHECK: If building is Wilconnect (Vitalez, El Pueblo, Newport), use workselpueblo@fyberblizz.com
+  if (isWilconnectBuilding(buildingName)) {
+    console.log(
+      `🏢 Wilconnect building detected: "${buildingName}" - Using workselpueblo@fyberblizz.com`,
+    );
+    return {
+      email: ADDITIONAL_SENDER_EMAILS.workselpueblo,
+      name: ADDITIONAL_SENDER_NAMES.workselpueblo,
+      label: "Workselpueblo",
+    };
+  }
+
   switch (senderType) {
     case "admin":
       return {
@@ -155,7 +198,10 @@ function getSenderInfoByType(
 // ============================================================
 // HELPER: Get all available sender options
 // ============================================================
-function getAllSenderOptions(location?: string): {
+function getAllSenderOptions(
+  location?: string,
+  buildingName?: string,
+): {
   value: SenderType;
   label: string;
   email: string;
@@ -167,6 +213,16 @@ function getAllSenderOptions(location?: string): {
     email: string;
     icon: string;
   }[] = [];
+
+  // ✅ If Wilconnect building, always show workselpueblo first
+  if (isWilconnectBuilding(buildingName)) {
+    options.push({
+      value: "workselpueblo",
+      label: "Workselpueblo (Auto - Wilconnect)",
+      email: ADDITIONAL_SENDER_EMAILS.workselpueblo,
+      icon: "🏢",
+    });
+  }
 
   if (location && location !== "other") {
     const collectionEmail = getCollectionEmailByLocation(location);
@@ -186,18 +242,21 @@ function getAllSenderOptions(location?: string): {
     });
   }
 
+  // Add workselpueblo if not already added
+  if (!isWilconnectBuilding(buildingName)) {
+    options.push({
+      value: "workselpueblo",
+      label: ADDITIONAL_SENDER_NAMES.workselpueblo,
+      email: ADDITIONAL_SENDER_EMAILS.workselpueblo,
+      icon: "🏢",
+    });
+  }
+
   options.push({
     value: "admin",
     label: "Admin",
     email: process.env.ADMIN_EMAIL || "admin@misterfyber.com",
     icon: "👤",
-  });
-
-  options.push({
-    value: "workselpueblo",
-    label: ADDITIONAL_SENDER_NAMES.workselpueblo,
-    email: ADDITIONAL_SENDER_EMAILS.workselpueblo,
-    icon: "🏢",
   });
 
   options.push({
@@ -246,8 +305,15 @@ function generateEmailPreview(
   let locationBadge = "";
   if (customerData && customerData.buildingName) {
     const location = extractLocationFromBuildingName(customerData.buildingName);
+    const isWil = isWilconnectBuilding(customerData.buildingName);
 
-    if (location !== "other") {
+    if (isWil) {
+      locationBadge = `
+        <div style="display: inline-block; background: #059669; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin: 10px 0;">
+          🏢 WILCONNECT - ${customerData.buildingName}
+        </div>
+      `;
+    } else if (location !== "other") {
       locationBadge = `
         <div style="display: inline-block; background: ${location === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin: 10px 0;">
           📍 ${location.toUpperCase()} - ${customerData.buildingName}
@@ -392,6 +458,10 @@ export const getCustomersForEmail = async (
         query.buildingName = {
           $not: { $regex: /breeze|sil|silk/, $options: "i" },
         };
+      } else if (location === "wilconnect") {
+        query.buildingName = {
+          $regex: /el pueblo|vitalez|newport/i,
+        };
       }
     }
 
@@ -476,6 +546,22 @@ export const getCustomersForEmail = async (
     const enhancedCustomers = applications.map((app) => {
       const lastBill = lastBillMap.get(app.applicationId);
       const location = extractLocationFromBuildingName(app.buildingName);
+      const isWilconnect = isWilconnectBuilding(app.buildingName);
+
+      // ✅ Determine the sender email based on building
+      let senderEmail = "";
+      let senderLabel = "";
+      if (isWilconnect) {
+        senderEmail = ADDITIONAL_SENDER_EMAILS.workselpueblo;
+        senderLabel = "Workselpueblo";
+      } else if (location !== "other") {
+        senderEmail = getCollectionEmailByLocation(location);
+        senderLabel = `${location.charAt(0).toUpperCase() + location.slice(1)} Collection`;
+      } else {
+        senderEmail =
+          process.env.COLLECTION_EMAIL_DEFAULT || "admin@misterfyber.com";
+        senderLabel = "Collection";
+      }
 
       return {
         ...app,
@@ -484,6 +570,9 @@ export const getCustomersForEmail = async (
         lastBillAmount: lastBill?.total || 0,
         lastBillStatus: lastBill?.status || null,
         location,
+        isWilconnect,
+        senderEmail,
+        senderLabel,
         _fetchedAt: new Date().toISOString(),
       };
     });
@@ -548,10 +637,25 @@ export const getCustomerBills = async (
         .lean(),
     ]);
 
+    // Add Wilconnect info
+    const isWilconnect = isWilconnectBuilding(customer?.buildingName);
+    const senderInfo = isWilconnect
+      ? {
+          email: ADDITIONAL_SENDER_EMAILS.workselpueblo,
+          label: "Workselpueblo",
+        }
+      : null;
+
     res.status(200).json({
       success: true,
       data: {
-        customer,
+        customer: customer
+          ? {
+              ...customer,
+              isWilconnect,
+              senderInfo,
+            }
+          : null,
         bills,
         timestamp: new Date().toISOString(),
       },
@@ -572,13 +676,20 @@ export const getSenderOptions = async (
   if (!checkAdmin(req, res)) return;
 
   try {
-    const { location } = req.query as { location?: string };
+    const { location, buildingName } = req.query as {
+      location?: string;
+      buildingName?: string;
+    };
 
-    const options = getAllSenderOptions(location);
+    const options = getAllSenderOptions(location, buildingName);
 
     res.status(200).json({
       success: true,
       data: options,
+      isWilconnect: isWilconnectBuilding(buildingName),
+      autoSenderEmail: isWilconnectBuilding(buildingName)
+        ? ADDITIONAL_SENDER_EMAILS.workselpueblo
+        : null,
     });
   } catch (error) {
     next(error);
@@ -586,7 +697,7 @@ export const getSenderOptions = async (
 };
 
 // ============================================================
-// SEND MANUAL EMAIL - UPDATED WITH SENDER TYPE
+// SEND MANUAL EMAIL - UPDATED WITH SENDER TYPE + WILCONNECT
 // ============================================================
 export const sendManualEmail = async (
   req: AuthRequest,
@@ -613,12 +724,12 @@ export const sendManualEmail = async (
       senderType: rawSenderType,
     } = req.body;
 
-    const senderType = getSenderTypeFromRequest(req.body);
+    let senderType = getSenderTypeFromRequest(req.body);
 
     console.log("📧 sendManualEmail called");
     console.log("   Application ID:", applicationId);
     console.log("   Subject:", subject);
-    console.log("   Sender Type:", senderType);
+    console.log("   Requested Sender Type:", senderType);
 
     if (!applicationId) {
       await session.abortTransaction();
@@ -668,6 +779,15 @@ export const sendManualEmail = async (
       }
     }
 
+    // ✅ CHECK: If Wilconnect building, override sender type to workselpueblo
+    const isWilconnect = isWilconnectBuilding(application.buildingName);
+    if (isWilconnect) {
+      console.log(
+        `🏢 Wilconnect building detected: "${application.buildingName}" - Overriding sender to workselpueblo`,
+      );
+      senderType = "workselpueblo";
+    }
+
     let billingDataArray: any[] = [];
     let selectedBillIds: string[] = [];
     if (
@@ -696,8 +816,16 @@ export const sendManualEmail = async (
       }));
     }
 
-    const senderInfo = getSenderInfoByType(senderType, location);
+    const senderInfo = getSenderInfoByType(
+      senderType,
+      location,
+      application.buildingName,
+    );
     const senderInfoText = `Sent from: ${senderInfo.label} (${senderInfo.email})`;
+
+    console.log(
+      `📧 Final sender info: ${senderInfo.label} <${senderInfo.email}>`,
+    );
 
     const emailHtml = generateEmailPreview(
       subject,
@@ -736,6 +864,7 @@ export const sendManualEmail = async (
           {
             useAdminSender: senderType === "admin",
             senderType: senderType,
+            isWilconnect: isWilconnect,
           },
         );
 
@@ -763,6 +892,8 @@ export const sendManualEmail = async (
               <p><strong>Sender Type:</strong> ${senderInfo.label}</p>
               <p><strong>Sender Email:</strong> ${senderInfo.email}</p>
               <p><strong>Location:</strong> ${location || "NONE"}</p>
+              <p><strong>Building:</strong> ${application.buildingName || "N/A"}</p>
+              <p><strong>Is Wilconnect:</strong> ${isWilconnect ? "YES" : "NO"}</p>
             </div>
           `;
           adminCopySent = await emailService.sendEmail(
@@ -826,7 +957,7 @@ export const sendManualEmail = async (
 
     res.status(200).json({
       success: true,
-      message: `Email sent successfully to ${application.firstName} ${application.lastName} via ${senderInfo.label}`,
+      message: `Email sent successfully to ${application.firstName} ${application.lastName} via ${senderInfo.label}${isWilconnect ? " (Wilconnect - Auto)" : ""}`,
       data: {
         to: application.email,
         toName: `${application.firstName} ${application.lastName}`,
@@ -838,6 +969,7 @@ export const sendManualEmail = async (
         senderLabel: senderInfo.label,
         senderEmail: senderInfo.email,
         location: location || "unknown",
+        isWilconnect,
         billsIncluded: billingDataArray.length,
         totalAmount: billingDataArray.reduce(
           (sum, bill) => sum + (bill.total || 0),
@@ -854,7 +986,7 @@ export const sendManualEmail = async (
 };
 
 // ============================================================
-// SEND BULK EMAILS - UPDATED WITH SENDER TYPE
+// SEND BULK EMAILS - UPDATED WITH SENDER TYPE + WILCONNECT
 // ============================================================
 export const sendBulkEmails = async (
   req: AuthRequest,
@@ -877,11 +1009,11 @@ export const sendBulkEmails = async (
       senderType: rawSenderType,
     } = req.body;
 
-    const senderType = getSenderTypeFromRequest(req.body);
+    const baseSenderType = getSenderTypeFromRequest(req.body);
 
     console.log("📧 sendBulkEmails called");
     console.log("   Recipients:", applicationIds?.length || 0);
-    console.log("   Sender Type:", senderType);
+    console.log("   Base Sender Type:", baseSenderType);
 
     if (
       !applicationIds ||
@@ -908,8 +1040,6 @@ export const sendBulkEmails = async (
         message: "Email service is not configured.",
       });
     }
-
-    console.log(`📧 Bulk Email - Sender type: ${senderType}`);
 
     const applications = await Application.find({
       applicationId: { $in: applicationIds },
@@ -995,10 +1125,24 @@ export const sendBulkEmails = async (
           }
         }
 
+        // ✅ CHECK: If Wilconnect building, override sender type to workselpueblo
+        const isWilconnect = isWilconnectBuilding(application.buildingName);
+        let effectiveSenderType = baseSenderType;
+        if (isWilconnect) {
+          effectiveSenderType = "workselpueblo";
+          console.log(
+            `🏢 Wilconnect building: "${application.buildingName}" - Using workselpueblo for ${applicationId}`,
+          );
+        }
+
         const billingDataArray = billsByApplication.get(applicationId) || [];
         const selectedBillIds = billingDataArray.map((b) => b._id);
 
-        const senderInfo = getSenderInfoByType(senderType, location);
+        const senderInfo = getSenderInfoByType(
+          effectiveSenderType,
+          location,
+          application.buildingName,
+        );
         const senderInfoText = `Sent from: ${senderInfo.label} (${senderInfo.email})`;
 
         const emailHtml = generateEmailPreview(
@@ -1026,8 +1170,9 @@ export const sendBulkEmails = async (
                 true,
                 location,
                 {
-                  useAdminSender: senderType === "admin",
-                  senderType: senderType,
+                  useAdminSender: effectiveSenderType === "admin",
+                  senderType: effectiveSenderType,
+                  isWilconnect: isWilconnect,
                 },
               );
             }
@@ -1058,7 +1203,7 @@ export const sendBulkEmails = async (
           sentBy: req.user?.username || req.user?.email || "Admin",
           sentByEmail: req.user?.email || "admin@misterfyber.com",
           adminCopySent: false,
-          senderType: senderType,
+          senderType: effectiveSenderType,
           location: location || "unknown",
           collectionEmail:
             location && location !== "other"
@@ -1077,6 +1222,9 @@ export const sendBulkEmails = async (
             name: `${application.firstName} ${application.lastName}`,
             success: true,
             location: location || "unknown",
+            isWilconnect,
+            senderLabel: senderInfo.label,
+            senderEmail: senderInfo.email,
             billsIncluded: billingDataArray.length,
           });
         } else {
@@ -1106,20 +1254,20 @@ export const sendBulkEmails = async (
       }
     }
 
-    const finalSenderInfo = getSenderInfoByType(senderType);
+    // Count how many were Wilconnect
+    const wilconnectCount = results.filter((r) => r.isWilconnect).length;
 
     res.status(200).json({
       success: true,
-      message: `Bulk email completed via ${finalSenderInfo.label}. Sent: ${successCount}, Failed: ${failCount}`,
+      message: `Bulk email completed. Sent: ${successCount}, Failed: ${failCount}${wilconnectCount > 0 ? ` (${wilconnectCount} via Workselpueblo for Wilconnect buildings)` : ""}`,
       data: {
         total: applicationIds.length,
         successCount,
         failCount,
+        wilconnectCount,
         results,
         failedEmails: failCount > 0 ? failedEmails : undefined,
-        senderType: senderType,
-        senderLabel: finalSenderInfo.label,
-        senderEmail: finalSenderInfo.email,
+        senderType: baseSenderType,
       },
     });
   } catch (error) {
@@ -1349,7 +1497,7 @@ export const deleteEmailTemplate = async (
 };
 
 // ============================================================
-// PREVIEW EMAIL - UPDATED WITH SENDER TYPE
+// PREVIEW EMAIL - UPDATED WITH SENDER TYPE + WILCONNECT
 // ============================================================
 export const previewEmail = async (
   req: AuthRequest,
@@ -1370,19 +1518,21 @@ export const previewEmail = async (
       senderType: rawSenderType,
     } = req.body;
 
-    const senderType = getSenderTypeFromRequest(req.body);
+    let senderType = getSenderTypeFromRequest(req.body);
 
     console.log("📧 previewEmail called");
-    console.log("   Sender Type:", senderType);
+    console.log("   Requested Sender Type:", senderType);
 
     let customerData = null;
     let billingDataArray: any[] = [];
     let location = "";
+    let isWilconnect = false;
 
     if (applicationId) {
       customerData = await Application.findOne({ applicationId }).lean();
       if (customerData) {
         location = extractLocationFromBuildingName(customerData.buildingName);
+        isWilconnect = isWilconnectBuilding(customerData.buildingName);
 
         if (location === "other" && customerData.buildingId) {
           const Building = require("../models/Building").default;
@@ -1399,6 +1549,14 @@ export const previewEmail = async (
               location = building.location;
             }
           }
+        }
+
+        // ✅ CHECK: If Wilconnect building, override sender type
+        if (isWilconnect) {
+          console.log(
+            `🏢 Wilconnect building in preview: "${customerData.buildingName}" - Using workselpueblo`,
+          );
+          senderType = "workselpueblo";
         }
       }
     }
@@ -1422,7 +1580,11 @@ export const previewEmail = async (
       }
     }
 
-    const senderInfo = getSenderInfoByType(senderType, location);
+    const senderInfo = getSenderInfoByType(
+      senderType,
+      location,
+      customerData?.buildingName,
+    );
     const senderInfoText = `Sent from: ${senderInfo.label} (${senderInfo.email})`;
 
     const previewHtml = generateEmailPreview(
@@ -1442,6 +1604,7 @@ export const previewEmail = async (
         subject,
         message,
         location: location || "unknown",
+        isWilconnect,
         senderInfo: senderInfoText,
         senderType: senderType,
         senderLabel: senderInfo.label,
@@ -1459,7 +1622,7 @@ export const previewEmail = async (
 };
 
 // ============================================================
-// SEND REMINDER TO UNPAID - UPDATED WITH SENDER TYPE
+// SEND REMINDER TO UNPAID - UPDATED WITH SENDER TYPE + WILCONNECT
 // ============================================================
 export const sendReminderToUnpaid = async (
   req: AuthRequest,
@@ -1476,10 +1639,10 @@ export const sendReminderToUnpaid = async (
       senderType: rawSenderType,
     } = req.body;
 
-    const senderType = getSenderTypeFromRequest(req.body);
+    const baseSenderType = getSenderTypeFromRequest(req.body);
 
     console.log("📧 sendReminderToUnpaid called");
-    console.log("   Sender Type:", senderType);
+    console.log("   Base Sender Type:", baseSenderType);
 
     const isConfigured = emailService.isConfigured();
     if (!isConfigured && process.env.NODE_ENV !== "development") {
@@ -1530,6 +1693,16 @@ export const sendReminderToUnpaid = async (
         application.buildingName,
       );
 
+      // ✅ CHECK: If Wilconnect building, override sender type
+      const isWilconnect = isWilconnectBuilding(application.buildingName);
+      let effectiveSenderType = baseSenderType;
+      if (isWilconnect) {
+        effectiveSenderType = "workselpueblo";
+        console.log(
+          `🏢 Wilconnect building in reminder: "${application.buildingName}" - Using workselpueblo`,
+        );
+      }
+
       const customerBills = billsByApplication.get(applicationId) || [];
       const totalAmount = customerBills.reduce(
         (sum, bill) => sum + (bill.total || 0),
@@ -1557,7 +1730,11 @@ export const sendReminderToUnpaid = async (
         reminderMessage += `\n\nYou have ${customerBills.length} unpaid bill(s) totaling ₱${totalAmount.toLocaleString()}.`;
       }
 
-      const senderInfo = getSenderInfoByType(senderType, location);
+      const senderInfo = getSenderInfoByType(
+        effectiveSenderType,
+        location,
+        application.buildingName,
+      );
       const senderInfoText = `Sent from: ${senderInfo.label} (${senderInfo.email})`;
 
       const emailHtml = generateEmailPreview(
@@ -1584,8 +1761,9 @@ export const sendReminderToUnpaid = async (
               true,
               location,
               {
-                useAdminSender: senderType === "admin",
-                senderType: senderType,
+                useAdminSender: effectiveSenderType === "admin",
+                senderType: effectiveSenderType,
+                isWilconnect: isWilconnect,
               },
             );
           }
@@ -1619,7 +1797,7 @@ export const sendReminderToUnpaid = async (
         sentBy: req.user?.username || req.user?.email || "Admin",
         sentByEmail: req.user?.email || "admin@misterfyber.com",
         adminCopySent: false,
-        senderType: senderType,
+        senderType: effectiveSenderType,
         location: location || "unknown",
         collectionEmail:
           location && location !== "other"
@@ -1639,6 +1817,9 @@ export const sendReminderToUnpaid = async (
           billsCount: customerBills.length,
           totalAmount,
           location: location || "unknown",
+          isWilconnect,
+          senderLabel: senderInfo.label,
+          senderEmail: senderInfo.email,
         });
       } else {
         failCount++;
@@ -1647,19 +1828,18 @@ export const sendReminderToUnpaid = async (
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
 
-    const finalSenderInfo = getSenderInfoByType(senderType);
+    const wilconnectCount = results.filter((r) => r.isWilconnect).length;
 
     res.status(200).json({
       success: true,
-      message: `Sent reminders to ${sentCount} customers via ${finalSenderInfo.label} (${failCount} failed)`,
+      message: `Sent reminders to ${sentCount} customers (${failCount} failed)${wilconnectCount > 0 ? ` - ${wilconnectCount} via Workselpueblo for Wilconnect buildings` : ""}`,
       data: {
         sentCount,
         failCount,
         totalCustomers: uniqueApplicationIds.length,
+        wilconnectCount,
         results,
-        senderType: senderType,
-        senderLabel: finalSenderInfo.label,
-        senderEmail: finalSenderInfo.email,
+        senderType: baseSenderType,
       },
     });
   } catch (error) {
@@ -1910,6 +2090,9 @@ export const scheduleEmail = async (
     await schedule.save();
 
     console.log(`✅ Email scheduled at: ${scheduleDate.toISOString()}`);
+    console.log(
+      `📧 Note: Wilconnect buildings will automatically use workselpueblo@fyberblizz.com`,
+    );
 
     const senderInfo = getSenderInfoByType(senderType);
 

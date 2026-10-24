@@ -1,7 +1,8 @@
 // backend/src/services/emailService.ts - COMPLETE FIXED VERSION
-// FIXED: All email functions now accept optional buildingNameFromController parameter
-// FIXED: sendApplicationApproved, sendApplicationReceived, sendApplicationRejected, sendBillWithoutAccount
-// FIXED: Wilconnect branding now works because buildingName is passed directly from controller
+// FIXED: Hardcoded correct fallbacks and safety checks for workselpueblo
+// NEW: Wilconnect buildings (El Pueblo, Vitalez, Newport) ALWAYS use workselpueblo@fyberblizz.com
+// NEW: Wilconnect-specific footer (support + collection = workselpueblo@fyberblizz.com)
+// NEW: Building-specific BDO accounts (Vitalez/Newport and El Pueblo)
 
 import { IUser } from "../models/User";
 import Admin from "../models/Admin";
@@ -56,6 +57,14 @@ console.log(
   process.env.COLLECTION_EMAIL_SIL ? "✅ EXISTS" : "❌ MISSING",
 );
 console.log("   FRONTEND_URL:", process.env.FRONTEND_URL || "❌ MISSING");
+console.log(
+  "   SENDER_EMAIL_WORKSELPUEBLO:",
+  process.env.SENDER_EMAIL_WORKSELPUEBLO || "❌ MISSING (Using fallback)",
+);
+console.log(
+  "   SENDER_EMAIL_FBSILKRESIDENCE:",
+  process.env.SENDER_EMAIL_FBSILKRESIDENCE || "❌ MISSING (Using fallback)",
+);
 
 const safeToFixed = (value: any, decimals: number = 2): string => {
   if (value === undefined || value === null || isNaN(Number(value))) {
@@ -75,10 +84,38 @@ const DEFAULT_COLLECTION_EMAIL =
   process.env.COLLECTION_EMAIL_DEFAULT || "admin@misterfyber.com";
 
 // ==================== ADDITIONAL SENDER EMAILS ====================
+// ✅ FIX: Ensure that if .env is wrong, we still fallback to the correct verified domain
+const getSafeSenderEmail = (envKey: string, fallback: string): string => {
+  const envValue = process.env[envKey];
+  if (envValue && envValue.trim().length > 0) {
+    // Safety check: if env value is a gmail for workselpueblo, ignore it
+    if (envKey === "SENDER_EMAIL_WORKSELPUEBLO" && envValue.includes("gmail")) {
+      console.warn(
+        `⚠️ WARNING: ${envKey} is set to a Gmail address. Using fallback instead.`,
+      );
+      return fallback;
+    }
+    return envValue.trim();
+  }
+  return fallback;
+};
+
 export const ADDITIONAL_SENDER_EMAILS = {
-  workselpueblo: "workselpueblo@gmail.com",
-  fbsilkresidence: "fbsilkresidence@gmail.com",
+  workselpueblo: getSafeSenderEmail(
+    "SENDER_EMAIL_WORKSELPUEBLO",
+    "workselpueblo@fyberblizz.com",
+  ),
+  fbsilkresidence: getSafeSenderEmail(
+    "SENDER_EMAIL_FBSILKRESIDENCE",
+    "fbsilkresidence@gmail.com",
+  ),
 } as const;
+
+export const ADDITIONAL_SENDER_NAMES = {
+  workselpueblo: process.env.SENDER_NAME_WORKSELPUEBLO || "Workselpueblo",
+  fbsilkresidence:
+    process.env.SENDER_NAME_FBSILKRESIDENCE || "FB Silk Residence",
+};
 
 export type SenderType =
   | "admin"
@@ -88,6 +125,86 @@ export type SenderType =
 
 // ==================== BRAND CONFIGURATION ====================
 const WILCONNECT_BUILDINGS = ["el pueblo", "vitalez", "newport"];
+
+// ✅ HELPER: Check if a building name belongs to Wilconnect
+// El Pueblo, Vitalez, Newport → use workselpueblo@fyberblizz.com
+export function isWilconnectBuildingName(buildingName?: string): boolean {
+  if (!buildingName) return false;
+  const normalized = buildingName.toLowerCase().trim();
+  return WILCONNECT_BUILDINGS.some((b) => normalized.includes(b));
+}
+
+// ✅ HELPER: Detect El Pueblo specifically
+export function isElPuebloBuilding(buildingName?: string): boolean {
+  if (!buildingName) return false;
+  return buildingName.toLowerCase().trim().includes("el pueblo");
+}
+
+// ✅ HELPER: Detect Vitalez or Newport
+export function isVitalezOrNewportBuilding(buildingName?: string): boolean {
+  if (!buildingName) return false;
+  const normalized = buildingName.toLowerCase().trim();
+  return normalized.includes("vitalez") || normalized.includes("newport");
+}
+
+// ==================== BUILDING-SPECIFIC BANK ACCOUNT ====================
+interface BankAccountInfo {
+  bankName: string;
+  accountName: string;
+  accountNumber: string;
+}
+
+// ✅ Get the correct BDO account for a given building
+// - Vitalez / Newport → 013448003703 / RANDY MANZANARES AND ANGELA TAPEL
+// - El Pueblo → 013448003711 / RANDY D MANZANARES AND ANGELA C TAPEL
+// - All other Wilconnect / Mister Fyber → default fallback
+export function getBankAccountForBuilding(
+  buildingName?: string,
+  location?: string,
+  customerAddress?: string,
+): BankAccountInfo {
+  const hint = [buildingName, location, customerAddress]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  // El Pueblo takes priority
+  if (hint.includes("el pueblo")) {
+    return {
+      bankName: "BDO",
+      accountName: "RANDY D MANZANARES AND ANGELA C TAPEL",
+      accountNumber: "013448003711",
+    };
+  }
+
+  // Vitalez / Newport
+  if (hint.includes("vitalez") || hint.includes("newport")) {
+    return {
+      bankName: "BDO",
+      accountName: "RANDY MANZANARES AND ANGELA TAPEL",
+      accountNumber: "013448003703",
+    };
+  }
+
+  // Fallback (any other Wilconnect building or generic)
+  const isWilconnect =
+    hint.includes("wilconnect") ||
+    WILCONNECT_BUILDINGS.some((b) => hint.includes(b));
+
+  if (isWilconnect) {
+    return {
+      bankName: "BDO",
+      accountName: "FYBERBLIZZ NETWORK CORPORATION",
+      accountNumber: "013448002421",
+    };
+  }
+
+  return {
+    bankName: "BDO",
+    accountName: "FYBERBLIZZ NETWORK CORPORATION",
+    accountNumber: "013448002421",
+  };
+}
 
 interface BrandInfo {
   isWilconnect: boolean;
@@ -114,7 +231,8 @@ function getBrandForBuilding(buildingName?: string): BrandInfo {
       companyName: "WILCONNECT NETWORK CORPORATION",
       brandName: "Wilconnect",
       adminEmail: "admin@misterfyber.com",
-      supportEmail: "admin@misterfyber.com",
+      // ✅ For Wilconnect: support email = workselpueblo@fyberblizz.com
+      supportEmail: ADDITIONAL_SENDER_EMAILS.workselpueblo,
       companyAddress:
         "UNIT 6 BLDG 2 G/F EL PUEBLO CONDO, ANONAS ST., STA. MESA, MANILA",
       companyVat: "697-461-165-00000",
@@ -268,7 +386,19 @@ function isValidPlan(plan: any): boolean {
 export const getSenderEmailByType = (
   senderType: SenderType,
   location?: string,
+  buildingName?: string,
 ): { email: string; name: string } => {
+  // ✅ WILCONNECT OVERRIDE: El Pueblo, Vitalez, Newport ALWAYS use workselpueblo
+  if (isWilconnectBuildingName(buildingName)) {
+    console.log(
+      `🏢 Wilconnect building detected in getSenderEmailByType: "${buildingName}" → workselpueblo@fyberblizz.com`,
+    );
+    return {
+      email: ADDITIONAL_SENDER_EMAILS.workselpueblo,
+      name: ADDITIONAL_SENDER_NAMES.workselpueblo,
+    };
+  }
+
   switch (senderType) {
     case "admin":
       let isWilconnect = false;
@@ -287,12 +417,12 @@ export const getSenderEmailByType = (
     case "workselpueblo":
       return {
         email: ADDITIONAL_SENDER_EMAILS.workselpueblo,
-        name: "Workselpueblo",
+        name: ADDITIONAL_SENDER_NAMES.workselpueblo,
       };
     case "fbsilkresidence":
       return {
         email: ADDITIONAL_SENDER_EMAILS.fbsilkresidence,
-        name: "FB Silk Residence",
+        name: ADDITIONAL_SENDER_NAMES.fbsilkresidence,
       };
     case "collection":
     default:
@@ -314,24 +444,18 @@ export const getSenderEmailByType = (
 
 export const getAllSenderOptions = (
   location?: string,
+  buildingName?: string,
 ): { value: SenderType; label: string; email: string }[] => {
-  const options: { value: SenderType; label: string; email: string }[] = [
-    {
-      value: "admin",
-      label: "Admin (admin@misterfyber.com)",
-      email: "admin@misterfyber.com",
-    },
-    {
+  const options: { value: SenderType; label: string; email: string }[] = [];
+
+  // ✅ If Wilconnect building, add workselpueblo first
+  if (isWilconnectBuildingName(buildingName)) {
+    options.push({
       value: "workselpueblo",
-      label: "Workselpueblo (workselpueblo@gmail.com)",
+      label: `Workselpueblo (Auto - Wilconnect: ${buildingName})`,
       email: ADDITIONAL_SENDER_EMAILS.workselpueblo,
-    },
-    {
-      value: "fbsilkresidence",
-      label: "FB Silk Residence (fbsilkresidence@gmail.com)",
-      email: ADDITIONAL_SENDER_EMAILS.fbsilkresidence,
-    },
-  ];
+    });
+  }
 
   if (location) {
     const collectionEmail = getCollectionEmailByLocation(location);
@@ -344,6 +468,27 @@ export const getAllSenderOptions = (
       });
     }
   }
+
+  // Add workselpueblo if not already added
+  if (!isWilconnectBuildingName(buildingName)) {
+    options.push({
+      value: "workselpueblo",
+      label: `Workselpueblo (${ADDITIONAL_SENDER_EMAILS.workselpueblo})`,
+      email: ADDITIONAL_SENDER_EMAILS.workselpueblo,
+    });
+  }
+
+  options.push({
+    value: "admin",
+    label: "Admin (admin@misterfyber.com)",
+    email: "admin@misterfyber.com",
+  });
+
+  options.push({
+    value: "fbsilkresidence",
+    label: `FB Silk Residence (${ADDITIONAL_SENDER_EMAILS.fbsilkresidence})`,
+    email: ADDITIONAL_SENDER_EMAILS.fbsilkresidence,
+  });
 
   return options;
 };
@@ -494,6 +639,18 @@ export const getCollectionEmailForApplication = async (
   }
 };
 
+// ✅ HELPER: Get the resolved collection email (respects Wilconnect buildings)
+function getResolvedCollectionEmail(
+  buildingName: string | undefined,
+  location: string | undefined,
+): string {
+  // For Wilconnect buildings, collection email is ALWAYS workselpueblo@fyberblizz.com
+  if (isWilconnectBuildingName(buildingName)) {
+    return ADDITIONAL_SENDER_EMAILS.workselpueblo;
+  }
+  return getCollectionEmailByLocation(location || "");
+}
+
 class EmailService {
   private apiKey: string;
   private initialized: boolean = false;
@@ -547,6 +704,12 @@ class EmailService {
     buildingInstallationFee?: number,
   ): string {
     const brand = getBrandForBuilding(buildingName);
+
+    // ✅ Resolve collection email respecting Wilconnect
+    const resolvedCollectionEmail = getResolvedCollectionEmail(
+      buildingName,
+      location,
+    );
 
     const locationBadge = location
       ? `<div style="display: inline-block; background: ${location.toLowerCase() === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin-top: 10px;">📍 ${location.toUpperCase()}</div>`
@@ -661,7 +824,7 @@ class EmailService {
                 <p><strong>Invoice Type:</strong> <span class="status-badge">${invoice.invoiceType || "Monthly"}</span></p>
                 ${isInstallation ? `<p><strong>Note:</strong> This is an installation fee payment for ${buildingName || "your building"}.</p>` : ""}
                 ${location ? `<p><strong>Location:</strong> ${location.toUpperCase()}</p>` : ""}
-                ${collectionEmail ? `<p><strong>Collection Email:</strong> <a href="mailto:${collectionEmail}">${collectionEmail}</a></p>` : ""}
+                ${resolvedCollectionEmail ? `<p><strong>Collection Email:</strong> <a href="mailto:${resolvedCollectionEmail}">${resolvedCollectionEmail}</a></p>` : ""}
                 ${buildingName ? `<p><strong>Building:</strong> ${buildingName}</p>` : ""}
                 ${buildingInstallationFee ? `<p><strong>Installation Fee:</strong> ₱${buildingInstallationFee.toFixed(2)}</p>` : ""}
             </div>
@@ -683,7 +846,7 @@ class EmailService {
         <div class="footer">
             <p>${brand.brandName} - Your trusted internet provider</p>
             <p><small>Need help? Contact us at <a href="mailto:${brand.supportEmail}">${brand.supportEmail}</a></small></p>
-            ${collectionEmail ? `<p><small>Collection Email: <a href="mailto:${collectionEmail}">${collectionEmail}</a></small></p>` : ""}
+            ${resolvedCollectionEmail ? `<p><small>Collection Email: <a href="mailto:${resolvedCollectionEmail}">${resolvedCollectionEmail}</a></small></p>` : ""}
             <p><small>This is a computer-generated receipt. No signature required.</small></p>
         </div>
     </div>
@@ -707,7 +870,18 @@ class EmailService {
     const frontendUrl =
       process.env.FRONTEND_URL || "https://www.misterfyber.com";
 
-    const collectionEmail = getCollectionEmailByLocation(location);
+    // ✅ Resolve collection email respecting Wilconnect
+    const resolvedCollectionEmail = getResolvedCollectionEmail(
+      buildingName,
+      location,
+    );
+
+    // ✅ Resolve bank account for this building
+    const bankAccount = getBankAccountForBuilding(
+      buildingName,
+      location,
+      undefined,
+    );
 
     const locationBadge = location
       ? `
@@ -753,9 +927,17 @@ class EmailService {
       `;
     }
 
+    // ✅ WILCONNECT OVERRIDE: If building is Wilconnect, use workselpueblo
     let senderName = brand.brandName;
     let senderEmailAddress = brand.adminEmail;
-    if (location) {
+
+    if (isWilconnectBuildingName(buildingName)) {
+      senderEmailAddress = ADDITIONAL_SENDER_EMAILS.workselpueblo;
+      senderName = ADDITIONAL_SENDER_NAMES.workselpueblo;
+      console.log(
+        `🏢 Wilconnect building in generateInvoiceHTML: "${buildingName}" → workselpueblo@fyberblizz.com`,
+      );
+    } else if (location) {
       const collectionEmailForLocation = getCollectionEmailByLocation(location);
       if (
         collectionEmailForLocation &&
@@ -773,6 +955,29 @@ class EmailService {
           senderName = `${brand.brandName} Collection`;
         }
       }
+    }
+
+    // ✅ Build the payment/bank instructions block ONLY if not paid
+    const isBillingPaid =
+      billing.status === "paid" || (billing as any).paidAt != null;
+    const isBillingFree =
+      billing.status === "free" ||
+      (billing as any).isFree === true ||
+      (billing as any).paymentMethod === "free";
+
+    let bankAccountSection = "";
+    if (!isBillingPaid && !isBillingFree) {
+      bankAccountSection = `
+        <div style="margin-top: 20px; padding: 15px; background-color: #e7f3ff; border-radius: 8px; border-left: 4px solid #1a56db;">
+          <h4 style="margin-top: 0; color: #1a56db;">💳 NEW ACCOUNT FOR PAYMENT</h4>
+          <p style="margin: 5px 0;"><strong>BANK:</strong> ${bankAccount.bankName}</p>
+          <p style="margin: 5px 0;"><strong>ACCOUNT NUMBER:</strong> <span style="font-family: monospace; font-size: 15px; font-weight: bold; color: #1a237e;">${bankAccount.accountNumber}</span></p>
+          <p style="margin: 5px 0;"><strong>ACCOUNT NAME:</strong> ${bankAccount.accountName}</p>
+          <p style="font-size: 12px; color: #555; margin-top: 10px;">
+            Kindly send your proof of payment via Viber ${brand.companyContact} or at <a href="mailto:${resolvedCollectionEmail}">${resolvedCollectionEmail}</a> after completing the transaction.
+          </p>
+        </div>
+      `;
     }
 
     let itemsTable = "";
@@ -835,16 +1040,20 @@ class EmailService {
                   ${buildingName ? `<p><strong>Building:</strong> ${buildingName}</p>` : ""}
                   ${buildingInstallationFee ? `<p><strong>Installation Fee:</strong> ₱${buildingInstallationFee.toLocaleString()}</p>` : ""}
                   ${location ? `<p><strong>Location:</strong> ${location.toUpperCase()}</p>` : ""}
-                  <p><strong>Collection Email:</strong> ${collectionEmail}</p>
+                  <p><strong>Collection Email:</strong> ${resolvedCollectionEmail}</p>
               </div>
               ${itemsTable}
               ${installationFeeInfo}
               ${additionalInfo}
+              ${bankAccountSection}
               <div style="text-align: center; margin: 30px 0;">
                   <a href="${frontendUrl}/billing" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">View & Pay Invoice</a>
               </div>
               <hr>
-              <p style="color: #666; font-size: 12px;">${brand.brandName}</p>
+              <p style="color: #666; font-size: 12px;">${brand.brandName} - Your trusted internet provider</p>
+              <p style="color: #666; font-size: 12px;">Need help? Contact us at <a href="mailto:${brand.supportEmail}">${brand.supportEmail}</a></p>
+              <p style="color: #666; font-size: 12px;">This is a computer-generated invoice. No signature required.</p>
+              <p style="color: #666; font-size: 12px;">Collection email: <a href="mailto:${resolvedCollectionEmail}">${resolvedCollectionEmail}</a></p>
               <p style="color: #666; font-size: 12px;">Sent from: ${senderName} (${senderEmailAddress})</p>
           </div>
       </body>
@@ -865,6 +1074,19 @@ class EmailService {
     buildingInstallationFee?: number,
   ): string {
     const brand = getBrandForBuilding(buildingName);
+
+    // ✅ Resolve collection email respecting Wilconnect
+    const resolvedCollectionEmail = getResolvedCollectionEmail(
+      buildingName,
+      location,
+    );
+
+    // ✅ Resolve bank account for this building
+    const bankAccount = getBankAccountForBuilding(
+      buildingName,
+      location,
+      undefined,
+    );
 
     const locationBadge = location
       ? `
@@ -900,6 +1122,16 @@ class EmailService {
       `
         : "";
 
+    // ✅ WILCONNECT OVERRIDE
+    let senderNote = "";
+    if (isWilconnectBuildingName(buildingName)) {
+      senderNote = `
+        <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
+          <strong>📧 Sent from:</strong> ${ADDITIONAL_SENDER_NAMES.workselpueblo} (${ADDITIONAL_SENDER_EMAILS.workselpueblo})
+        </div>
+      `;
+    }
+
     return `
     <!DOCTYPE html>
     <html>
@@ -917,20 +1149,28 @@ class EmailService {
             <p>This is a friendly reminder that your ${brand.brandName} payment is due soon.</p>
             ${locationBadge}
             ${buildingInfo}
+            ${senderNote}
             <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
                 <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
                 <p><strong>Due Date:</strong> ${dueDate}</p>
                 ${reminderMessage}
                 ${installationFeeInfo}
                 ${location ? `<p><strong>Location:</strong> ${location.toUpperCase()}</p>` : ""}
-                ${collectionEmail ? `<p><strong>Collection Email:</strong> ${collectionEmail}</p>` : ""}
+                ${resolvedCollectionEmail ? `<p><strong>Collection Email:</strong> ${resolvedCollectionEmail}</p>` : ""}
                 ${buildingName ? `<p><strong>Building:</strong> ${buildingName}</p>` : ""}
             </div>
-     
+
+            <div style="margin-top: 20px; padding: 15px; background-color: #e7f3ff; border-radius: 8px; border-left: 4px solid #1a56db;">
+                <h4 style="margin-top: 0; color: #1a56db;">💳 NEW ACCOUNT FOR PAYMENT</h4>
+                <p style="margin: 5px 0;"><strong>BANK:</strong> ${bankAccount.bankName}</p>
+                <p style="margin: 5px 0;"><strong>ACCOUNT NUMBER:</strong> <span style="font-family: monospace; font-size: 15px; font-weight: bold; color: #1a237e;">${bankAccount.accountNumber}</span></p>
+                <p style="margin: 5px 0;"><strong>ACCOUNT NAME:</strong> ${bankAccount.accountName}</p>
+            </div>
+
             <p>Please pay before the due date to avoid service interruption.</p>
             <hr>
             <p style="color: #666; font-size: 12px;">This is an automated reminder from ${brand.brandName}.</p>
-            ${collectionEmail ? `<p style="color: #666; font-size: 12px;">Collection Email: <a href="mailto:${collectionEmail}">${collectionEmail}</a></p>` : ""}
+            ${resolvedCollectionEmail ? `<p style="color: #666; font-size: 12px;">Collection Email: <a href="mailto:${resolvedCollectionEmail}">${resolvedCollectionEmail}</a></p>` : ""}
         </div>
     </body>
     </html>
@@ -950,6 +1190,19 @@ class EmailService {
     buildingInstallationFee?: number,
   ): string {
     const brand = getBrandForBuilding(buildingName);
+
+    // ✅ Resolve collection email respecting Wilconnect
+    const resolvedCollectionEmail = getResolvedCollectionEmail(
+      buildingName,
+      location,
+    );
+
+    // ✅ Resolve bank account
+    const bankAccount = getBankAccountForBuilding(
+      buildingName,
+      location,
+      undefined,
+    );
 
     const locationBadge = location
       ? `
@@ -987,6 +1240,15 @@ class EmailService {
       `
         : "";
 
+    let senderNote = "";
+    if (isWilconnectBuildingName(buildingName)) {
+      senderNote = `
+        <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
+          <strong>📧 Sent from:</strong> ${ADDITIONAL_SENDER_NAMES.workselpueblo} (${ADDITIONAL_SENDER_EMAILS.workselpueblo})
+        </div>
+      `;
+    }
+
     return `
     <!DOCTYPE html>
     <html>
@@ -1015,6 +1277,7 @@ class EmailService {
                 <p><strong>Your ${brand.brandName} payment is due TODAY.</strong> Please settle your bill immediately to avoid service interruption.</p>
                 ${locationBadge}
                 ${buildingInfo}
+                ${senderNote}
                 <div class="bill-details">
                     <h3 style="margin-top: 0;">📋 Invoice Details</h3>
                     <p><strong>Invoice Number:</strong> ${billing.invoiceNumber || billing._id}</p>
@@ -1024,9 +1287,17 @@ class EmailService {
                     ${isInstallationBill ? `<p><strong>Bill Type:</strong> Installation Fee</p>` : ""}
                     ${installationFeeInfo}
                     ${location ? `<p><strong>Location:</strong> ${location.toUpperCase()}</p>` : ""}
-                    ${collectionEmail ? `<p><strong>Collection Email:</strong> ${collectionEmail}</p>` : ""}
+                    ${resolvedCollectionEmail ? `<p><strong>Collection Email:</strong> ${resolvedCollectionEmail}</p>` : ""}
                     ${buildingName ? `<p><strong>Building:</strong> ${buildingName}</p>` : ""}
                 </div>
+
+                <div style="margin-top: 20px; padding: 15px; background-color: #e7f3ff; border-radius: 8px; border-left: 4px solid #1a56db;">
+                    <h4 style="margin-top: 0; color: #1a56db;">💳 NEW ACCOUNT FOR PAYMENT</h4>
+                    <p style="margin: 5px 0;"><strong>BANK:</strong> ${bankAccount.bankName}</p>
+                    <p style="margin: 5px 0;"><strong>ACCOUNT NUMBER:</strong> <span style="font-family: monospace; font-size: 15px; font-weight: bold; color: #1a237e;">${bankAccount.accountNumber}</span></p>
+                    <p style="margin: 5px 0;"><strong>ACCOUNT NAME:</strong> ${bankAccount.accountName}</p>
+                </div>
+
                 ${reminderMessage}
                 <div class="warning">
                     <strong>📌 After Today:</strong> If payment is not received, your account will enter a grace period. After the grace period, your service will be suspended.
@@ -1038,7 +1309,7 @@ class EmailService {
             <div class="footer">
                 <p>${brand.brandName} - Your trusted internet provider</p>
                 <p><small>Need help? Contact us at <a href="mailto:${brand.supportEmail}">${brand.supportEmail}</a></small></p>
-                ${collectionEmail ? `<p><small>Collection Email: <a href="mailto:${collectionEmail}">${collectionEmail}</a></small></p>` : ""}
+                ${resolvedCollectionEmail ? `<p><small>Collection Email: <a href="mailto:${resolvedCollectionEmail}">${resolvedCollectionEmail}</a></small></p>` : ""}
                 <p><small>Late payments may incur service interruption after grace period.</small></p>
             </div>
         </div>
@@ -1061,6 +1332,21 @@ class EmailService {
     const brand = getBrandForBuilding(
       buildingName || application?.buildingName,
     );
+    const resolvedBuilding = buildingName || application?.buildingName;
+
+    // ✅ Resolve collection email respecting Wilconnect
+    const resolvedCollectionEmail = getResolvedCollectionEmail(
+      resolvedBuilding,
+      location,
+    );
+
+    // ✅ Resolve bank account
+    const bankAccount = getBankAccountForBuilding(
+      resolvedBuilding,
+      location,
+      application?.customerAddress,
+    );
+
     const registerUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/register`;
     const locationBadge = location
       ? `
@@ -1070,10 +1356,10 @@ class EmailService {
     `
       : "";
 
-    const buildingInfo = buildingName
+    const buildingInfo = resolvedBuilding
       ? `
       <div style="display: inline-block; background: #e8f5e9; color: #2e7d32; padding: 4px 12px; border-radius: 12px; font-size: 11px; margin-bottom: 10px;">
-        🏢 ${buildingName}
+        🏢 ${resolvedBuilding}
       </div>
     `
       : "";
@@ -1083,11 +1369,20 @@ class EmailService {
         ? `
       <div style="margin-top: 15px; padding: 10px; background-color: #fff3e0; border-radius: 5px; border-left: 4px solid #ff9800;">
         <p style="margin: 0; font-size: 12px; color: #e65100;">
-          <strong>🔧 Installation Fee:</strong> ₱${buildingInstallationFee.toLocaleString()} (One-time charge for ${buildingName || "your building"})
+          <strong>🔧 Installation Fee:</strong> ₱${buildingInstallationFee.toLocaleString()} (One-time charge for ${resolvedBuilding || "your building"})
         </p>
       </div>
       `
         : "";
+
+    let senderNote = "";
+    if (isWilconnectBuildingName(resolvedBuilding)) {
+      senderNote = `
+        <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
+          <strong>📧 Sent from:</strong> ${ADDITIONAL_SENDER_NAMES.workselpueblo} (${ADDITIONAL_SENDER_EMAILS.workselpueblo})
+        </div>
+      `;
+    }
 
     return `
     <!DOCTYPE html>
@@ -1117,6 +1412,7 @@ class EmailService {
                 <p>Your ${brand.brandName} bill is now ready. Since you haven't created your account yet, please register first using your Application ID.</p>
                 ${locationBadge}
                 ${buildingInfo}
+                ${senderNote}
                 <div class="bill-details">
                     <h3 style="margin-top: 0;">📋 Bill Details</h3>
                     <p><strong>Invoice Number:</strong> ${bill.invoiceNumber}</p>
@@ -1126,11 +1422,19 @@ class EmailService {
                     ${bill.isProRated ? `<p><strong>Bill Type:</strong> Pro-rated (First Bill)</p>` : ""}
                     ${bill.isInstallationBill ? `<p><strong>Bill Type:</strong> Installation Fee</p>` : ""}
                     ${!bill.isProRated && !bill.isInstallationBill ? `<p><strong>Bill Type:</strong> Monthly Subscription</p>` : ""}
-                    ${buildingName ? `<p><strong>Building:</strong> ${buildingName}</p>` : ""}
+                    ${resolvedBuilding ? `<p><strong>Building:</strong> ${resolvedBuilding}</p>` : ""}
                     ${location ? `<p><strong>Location:</strong> ${location.toUpperCase()}</p>` : ""}
-                    ${collectionEmail ? `<p><strong>Collection Email:</strong> ${collectionEmail}</p>` : ""}
+                    ${resolvedCollectionEmail ? `<p><strong>Collection Email:</strong> ${resolvedCollectionEmail}</p>` : ""}
                 </div>
                 ${installationFeeInfo}
+
+                <div style="margin-top: 20px; padding: 15px; background-color: #e7f3ff; border-radius: 8px; border-left: 4px solid #1a56db;">
+                    <h4 style="margin-top: 0; color: #1a56db;">💳 NEW ACCOUNT FOR PAYMENT</h4>
+                    <p style="margin: 5px 0;"><strong>BANK:</strong> ${bankAccount.bankName}</p>
+                    <p style="margin: 5px 0;"><strong>ACCOUNT NUMBER:</strong> <span style="font-family: monospace; font-size: 15px; font-weight: bold; color: #1a237e;">${bankAccount.accountNumber}</span></p>
+                    <p style="margin: 5px 0;"><strong>ACCOUNT NAME:</strong> ${bankAccount.accountName}</p>
+                </div>
+
                 <div class="warning">
                     <strong>📌 Important:</strong> You need to create your account before you can pay your bill.
                 </div>
@@ -1143,7 +1447,7 @@ class EmailService {
             <div class="footer">
                 <p>${brand.brandName} - Your trusted internet provider</p>
                 <p><small>Need help? Contact us at <a href="mailto:${brand.supportEmail}">${brand.supportEmail}</a></small></p>
-                ${collectionEmail ? `<p><small>Collection Email: <a href="mailto:${collectionEmail}">${collectionEmail}</a></small></p>` : ""}
+                ${resolvedCollectionEmail ? `<p><small>Collection Email: <a href="mailto:${resolvedCollectionEmail}">${resolvedCollectionEmail}</a></small></p>` : ""}
             </div>
         </div>
     </body>
@@ -1293,11 +1597,11 @@ class EmailService {
     });
     options.push({
       value: "workselpueblo",
-      label: "Workselpueblo (workselpueblo@gmail.com)",
+      label: `Workselpueblo (${ADDITIONAL_SENDER_EMAILS.workselpueblo})`,
     });
     options.push({
       value: "fbsilkresidence",
-      label: "FB Silk Residence (fbsilkresidence@gmail.com)",
+      label: `FB Silk Residence (${ADDITIONAL_SENDER_EMAILS.fbsilkresidence})`,
     });
 
     return options;
@@ -1319,6 +1623,7 @@ class EmailService {
       senderType?: SenderType;
       forceSend?: boolean;
       isWilconnect?: boolean;
+      buildingName?: string;
     },
   ): Promise<boolean> {
     try {
@@ -1332,6 +1637,9 @@ class EmailService {
       console.log(`   forceSend: ${options?.forceSend === true}`);
       console.log(
         `   isWilconnect (options): ${options?.isWilconnect === true}`,
+      );
+      console.log(
+        `   buildingName (options): ${options?.buildingName || "N/A"}`,
       );
 
       if (isCustomerEmail && !options?.forceSend) {
@@ -1389,8 +1697,21 @@ class EmailService {
         return false;
       }
 
+      // ✅ Determine if this is a Wilconnect building
+      const buildingName =
+        options?.buildingName || (options?.isWilconnect ? location : undefined);
+      const isWilconnectLocation =
+        options?.isWilconnect === true ||
+        isWilconnectBuildingName(buildingName);
+
+      // ✅ Resolve collection email respecting Wilconnect
       let collectionEmail = DEFAULT_COLLECTION_EMAIL;
-      if (location) {
+      if (isWilconnectLocation) {
+        collectionEmail = ADDITIONAL_SENDER_EMAILS.workselpueblo;
+        console.log(
+          `🏢 [WILCONNECT] Collection email overridden to: ${collectionEmail}`,
+        );
+      } else if (location) {
         collectionEmail = getCollectionEmailByLocation(location);
         console.log(
           `📍 Collection email for location "${location}": ${collectionEmail}`,
@@ -1401,17 +1722,10 @@ class EmailService {
         );
       }
 
-      let isWilconnectLocation = options?.isWilconnect === true;
-
-      if (!isWilconnectLocation && location) {
-        const normalizedLoc = location.toLowerCase();
-        if (
-          ["el pueblo", "vitalez", "newport"].some((b) =>
-            normalizedLoc.includes(b),
-          )
-        ) {
-          isWilconnectLocation = true;
-        }
+      if (isWilconnectLocation) {
+        console.log(
+          `🏢 WILCONNECT DETECTED: building="${buildingName || "N/A"}" → using workselpueblo@fyberblizz.com`,
+        );
       }
 
       console.log(`🏢 isWilconnectLocation (final): ${isWilconnectLocation}`);
@@ -1423,25 +1737,28 @@ class EmailService {
         options?.senderType ||
         (options?.useAdminSender ? "admin" : "collection");
 
-      if (effectiveSenderType === "admin") {
+      // ✅ WILCONNECT OVERRIDE: HIGHEST PRIORITY - El Pueblo, Vitalez, Newport ALWAYS use workselpueblo
+      if (isWilconnectLocation) {
+        senderEmailAddress = ADDITIONAL_SENDER_EMAILS.workselpueblo;
+        senderName = ADDITIONAL_SENDER_NAMES.workselpueblo;
+        console.log(
+          `🏢 [WILCONNECT OVERRIDE] Using workselpueblo as sender: ${senderName} <${senderEmailAddress}>`,
+        );
+      } else if (effectiveSenderType === "admin") {
         senderEmailAddress = "admin@misterfyber.com";
-        if (isWilconnectLocation) {
-          senderName = "Wilconnect Admin";
-        } else {
-          senderName = "Mister Fyber Admin";
-        }
+        senderName = "Mister Fyber Admin";
         console.log(
           `📧 Using admin email as sender: ${senderName} <${senderEmailAddress}>`,
         );
       } else if (effectiveSenderType === "workselpueblo") {
         senderEmailAddress = ADDITIONAL_SENDER_EMAILS.workselpueblo;
-        senderName = "Workselpueblo";
+        senderName = ADDITIONAL_SENDER_NAMES.workselpueblo;
         console.log(
           `📧 Using workselpueblo email as sender: ${senderEmailAddress}`,
         );
       } else if (effectiveSenderType === "fbsilkresidence") {
         senderEmailAddress = ADDITIONAL_SENDER_EMAILS.fbsilkresidence;
-        senderName = "FB Silk Residence";
+        senderName = ADDITIONAL_SENDER_NAMES.fbsilkresidence;
         console.log(
           `📧 Using fbsilkresidence email as sender: ${senderEmailAddress}`,
         );
@@ -1451,20 +1768,14 @@ class EmailService {
         if (collectionEmailForLocation) {
           senderEmailAddress = collectionEmailForLocation;
           if (collectionEmailForLocation.includes("breeze")) {
-            senderName = isWilconnectLocation
-              ? "Wilconnect Breeze Collection"
-              : "Mister Fyber Breeze Collection";
+            senderName = "Mister Fyber Breeze Collection";
           } else if (
             collectionEmailForLocation.includes("sil") ||
             collectionEmailForLocation.includes("silk")
           ) {
-            senderName = isWilconnectLocation
-              ? "Wilconnect SIL Collection"
-              : "Mister Fyber SIL Collection";
+            senderName = "Mister Fyber SIL Collection";
           } else {
-            senderName = isWilconnectLocation
-              ? "Wilconnect Collection"
-              : "Mister Fyber Collection";
+            senderName = "Mister Fyber Collection";
           }
           console.log(
             `📧 Using collection email as sender: ${senderEmailAddress} (${senderName})`,
@@ -1495,6 +1806,7 @@ class EmailService {
       console.log(`   Subject: ${subject}`);
       console.log(`   Sender: ${senderName} <${senderEmailAddress}>`);
       console.log(`   Location: ${location || "Not specified"}`);
+      console.log(`   Building: ${buildingName || "N/A"}`);
       console.log(`   Collection Email: ${collectionEmail}`);
       console.log(`   BCC: ${bccEmails.join(", ")}`);
 
@@ -1712,7 +2024,6 @@ class EmailService {
       }
 
       const userLocation = location || invoiceData.location || "";
-      const collectionEmail = getCollectionEmailByLocation(userLocation);
 
       let buildingName = invoiceData.buildingName || "";
       let buildingInstallationFee = invoiceData.buildingInstallationFee || 0;
@@ -1737,8 +2048,20 @@ class EmailService {
         }
       }
 
+      // ✅ Resolve collection email respecting Wilconnect
+      const isWilconnect = isWilconnectBuildingName(buildingName);
+      const collectionEmail = isWilconnect
+        ? ADDITIONAL_SENDER_EMAILS.workselpueblo
+        : getCollectionEmailByLocation(userLocation);
+
+      // ✅ Resolve bank account
+      const bankAccount = getBankAccountForBuilding(
+        buildingName,
+        userLocation,
+        invoiceData.customerAddress,
+      );
+
       const brand = getBrandForBuilding(buildingName);
-      const isWilconnect = brand.isWilconnect;
 
       let senderName = isWilconnect ? "Wilconnect" : "Mister Fyber";
       let senderEmailAddress = brand.adminEmail;
@@ -1746,25 +2069,28 @@ class EmailService {
       const effectiveSenderType: SenderType =
         senderType || (useAdminSender ? "admin" : "collection");
 
-      if (effectiveSenderType === "admin") {
+      // ✅ WILCONNECT OVERRIDE: El Pueblo, Vitalez, Newport ALWAYS use workselpueblo
+      if (isWilconnect) {
+        senderEmailAddress = ADDITIONAL_SENDER_EMAILS.workselpueblo;
+        senderName = ADDITIONAL_SENDER_NAMES.workselpueblo;
+        console.log(
+          `🏢 [WILCONNECT] sendInvoiceWithPDF building="${buildingName}" → workselpueblo@fyberblizz.com`,
+        );
+      } else if (effectiveSenderType === "admin") {
         senderEmailAddress = brand.adminEmail;
-        if (isWilconnect) {
-          senderName = "Wilconnect Admin";
-        } else {
-          senderName = "Mister Fyber Admin";
-        }
+        senderName = "Mister Fyber Admin";
         console.log(
           `📧 Using admin email as sender: ${senderName} <${senderEmailAddress}>`,
         );
       } else if (effectiveSenderType === "workselpueblo") {
         senderEmailAddress = ADDITIONAL_SENDER_EMAILS.workselpueblo;
-        senderName = "Workselpueblo";
+        senderName = ADDITIONAL_SENDER_NAMES.workselpueblo;
         console.log(
           `📧 Using workselpueblo email as sender: ${senderEmailAddress}`,
         );
       } else if (effectiveSenderType === "fbsilkresidence") {
         senderEmailAddress = ADDITIONAL_SENDER_EMAILS.fbsilkresidence;
-        senderName = "FB Silk Residence";
+        senderName = ADDITIONAL_SENDER_NAMES.fbsilkresidence;
         console.log(
           `📧 Using fbsilkresidence email as sender: ${senderEmailAddress}`,
         );
@@ -1777,20 +2103,14 @@ class EmailService {
         ) {
           senderEmailAddress = collectionEmailForLocation;
           if (collectionEmailForLocation.includes("breeze")) {
-            senderName = isWilconnect
-              ? "Wilconnect Breeze Collection"
-              : "Mister Fyber Breeze Collection";
+            senderName = "Mister Fyber Breeze Collection";
           } else if (
             collectionEmailForLocation.includes("sil") ||
             collectionEmailForLocation.includes("silk")
           ) {
-            senderName = isWilconnect
-              ? "Wilconnect SIL Collection"
-              : "Mister Fyber SIL Collection";
+            senderName = "Mister Fyber SIL Collection";
           } else {
-            senderName = isWilconnect
-              ? "Wilconnect Collection"
-              : "Mister Fyber Collection";
+            senderName = "Mister Fyber Collection";
           }
           console.log(
             `📧 Using collection email as sender: ${senderEmailAddress} (${senderName})`,
@@ -1912,11 +2232,29 @@ class EmailService {
         invoiceData.accountNumber
       ) {
         paymentInstructions = `
-          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-            <h4 style="margin-top: 0; color: #1a237e;">Payment Method (Bank Transfer):</h4>
-            <p><strong>Bank Name:</strong> ${invoiceData.bankName}</p>
-            <p><strong>Account Name:</strong> ${invoiceData.accountName}</p>
-            <p><strong>Account Number:</strong> ${invoiceData.accountNumber}</p>
+          <div style="background: #e7f3ff; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #1a56db;">
+            <h4 style="margin-top: 0; color: #1a56db;">💳 NEW ACCOUNT FOR PAYMENT</h4>
+            <p><strong>BANK:</strong> ${invoiceData.bankName}</p>
+            <p><strong>ACCOUNT NUMBER:</strong> <span style="font-family: monospace; font-size: 15px; font-weight: bold; color: #1a237e;">${invoiceData.accountNumber}</span></p>
+            <p><strong>ACCOUNT NAME:</strong> ${invoiceData.accountName}</p>
+            <p style="font-size: 12px; color: #666; margin-top: 10px;">
+              Kindly send your proof of payment via Viber ${brand.companyContact} or at ${collectionEmail} after completing the transaction.
+            </p>
+          </div>
+        `;
+      } else if (
+        !invoiceData.paidAt &&
+        invoiceData.status !== "paid" &&
+        invoiceData.status !== "free" &&
+        !invoiceData.isFree
+      ) {
+        // Use building-specific bank account
+        paymentInstructions = `
+          <div style="background: #e7f3ff; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #1a56db;">
+            <h4 style="margin-top: 0; color: #1a56db;">💳 NEW ACCOUNT FOR PAYMENT</h4>
+            <p><strong>BANK:</strong> ${bankAccount.bankName}</p>
+            <p><strong>ACCOUNT NUMBER:</strong> <span style="font-family: monospace; font-size: 15px; font-weight: bold; color: #1a237e;">${bankAccount.accountNumber}</span></p>
+            <p><strong>ACCOUNT NAME:</strong> ${bankAccount.accountName}</p>
             <p style="font-size: 12px; color: #666; margin-top: 10px;">
               Kindly send your proof of payment via Viber ${brand.companyContact} or at ${collectionEmail} after completing the transaction.
             </p>
@@ -2263,6 +2601,7 @@ class EmailService {
             bcc: [getCollectionEmailByLocation(location || "")],
             replyTo: getCollectionEmailByLocation(location || ""),
             senderType,
+            buildingName: invoice.buildingName,
           },
         );
         console.log(
@@ -2419,6 +2758,7 @@ class EmailService {
             replyTo: getCollectionEmailByLocation(location || ""),
             senderType,
             forceSend,
+            buildingName: invoiceData.buildingName,
           },
         );
       }
@@ -2447,10 +2787,14 @@ class EmailService {
       }
 
       const userLocation = location || invoiceData.location || "";
-      const collectionEmail = getCollectionEmailByLocation(userLocation);
-      const brand = getBrandForBuilding(invoiceData.buildingName);
 
-      const isWilconnect = brand.isWilconnect;
+      // ✅ Resolve collection email respecting Wilconnect
+      const isWilconnect = isWilconnectBuildingName(invoiceData.buildingName);
+      const collectionEmail = isWilconnect
+        ? ADDITIONAL_SENDER_EMAILS.workselpueblo
+        : getCollectionEmailByLocation(userLocation);
+
+      const brand = getBrandForBuilding(invoiceData.buildingName);
 
       let senderName = isWilconnect ? "Wilconnect" : "Mister Fyber";
       let senderEmailAddress = brand.adminEmail;
@@ -2458,25 +2802,28 @@ class EmailService {
       const effectiveSenderType: SenderType =
         senderType || (useAdminSender ? "admin" : "collection");
 
-      if (effectiveSenderType === "admin") {
+      // ✅ WILCONNECT OVERRIDE: El Pueblo, Vitalez, Newport ALWAYS use workselpueblo
+      if (isWilconnect) {
+        senderEmailAddress = ADDITIONAL_SENDER_EMAILS.workselpueblo;
+        senderName = ADDITIONAL_SENDER_NAMES.workselpueblo;
+        console.log(
+          `🏢 [WILCONNECT] sendPaidInvoiceEmail building="${invoiceData.buildingName}" → workselpueblo@fyberblizz.com`,
+        );
+      } else if (effectiveSenderType === "admin") {
         senderEmailAddress = brand.adminEmail;
-        if (isWilconnect) {
-          senderName = "Wilconnect Admin";
-        } else {
-          senderName = "Mister Fyber Admin";
-        }
+        senderName = "Mister Fyber Admin";
         console.log(
           `📧 Using admin email as sender: ${senderName} <${senderEmailAddress}>`,
         );
       } else if (effectiveSenderType === "workselpueblo") {
         senderEmailAddress = ADDITIONAL_SENDER_EMAILS.workselpueblo;
-        senderName = "Workselpueblo";
+        senderName = ADDITIONAL_SENDER_NAMES.workselpueblo;
         console.log(
           `📧 Using workselpueblo email as sender: ${senderEmailAddress}`,
         );
       } else if (effectiveSenderType === "fbsilkresidence") {
         senderEmailAddress = ADDITIONAL_SENDER_EMAILS.fbsilkresidence;
-        senderName = "FB Silk Residence";
+        senderName = ADDITIONAL_SENDER_NAMES.fbsilkresidence;
         console.log(
           `📧 Using fbsilkresidence email as sender: ${senderEmailAddress}`,
         );
@@ -2489,20 +2836,14 @@ class EmailService {
         ) {
           senderEmailAddress = collectionEmailForLocation;
           if (collectionEmailForLocation.includes("breeze")) {
-            senderName = isWilconnect
-              ? "Wilconnect Breeze Collection"
-              : "Mister Fyber Breeze Collection";
+            senderName = "Mister Fyber Breeze Collection";
           } else if (
             collectionEmailForLocation.includes("sil") ||
             collectionEmailForLocation.includes("silk")
           ) {
-            senderName = isWilconnect
-              ? "Wilconnect SIL Collection"
-              : "Mister Fyber SIL Collection";
+            senderName = "Mister Fyber SIL Collection";
           } else {
-            senderName = isWilconnect
-              ? "Wilconnect Collection"
-              : "Mister Fyber Collection";
+            senderName = "Mister Fyber Collection";
           }
           console.log(
             `📧 Using collection email as sender: ${senderEmailAddress} (${senderName})`,
@@ -2844,7 +3185,6 @@ class EmailService {
   ): Promise<boolean> {
     try {
       const userLocation = location || (await getLocationFromEntity(user));
-      const collectionEmail = getCollectionEmailByLocation(userLocation);
 
       let buildingName = "";
       let buildingInstallationFee = 0;
@@ -2871,6 +3211,12 @@ class EmailService {
         }
       }
 
+      // ✅ Resolve collection email respecting Wilconnect
+      const resolvedCollectionEmail = getResolvedCollectionEmail(
+        buildingName,
+        userLocation,
+      );
+
       const brand = getBrandForBuilding(buildingName);
       const subject = `🧾 Invoice #${billing.invoiceNumber || billing._id} - ${brand.brandName}`;
       const html = this.generateInvoiceHTML(
@@ -2890,11 +3236,12 @@ class EmailService {
         {
           cc: options?.cc,
           attachments: options?.attachments,
-          replyTo: options?.replyTo || collectionEmail,
-          bcc: [collectionEmail],
+          replyTo: options?.replyTo || resolvedCollectionEmail,
+          bcc: [resolvedCollectionEmail],
           useAdminSender: options?.useAdminSender || false,
           senderType: options?.senderType,
           isWilconnect: brand.isWilconnect,
+          buildingName: buildingName,
         },
       );
     } catch (error) {
@@ -2930,7 +3277,6 @@ class EmailService {
   ): Promise<void> {
     try {
       const userLocation = location || (await getLocationFromEntity(user));
-      const collectionEmail = getCollectionEmailByLocation(userLocation);
 
       let buildingName = "";
       let buildingInstallationFee = 0;
@@ -2957,6 +3303,12 @@ class EmailService {
         }
       }
 
+      // ✅ Resolve collection email respecting Wilconnect
+      const resolvedCollectionEmail = getResolvedCollectionEmail(
+        buildingName,
+        userLocation,
+      );
+
       const brand = getBrandForBuilding(buildingName);
       const dueDate = billing.dueDate
         ? new Date(billing.dueDate).toLocaleDateString()
@@ -2969,7 +3321,7 @@ class EmailService {
         amount,
         dueDate,
         userLocation,
-        collectionEmail,
+        resolvedCollectionEmail,
         billing.isInstallationBill || false,
         billing.isProRated || false,
         buildingName,
@@ -2983,11 +3335,12 @@ class EmailService {
         true,
         userLocation,
         {
-          bcc: [collectionEmail],
-          replyTo: collectionEmail,
+          bcc: [resolvedCollectionEmail],
+          replyTo: resolvedCollectionEmail,
           useAdminSender: useAdminSender || false,
           senderType,
           isWilconnect: brand.isWilconnect,
+          buildingName: buildingName,
         },
       );
     } catch (error) {
@@ -3004,7 +3357,6 @@ class EmailService {
   ): Promise<void> {
     try {
       const userLocation = location || (await getLocationFromEntity(user));
-      const collectionEmail = getCollectionEmailByLocation(userLocation);
 
       let buildingName = "";
       let buildingInstallationFee = 0;
@@ -3031,6 +3383,12 @@ class EmailService {
         }
       }
 
+      // ✅ Resolve collection email respecting Wilconnect
+      const resolvedCollectionEmail = getResolvedCollectionEmail(
+        buildingName,
+        userLocation,
+      );
+
       const brand = getBrandForBuilding(buildingName);
       const dueDate = billing.dueDate
         ? new Date(billing.dueDate).toLocaleDateString()
@@ -3043,7 +3401,7 @@ class EmailService {
         amount,
         dueDate,
         userLocation,
-        collectionEmail,
+        resolvedCollectionEmail,
         billing.isInstallationBill || false,
         billing.isProRated || false,
         buildingName,
@@ -3057,11 +3415,12 @@ class EmailService {
         true,
         userLocation,
         {
-          bcc: [collectionEmail],
-          replyTo: collectionEmail,
+          bcc: [resolvedCollectionEmail],
+          replyTo: resolvedCollectionEmail,
           useAdminSender: useAdminSender || false,
           senderType,
           isWilconnect: brand.isWilconnect,
+          buildingName: buildingName,
         },
       );
     } catch (error) {
@@ -3073,7 +3432,7 @@ class EmailService {
     application: any,
     bill: any,
     plan: any,
-    buildingNameFromController?: string, // 👈 BAGONG PARAMETER
+    buildingNameFromController?: string,
     location?: string,
     useAdminSender?: boolean,
     senderType?: SenderType,
@@ -3081,9 +3440,7 @@ class EmailService {
     try {
       const userLocation =
         location || (await getLocationFromEntity(application));
-      const collectionEmail = getCollectionEmailByLocation(userLocation);
 
-      // 👇 GAMITIN ANG buildingNameFromController KUNG MERON
       let buildingName =
         buildingNameFromController || application.buildingName || "";
       let buildingInstallationFee = 0;
@@ -3102,6 +3459,12 @@ class EmailService {
         }
       }
 
+      // ✅ Resolve collection email respecting Wilconnect
+      const resolvedCollectionEmail = getResolvedCollectionEmail(
+        buildingName,
+        userLocation,
+      );
+
       const brand = getBrandForBuilding(buildingName);
       const dueDate = bill.dueDate
         ? new Date(bill.dueDate).toLocaleDateString()
@@ -3115,7 +3478,7 @@ class EmailService {
         amount,
         dueDate,
         userLocation,
-        collectionEmail,
+        resolvedCollectionEmail,
         buildingName,
         buildingInstallationFee,
       );
@@ -3127,11 +3490,12 @@ class EmailService {
         true,
         userLocation,
         {
-          bcc: [collectionEmail],
-          replyTo: collectionEmail,
+          bcc: [resolvedCollectionEmail],
+          replyTo: resolvedCollectionEmail,
           useAdminSender: useAdminSender || false,
           senderType,
           isWilconnect: brand.isWilconnect,
+          buildingName: buildingName,
         },
       );
     } catch (error) {
@@ -3148,7 +3512,6 @@ class EmailService {
   ): Promise<void> {
     try {
       const userLocation = location || (await getLocationFromEntity(user));
-      const collectionEmail = getCollectionEmailByLocation(userLocation);
 
       let buildingName = "";
       let buildingInstallationFee = 0;
@@ -3174,6 +3537,19 @@ class EmailService {
           );
         }
       }
+
+      // ✅ Resolve collection email respecting Wilconnect
+      const resolvedCollectionEmail = getResolvedCollectionEmail(
+        buildingName,
+        userLocation,
+      );
+
+      // ✅ Resolve bank account
+      const bankAccount = getBankAccountForBuilding(
+        buildingName,
+        userLocation,
+        undefined,
+      );
 
       const brand = getBrandForBuilding(buildingName);
       const dueDate = billing.dueDate
@@ -3210,6 +3586,15 @@ class EmailService {
         `
           : "";
 
+      let senderNote = "";
+      if (isWilconnectBuildingName(buildingName)) {
+        senderNote = `
+          <div style="background: #f0f7ff; padding: 8px 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #1a56db; text-align: center;">
+            <strong>📧 Sent from:</strong> ${ADDITIONAL_SENDER_NAMES.workselpueblo} (${ADDITIONAL_SENDER_EMAILS.workselpueblo})
+          </div>
+        `;
+      }
+
       const html = `
         <!DOCTYPE html>
         <html>
@@ -3224,6 +3609,7 @@ class EmailService {
                 <p>Your ${brand.brandName} bill is due on ${dueDate}.</p>
                 ${locationBadge}
                 ${buildingInfo}
+                ${senderNote}
                 <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
                     <p><strong>Amount Due:</strong> ₱${safeToFixed(amount)}</p>
                     <p><strong>Due Date:</strong> ${dueDate}</p>
@@ -3231,12 +3617,20 @@ class EmailService {
                     ${userLocation ? `<p><strong>Location:</strong> ${userLocation.toUpperCase()}</p>` : ""}
                     ${buildingName ? `<p><strong>Building:</strong> ${buildingName}</p>` : ""}
                 </div>
+
+                <div style="margin-top: 20px; padding: 15px; background-color: #e7f3ff; border-radius: 8px; border-left: 4px solid #1a56db;">
+                    <h4 style="margin-top: 0; color: #1a56db;">💳 NEW ACCOUNT FOR PAYMENT</h4>
+                    <p style="margin: 5px 0;"><strong>BANK:</strong> ${bankAccount.bankName}</p>
+                    <p style="margin: 5px 0;"><strong>ACCOUNT NUMBER:</strong> <span style="font-family: monospace; font-size: 15px; font-weight: bold; color: #1a237e;">${bankAccount.accountNumber}</span></p>
+                    <p style="margin: 5px 0;"><strong>ACCOUNT NAME:</strong> ${bankAccount.accountName}</p>
+                </div>
+
                 <div style="text-align: center; margin: 30px 0;">
                     <a href="${frontendUrl}/billing" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">View Bill</a>
                 </div>
                 <hr>
                 <p style="color: #666; font-size: 12px;">This is an automated reminder from ${brand.brandName}.</p>
-                ${collectionEmail ? `<p style="color: #666; font-size: 12px;">Collection Email: <a href="mailto:${collectionEmail}">${collectionEmail}</a></p>` : ""}
+                ${resolvedCollectionEmail ? `<p style="color: #666; font-size: 12px;">Collection Email: <a href="mailto:${resolvedCollectionEmail}">${resolvedCollectionEmail}</a></p>` : ""}
             </div>
         </body>
         </html>
@@ -3249,11 +3643,12 @@ class EmailService {
         true,
         userLocation,
         {
-          bcc: [collectionEmail],
-          replyTo: collectionEmail,
+          bcc: [resolvedCollectionEmail],
+          replyTo: resolvedCollectionEmail,
           useAdminSender: useAdminSender || false,
           senderType,
           isWilconnect: brand.isWilconnect,
+          buildingName: buildingName,
         },
       );
     } catch (error) {
@@ -3314,11 +3709,10 @@ class EmailService {
     );
   }
 
-  // 👇 FIXED: sendApplicationReceived now accepts buildingNameFromController
   async sendApplicationReceived(
     application: any,
     plan: any,
-    buildingNameFromController?: string, // 👈 BAGONG PARAMETER
+    buildingNameFromController?: string,
   ): Promise<void> {
     console.log(`📧 ========================================`);
     console.log(`📧 sendApplicationReceived called`);
@@ -3346,7 +3740,6 @@ class EmailService {
       resolvedPlan = await resolvePlanForApplication(application);
     }
 
-    // 👇 GAMITIN ANG buildingNameFromController KUNG MERON
     let buildingName =
       buildingNameFromController || application.buildingName || "";
     if (!buildingName && application.buildingId) {
@@ -3386,6 +3779,7 @@ class EmailService {
       {
         senderType: "admin",
         isWilconnect: brand.isWilconnect,
+        buildingName: buildingName,
       },
     );
 
@@ -3399,6 +3793,7 @@ class EmailService {
           <p><strong>Plan:</strong> ${resolvedPlan?.name || "N/A"}</p>
           <p><strong>Monthly Price:</strong> ₱${safeToFixed(resolvedPlan?.price ?? 0)}</p>
           <p><strong>Brand:</strong> ${brand.brandName}</p>
+          <p><strong>Building:</strong> ${buildingName || "N/A"}</p>
           <p><strong>Submitted:</strong> ${new Date().toLocaleString()}</p>
       </div>
     `;
@@ -3408,11 +3803,10 @@ class EmailService {
     );
   }
 
-  // 👇 FIXED: sendApplicationApproved now accepts buildingNameFromController
   async sendApplicationApproved(
     application: any,
     plan: any,
-    buildingNameFromController?: string, // 👈 BAGONG PARAMETER
+    buildingNameFromController?: string,
   ): Promise<void> {
     let resolvedPlan: any = null;
 
@@ -3425,7 +3819,6 @@ class EmailService {
       resolvedPlan = await resolvePlanForApplication(application);
     }
 
-    // 👇 GAMITIN ANG buildingNameFromController KUNG MERON
     let buildingName =
       buildingNameFromController || application.buildingName || "";
     if (!buildingName && application.buildingId) {
@@ -3464,6 +3857,7 @@ class EmailService {
       {
         senderType: "admin",
         isWilconnect: brand.isWilconnect,
+        buildingName: buildingName,
       },
     );
 
@@ -3483,13 +3877,11 @@ class EmailService {
     );
   }
 
-  // 👇 FIXED: sendApplicationRejected now accepts buildingNameFromController
   async sendApplicationRejected(
     application: any,
     reason: string,
-    buildingNameFromController?: string, // 👈 BAGONG PARAMETER
+    buildingNameFromController?: string,
   ): Promise<void> {
-    // 👇 GAMITIN ANG buildingNameFromController KUNG MERON
     let buildingName =
       buildingNameFromController || application.buildingName || "";
     if (!buildingName && application.buildingId) {
@@ -3521,6 +3913,7 @@ class EmailService {
       {
         senderType: "admin",
         isWilconnect: brand.isWilconnect,
+        buildingName: buildingName,
       },
     );
 
@@ -4176,10 +4569,11 @@ class EmailService {
         <hr>
         <h3>Wilconnect Buildings (use Wilconnect branding):</h3>
         <ul>
-          <li><strong>El Pueblo</strong></li>
-          <li><strong>Vitalez</strong></li>
-          <li><strong>Newport</strong></li>
+          <li><strong>El Pueblo</strong> → BDO 013448003711 / RANDY D MANZANARES AND ANGELA C TAPEL</li>
+          <li><strong>Vitalez</strong> → BDO 013448003703 / RANDY MANZANARES AND ANGELA TAPEL</li>
+          <li><strong>Newport</strong> → BDO 013448003703 / RANDY MANZANARES AND ANGELA TAPEL</li>
         </ul>
+        <p><strong>✅ IMPORTANT: All Wilconnect buildings use <code>${ADDITIONAL_SENDER_EMAILS.workselpueblo}</code> as sender email AND as support/collection email in the footer.</strong></p>
         <hr>
         <h3>Location Email Configuration:</h3>
         <ul>
@@ -4192,7 +4586,7 @@ class EmailService {
         <hr>
         <h3>Additional Sender Emails:</h3>
         <ul>
-          <li><strong>Workselpueblo:</strong> ${ADDITIONAL_SENDER_EMAILS.workselpueblo}</li>
+          <li><strong>Workselpueblo (Wilconnect buildings):</strong> ${ADDITIONAL_SENDER_EMAILS.workselpueblo}</li>
           <li><strong>FB Silk Residence:</strong> ${ADDITIONAL_SENDER_EMAILS.fbsilkresidence}</li>
         </ul>
         <hr>

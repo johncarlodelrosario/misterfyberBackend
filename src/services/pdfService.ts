@@ -53,6 +53,93 @@ export interface InvoiceData {
 // ==================== WILCONNECT BRAND RESOLUTION ====================
 const WILCONNECT_BUILDINGS = ["el pueblo", "vitalez", "newport"];
 
+// ✅ Workselpueblo sender email used as footer support/collection email
+// for Wilconnect buildings
+const WORKSELPUEBLO_EMAIL = "workselpueblo@fyberblizz.com";
+
+// ✅ Building-specific detection helpers
+function isElPuebloBuilding(
+  buildingName?: string,
+  location?: string,
+  customerAddress?: string,
+): boolean {
+  const hint = [buildingName, location, customerAddress]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return hint.includes("el pueblo");
+}
+
+function isVitalezOrNewportBuilding(
+  buildingName?: string,
+  location?: string,
+  customerAddress?: string,
+): boolean {
+  const hint = [buildingName, location, customerAddress]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return hint.includes("vitalez") || hint.includes("newport");
+}
+
+interface BankAccountInfo {
+  bankName: string;
+  accountName: string;
+  accountNumber: string;
+}
+
+// ✅ Get the correct BDO account for a given building
+// - Vitalez / Newport → 013448003703 / RANDY MANZANARES AND ANGELA TAPEL
+// - El Pueblo → 013448003711 / RANDY D MANZANARES AND ANGELA C TAPEL
+// - All other Wilconnect / Mister Fyber → default fallback
+function getBankAccountForBuilding(
+  buildingName?: string,
+  location?: string,
+  customerAddress?: string,
+): BankAccountInfo {
+  const hint = [buildingName, location, customerAddress]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  // El Pueblo takes priority
+  if (hint.includes("el pueblo")) {
+    return {
+      bankName: "BDO",
+      accountName: "RANDY D MANZANARES AND ANGELA C TAPEL",
+      accountNumber: "013448003711",
+    };
+  }
+
+  // Vitalez / Newport
+  if (hint.includes("vitalez") || hint.includes("newport")) {
+    return {
+      bankName: "BDO",
+      accountName: "RANDY MANZANARES AND ANGELA TAPEL",
+      accountNumber: "013448003703",
+    };
+  }
+
+  // Fallback (any other Wilconnect building or generic)
+  const isWilconnect =
+    hint.includes("wilconnect") ||
+    WILCONNECT_BUILDINGS.some((b) => hint.includes(b));
+
+  if (isWilconnect) {
+    return {
+      bankName: "BDO",
+      accountName: "WILCONNECT NETWORK CORPORATION",
+      accountNumber: "013448002421",
+    };
+  }
+
+  return {
+    bankName: "BDO",
+    accountName: "FYBERBLIZZ NETWORK CORPORATION",
+    accountNumber: "013448002421",
+  };
+}
+
 interface PdfBrand {
   isWilconnect: boolean;
   companyName: string;
@@ -62,6 +149,11 @@ interface PdfBrand {
   bankName: string;
   accountName: string;
   accountNumber: string;
+  // ✅ Footer-specific values
+  supportEmail: string;
+  collectionEmail: string;
+  sentFromName: string;
+  sentFromEmail: string;
 }
 
 function getBrandForPdf(invoiceData: InvoiceData): PdfBrand {
@@ -81,6 +173,13 @@ function getBrandForPdf(invoiceData: InvoiceData): PdfBrand {
     WILCONNECT_BUILDINGS.some((b) => hint.includes(b));
 
   if (isWilconnect) {
+    // ✅ Resolve the specific bank account for this Wilconnect building
+    const bankAccount = getBankAccountForBuilding(
+      (invoiceData as any)?.buildingName,
+      (invoiceData as any)?.location,
+      invoiceData?.customerAddress,
+    );
+
     return {
       isWilconnect: true,
       companyName: "WILCONNECT NETWORK CORPORATION",
@@ -88,9 +187,14 @@ function getBrandForPdf(invoiceData: InvoiceData): PdfBrand {
         "UNIT 6 BLDG 2 G/F EL PUEBLO CONDO, ANONAS ST., STA. MESA, MANILA",
       companyVat: "697-461-165-00000",
       companyContact: "0969-341-4876",
-      bankName: "BDO",
-      accountName: "WILCONNECT NETWORK CORPORATION",
-      accountNumber: "013448002421",
+      bankName: bankAccount.bankName,
+      accountName: bankAccount.accountName,
+      accountNumber: bankAccount.accountNumber,
+      // ✅ Wilconnect footer: support + collection = workselpueblo@fyberblizz.com
+      supportEmail: WORKSELPUEBLO_EMAIL,
+      collectionEmail: WORKSELPUEBLO_EMAIL,
+      sentFromName: "Workselpueblo",
+      sentFromEmail: WORKSELPUEBLO_EMAIL,
     };
   }
 
@@ -104,6 +208,11 @@ function getBrandForPdf(invoiceData: InvoiceData): PdfBrand {
     bankName: "BDO",
     accountName: "FYBERBLIZZ NETWORK CORPORATION",
     accountNumber: "013448002421",
+    // ✅ Mister Fyber footer: support + collection = admin@misterfyber.com
+    supportEmail: "admin@misterfyber.com",
+    collectionEmail: "admin@misterfyber.com",
+    sentFromName: "Mister Fyber",
+    sentFromEmail: "admin@misterfyber.com",
   };
 }
 
@@ -163,6 +272,7 @@ export async function generateInvoicePDF(
   const free = isFreeInvoice(invoiceData);
   const paid = !free && isPaidInvoice(invoiceData);
 
+  // ✅ Use brand-specific bank account (Wilconnect buildings have their own BDO accounts)
   const bankName = invoiceData.bankName || brand.bankName;
   const accountName = invoiceData.accountName || brand.accountName;
   const accountNumber = invoiceData.accountNumber || brand.accountNumber;
@@ -171,6 +281,13 @@ export async function generateInvoicePDF(
   const resolvedCompanyAddress = brand.companyAddress;
   const resolvedCompanyVat = brand.companyVat;
   const resolvedCompanyContact = brand.companyContact;
+
+  // ✅ Footer-specific values (support + collection + sent from)
+  const resolvedSupportEmail = brand.supportEmail;
+  const resolvedCollectionEmail = brand.collectionEmail;
+  const resolvedSentFromName = brand.sentFromName;
+  const resolvedSentFromEmail = brand.sentFromEmail;
+  const resolvedBrandName = brand.isWilconnect ? "Wilconnect" : "Mister Fyber";
 
   return new Promise((resolve, reject) => {
     try {
@@ -644,24 +761,51 @@ export async function generateInvoicePDF(
       }
 
       // ==================== FOOTER ====================
+      // ✅ Footer uses brand-resolved values:
+      //    - Wilconnect (El Pueblo/Vitalez/Newport) → workselpueblo@fyberblizz.com
+      //    - Others → admin@misterfyber.com
       doc
         .font("Helvetica")
         .fontSize(9)
         .fillColor("#666")
         .text(
           free
-            ? "🎁 Free of charge — Thank you for choosing our service!"
+            ? `🎁 Free of charge — Thank you for choosing our service!`
             : paid
-              ? "✅ Payment received — Thank you for choosing our service!"
-              : "Thank you for choosing our service!",
+              ? `✅ Payment received — Thank you for choosing our service!`
+              : `Thank you for choosing our service!`,
           50,
-          pageHeight - 50,
+          pageHeight - 110,
+          { align: "center", width: 500 },
+        )
+        .text(
+          `${resolvedBrandName} - Your trusted internet provider`,
+          50,
+          pageHeight - 90,
+          { align: "center", width: 500 },
+        )
+        .text(
+          `Need help? Contact us at ${resolvedSupportEmail}`,
+          50,
+          pageHeight - 75,
           { align: "center", width: 500 },
         )
         .text(
           "This is a computer-generated invoice. No signature required.",
           50,
-          pageHeight - 35,
+          pageHeight - 60,
+          { align: "center", width: 500 },
+        )
+        .text(
+          `Collection email: ${resolvedCollectionEmail}`,
+          50,
+          pageHeight - 45,
+          { align: "center", width: 500 },
+        )
+        .text(
+          `Sent from: ${resolvedSentFromName} (${resolvedSentFromEmail})`,
+          50,
+          pageHeight - 30,
           { align: "center", width: 500 },
         );
 
