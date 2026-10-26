@@ -1,4 +1,4 @@
-// backend/src/controllers/billingController.ts - COMPLETE FIXED
+// backend/src/controllers/billingController.ts - COMPLETE FIXED + PER-ADMIN TOGGLE
 // ✅ FIX: Approved applications WITHOUT billing now ALWAYS appear in customers list
 // ✅ FIX: Disconnected customers STAY VISIBLE in main billing table (not hidden)
 // ✅ FIX: Application status = "disconnected" (NOT "rejected")
@@ -6,7 +6,19 @@
 // ✅ FIX: sendPaidOrFreeInvoiceEmail propagates isFree to emailService + pdfService
 // ✅ FIX: getDashboardData — removed .limit(1000) that dropped approved apps,
 //         applicationMap keyed by BOTH applicationId and _id, buildingObj fallback chain,
-//         dedupe between user & application customers by email/applicationId
+//         dedupe between user & application customers by email
+// ✅ FIX: initializeBackdatedBilling — TIMEZONE-SAFE date parsing so a Nov 1 start
+//         produces "Nov 1 → Nov 30" (NOT "Oct 31 → Nov 30")
+// ✅ FIX: PER-ADMIN toggle — every emailService call now receives adminId
+//         (req.user._id) so the requesting admin's OWN customerEmailAlertsEnabled
+//         setting is checked, not a global one.
+// ✅ FIX: sendPaidOrFreeInvoiceEmail passes forceSend=FALSE so the per-admin toggle
+//         is RESPECTED (customer emails are BLOCKED when toggle is OFF).
+// ✅ FIX (NEW): sendPaidOrFreeInvoiceEmail now PRE-CHECKS the toggle before calling
+//         sendPaidInvoiceEmail, so the final log line is TRUTHFUL. Previously the
+//         email was correctly blocked, but the log still printed
+//         "✅ paid receipt email sent to ..." because emailService returned true
+//         for an intentional skip. Now we log "⏭️ skipped (toggle OFF)" instead.
 
 import { Request, Response, NextFunction } from "express";
 import Billing from "../models/Billing";
@@ -30,6 +42,13 @@ import path from "path";
 import eventService from "../services/eventService";
 
 type AuthRequest = Request & { user?: any };
+
+// ==================== HELPER: Get requesting admin's ID for per-admin toggle ====================
+function getRequestingAdminId(req?: AuthRequest): string | undefined {
+  if (!req || !req.user) return undefined;
+  const id = req.user._id || req.user.id;
+  return id ? String(id) : undefined;
+}
 
 // ==================== RETRY HELPER FOR WRITE CONFLICTS ====================
 async function withRetry<T>(
@@ -123,6 +142,30 @@ async function getBuildingForApplication(application: any): Promise<any> {
     console.error("Error getting building for application:", error);
     return null;
   }
+}
+
+// ==================== TIMEZONE-SAFE DATE HELPERS ====================
+
+function parseDateToLocalMidnight(input: Date | string): Date {
+  if (input instanceof Date) {
+    const d = new Date(input);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }
+  const str = String(input).trim();
+  const match = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (match) {
+    const year = parseInt(match[1], 10);
+    const month = parseInt(match[2], 10) - 1;
+    const day = parseInt(match[3], 10);
+    return new Date(year, month, day, 0, 0, 0, 0);
+  }
+  const d = new Date(str);
+  if (isNaN(d.getTime())) {
+    throw new Error(`Invalid date: ${input}`);
+  }
+  d.setHours(0, 0, 0, 0);
+  return d;
 }
 
 function getEndOfMonth(date: Date): Date {
@@ -261,72 +304,107 @@ function checkAdmin(req: AuthRequest, res: Response): boolean {
   return true;
 }
 
+// ==================== PER-ADMIN EMAIL ALERTS CHECK ====================
 async function areCustomerEmailAlertsEnabled(
   adminId?: string,
 ): Promise<boolean> {
-  if (!adminId) return false;
+  if (!adminId) {
+    console.log(
+      `📧 [billing] No adminId provided for customer email check → BLOCKING`,
+    );
+    return false;
+  }
 
   try {
     const admin = await Admin.findById(adminId)
-      .select("customerEmailAlertsEnabled")
+      .select("email customerEmailAlertsEnabled")
       .lean();
-    if (!admin) return false;
-    return admin.customerEmailAlertsEnabled === true;
+
+    if (!admin) {
+      console.log(`📧 [billing] Admin ${adminId} not found → BLOCKING`);
+      return false;
+    }
+
+    const enabled = admin.customerEmailAlertsEnabled === true;
+
+    console.log(
+      `📧 [billing] Toggle check for ${admin.email}: ${enabled ? "ON ✅" : "OFF ❌"}`,
+    );
+
+    return enabled;
   } catch (error) {
-    console.error("Error checking email alerts preference:", error);
+    console.error(
+      "📧 [billing] Error checking email alerts preference → BLOCKING:",
+      error,
+    );
     return false;
   }
 }
 
+// ==================== SEND INVOICE (SIMPLE) ====================
 async function sendInvoiceToApplication(
   application: any,
   bill: any,
   req?: AuthRequest,
 ): Promise<void> {
-  if (application && application.email) {
-    const adminId = req?.user?._id;
-    const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(adminId);
-
-    if (!emailAlertsEnabled) {
-      console.log(
-        `📧 Email alerts disabled. Skipping invoice email to ${application.email}`,
-      );
-      return;
-    }
-
-    const tempUser = {
-      _id: application.applicationId || application._id,
-      email: application.email,
-      firstName: application.firstName || "",
-      lastName: application.lastName || "",
-      username: application.email,
-      password: "",
-      phoneNumber: application.phoneNumber || "",
-      status: "active",
-      role: "user",
-      failedLoginAttempts: 0,
-      emailVerified: true,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      billingInfo: {},
-      isDeleted: false,
-      comparePassword: async () => false,
-      save: async () => tempUser,
-    } as any;
-
-    const location = await getLocationFromEntity(application);
-    await emailService.sendInvoice(tempUser, bill, location);
+  if (!application || !application.email) {
+    return;
   }
+
+  const adminId = getRequestingAdminId(req);
+  const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(adminId);
+
+  if (!emailAlertsEnabled) {
+    console.log(
+      `📧 Email alerts disabled. Skipping invoice email to ${application.email}`,
+    );
+    return;
+  }
+
+  const tempUser = {
+    _id: application.applicationId || application._id,
+    email: application.email,
+    firstName: application.firstName || "",
+    lastName: application.lastName || "",
+    username: application.email,
+    password: "",
+    phoneNumber: application.phoneNumber || "",
+    status: "active",
+    role: "user",
+    failedLoginAttempts: 0,
+    emailVerified: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    billingInfo: {},
+    isDeleted: false,
+    comparePassword: async () => false,
+    save: async () => tempUser,
+  } as any;
+
+  const location = await getLocationFromEntity(application);
+  await emailService.sendInvoice(
+    tempUser,
+    bill,
+    location,
+    false,
+    undefined,
+    adminId,
+  );
 }
 
 // ============================================================
 // ✅ HELPER: Send paid/free invoice email with PDF attached.
+// ✅ FIX: Passes adminId to sendPaidInvoiceEmail for per-admin toggle.
+// ✅ FIX: forceSend is FALSE so the per-admin toggle is RESPECTED.
+// ✅ FIX (NEW): Pre-checks the toggle BEFORE calling sendPaidInvoiceEmail so
+//         the final log line is TRUTHFUL. When the toggle is OFF we log
+//         "⏭️ skipped (toggle OFF)" — NOT a false "✅ email sent" line.
 // ============================================================
 async function sendPaidOrFreeInvoiceEmail(
   bill: any,
   application: any,
   payment: any,
-  options?: { isFree?: boolean },
+  options?: { isFree?: boolean; adminId?: string },
 ): Promise<boolean> {
   try {
     if (!application || !application.email) {
@@ -338,6 +416,21 @@ async function sendPaidOrFreeInvoiceEmail(
 
     const location = await getLocationFromEntity(application);
     const free = options?.isFree === true;
+    const adminId = options?.adminId;
+    const label = free ? "FREE receipt" : "paid receipt";
+
+    // ⭐ PRE-CHECK the per-admin toggle so we can log accurately.
+    // If the toggle is OFF (or no adminId), skip entirely — no false
+    // "email sent" log. This is the misleading-log fix.
+    const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(adminId);
+    if (!emailAlertsEnabled) {
+      console.log(
+        `⏭️ [billing] ${label} email SKIPPED for ${application.email} ` +
+          `(${bill.invoiceNumber}) — per-admin toggle is OFF ` +
+          `(adminId: ${adminId || "not provided"})`,
+      );
+      return true; // intentional skip, not a failure
+    }
 
     let invoiceDoc: any = null;
     try {
@@ -437,19 +530,24 @@ async function sendPaidOrFreeInvoiceEmail(
       }
     }
 
+    // ⭐ sendPaidInvoiceEmail signature:
+    //   (invoiceData, pdfBuffer, pdfFileName, paymentData?, location?,
+    //    useAdminSender?, senderType?, forceSend?, isFree?, adminId?)
+    //
+    // Toggle was already pre-checked above, so forceSend stays FALSE.
     const emailSent = await emailService.sendPaidInvoiceEmail(
       invoiceData,
       pdfBuffer,
       pdfFileName,
       payment,
       location,
-      false,
-      undefined,
-      true,
-      free,
+      false, // useAdminSender
+      undefined, // senderType
+      false, // forceSend = FALSE — RESPECT the per-admin toggle
+      free, // isFree
+      adminId, // adminId — required for toggle check
     );
 
-    const label = free ? "FREE receipt" : "paid receipt";
     if (emailSent) {
       console.log(
         `✅ ${label} email sent to ${application.email} (${invoiceData.invoiceNumber})`,
@@ -630,13 +728,16 @@ async function createInvoiceFromBilling(
   }
 }
 
+// ============================================================
+// ✅ FIXED: Pass adminId through to sendInvoiceWithPDF
+// ============================================================
 async function sendInvoiceWithPDFAttachment(
   invoice: any,
   application: any,
   req?: AuthRequest,
 ): Promise<boolean> {
   try {
-    const adminId = req?.user?._id;
+    const adminId = getRequestingAdminId(req);
     const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(adminId);
 
     if (!emailAlertsEnabled) {
@@ -669,11 +770,17 @@ async function sendInvoiceWithPDFAttachment(
     invoice.location = location;
     invoice.collectionEmail = getCollectionEmailByLocation(location);
 
+    // sendInvoiceWithPDF signature:
+    //   (invoiceData, pdfBuffer, pdfFileName, location?, useAdminSender?,
+    //    senderType?, adminId?)
     const emailSent = await emailService.sendInvoiceWithPDF(
       invoice,
       pdfBuffer,
       pdfFileName,
       location,
+      false,
+      undefined,
+      adminId,
     );
 
     return emailSent;
@@ -1647,9 +1754,8 @@ export const recoverMissingBills = async (
 
     let startDate: Date;
     if (startFromDate) {
-      startDate = new Date(startFromDate);
+      startDate = parseDateToLocalMidnight(startFromDate);
       startDate = getFirstDayOfMonth(startDate);
-      startDate.setHours(0, 0, 0, 0);
     } else {
       const lastPaidBill = await Billing.findOne({
         applicationId: applicationId,
@@ -1846,8 +1952,12 @@ export const initializeBackdatedBilling = async (
         }
       }
 
-      const startDate = new Date(serviceStartDate);
-      startDate.setHours(0, 0, 0, 0);
+      const startDate = parseDateToLocalMidnight(serviceStartDate);
+      const startMonthEnd = getEndOfMonth(startDate);
+      console.log(
+        `📅 Backdated start: ${formatDateForDisplay(startDate)} → ` +
+          `pro-rated ends: ${formatDateForDisplay(startMonthEnd)}`,
+      );
 
       const today = new Date();
       today.setHours(0, 0, 0, 0);
@@ -1888,6 +1998,7 @@ export const initializeBackdatedBilling = async (
       let totalMonthlyAmount = 0;
       const unpaidMonths = [];
 
+      // ===== FIRST PARTIAL MONTH (PRO-RATED) =====
       let startMonthProRatedDays = 0;
       {
         const daysInMonth = new Date(
@@ -1906,7 +2017,7 @@ export const initializeBackdatedBilling = async (
           proRatedAmount = Math.round(dailyRate * daysUsed * 100) / 100;
         }
 
-        const monthEnd = getEndOfMonth(startDate);
+        const monthEnd = startMonthEnd;
 
         let dueDate: Date;
         let description: string;
@@ -1967,6 +2078,7 @@ export const initializeBackdatedBilling = async (
         }
       }
 
+      // ===== FULL MONTHS FROM NEXT MONTH =====
       let currentBillDate = getStartOfNextMonth(startDate);
 
       while (currentBillDate <= today) {
@@ -2082,6 +2194,7 @@ export const initializeBackdatedBilling = async (
         currentBillDate.setMonth(currentBillDate.getMonth() + 1);
       }
 
+      // ===== NEXT MONTH (always generated, PREPAID model) =====
       const nextMonthFromToday = getStartOfNextMonth(today);
       const nextMonthEnd = getEndOfMonth(nextMonthFromToday);
       const nextMonthDueDate = getDueDateForMonthly(
@@ -2246,6 +2359,7 @@ export const initializeBackdatedBilling = async (
           totalInstallationFee: installationFee,
           billsCount: generatedBills.length,
           serviceStartDate: startDate,
+          serviceStartMonthEnd: startMonthEnd,
           applicationId: application.applicationId,
           missingMonths: missingMonths,
           unpaidPreviousBills: unpaidMonths,
@@ -2564,6 +2678,7 @@ export const testLocationEmail = async (req: AuthRequest, res: Response) => {
     }
 
     const collectionEmail = getCollectionEmailByLocation(location);
+    const adminId = getRequestingAdminId(req);
 
     const result = await emailService.sendEmail(
       email || collectionEmail,
@@ -2573,6 +2688,7 @@ export const testLocationEmail = async (req: AuthRequest, res: Response) => {
       location,
       {
         replyTo: process.env.SUPPORT_EMAIL || "admin@misterfyber.com",
+        adminId,
       },
     );
 
@@ -2632,12 +2748,6 @@ export const getBuildingInstallationFee = async (
 };
 
 // ==================== GET DASHBOARD DATA - OPTIMIZED NO N+1 ====================
-// ✅ FIX: Approved applications WITHOUT billing now ALWAYS appear in customers list
-// ✅ FIX: Removed .limit(1000) on applications — it was silently dropping approved apps
-// ✅ FIX: applicationMap keyed by BOTH applicationId and _id
-// ✅ FIX: buildingObj resolves even if buildingId isn't populated
-// ✅ FIX: Dedupe user vs application customers by email
-// ✅ FIX: Disconnected customers STAY VISIBLE in main billing table
 export const getDashboardData = async (
   req: AuthRequest,
   res: Response,
@@ -2679,7 +2789,6 @@ export const getDashboardData = async (
         .populate("planId", "name price")
         .lean(),
 
-      // ✅ FIX: include ALL relevant statuses so approved-no-billing shows up
       Application.find({
         status: { $in: ["approved", "pending", "suspended", "disconnected"] },
       })
@@ -2733,7 +2842,6 @@ export const getDashboardData = async (
         .lean(),
     ]);
 
-    // ✅ FIX: applicationMap keyed by BOTH applicationId and _id
     const allAppIds = new Set<string>();
     billingCycles.forEach(
       (c) => c.applicationId && allAppIds.add(c.applicationId),
@@ -2808,7 +2916,6 @@ export const getDashboardData = async (
       return { ...cycle, applicationData: appData };
     });
 
-    // ==================== USER CUSTOMERS ====================
     const userCustomers = users.map((user: any) => {
       const userBills = enrichedBills.filter(
         (bill) => bill.userId?._id === user._id || bill.userId === user._id,
@@ -2861,8 +2968,6 @@ export const getDashboardData = async (
       };
     });
 
-    // ==================== APPLICATION CUSTOMERS ====================
-    // ✅ FIX: Approved apps WITHOUT billing are included.
     const applicationCustomers = applications
       .filter((app: any) => {
         if (app.status === "approved") return true;
@@ -2961,8 +3066,6 @@ export const getDashboardData = async (
         };
       });
 
-    // ==================== ALL CUSTOMERS (INCLUDING DISCONNECTED) ====================
-    // ✅ FIX: Dedupe user vs application entries by email
     const seenApplicationIds = new Set<string>();
     const dedupedApplicationCustomers = applicationCustomers.filter((c) => {
       const key = c.applicationId || String(c._id);
@@ -2997,7 +3100,6 @@ export const getDashboardData = async (
       (c) => c.isDisconnected || c.status === "disconnected",
     );
 
-    // ==================== STATS ====================
     const totalBalance = activeCustomers.reduce(
       (sum, c) => sum + c.currentBalance,
       0,
@@ -3435,8 +3537,9 @@ export const startBilling = async (
         }
       }
 
-      let installationDate = startDate ? new Date(startDate) : new Date();
-      installationDate.setHours(0, 0, 0, 0);
+      let installationDate = startDate
+        ? parseDateToLocalMidnight(startDate)
+        : parseDateToLocalMidnight(new Date());
 
       const installationDay = installationDate.getDate();
       const currentMonthEnd = getEndOfMonth(installationDate);
@@ -4021,9 +4124,8 @@ export const pauseBilling = async (
       });
 
       const location = await getLocationFromEntity(application);
-      const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(
-        req.user?._id,
-      );
+      const adminId = getRequestingAdminId(req);
+      const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(adminId);
 
       try {
         if (application.email && emailAlertsEnabled) {
@@ -4038,6 +4140,7 @@ export const pauseBilling = async (
             ),
             true,
             location,
+            { adminId },
           );
         }
       } catch (emailError) {
@@ -4179,9 +4282,8 @@ export const resumeBilling = async (
       });
 
       const location = await getLocationFromEntity(application);
-      const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(
-        req.user?._id,
-      );
+      const adminId = getRequestingAdminId(req);
+      const emailAlertsEnabled = await areCustomerEmailAlertsEnabled(adminId);
 
       try {
         if (application.email && emailAlertsEnabled) {
@@ -4196,6 +4298,7 @@ export const resumeBilling = async (
             ),
             true,
             location,
+            { adminId },
           );
         }
       } catch (emailError) {
@@ -4812,12 +4915,13 @@ export const confirmProRatedPayment = async (
         timestamp: Date.now(),
       });
 
+      const adminId = getRequestingAdminId(req);
       try {
         await sendPaidOrFreeInvoiceEmail(
           proRatedBill,
           application,
           payment[0],
-          { isFree: false },
+          { isFree: false, adminId },
         );
       } catch (emailErr) {
         console.error(
@@ -5433,7 +5537,7 @@ export const markInstallationBillAsPaid = async (
     try {
       const { billId } = req.params;
       const { referenceNumber, notes } = req.body;
-      const adminId = req.user?._id;
+      const adminId = getRequestingAdminId(req);
 
       const installationBill = await Billing.findById(billId).session(session);
       if (!installationBill) {
@@ -5587,7 +5691,7 @@ export const markInstallationBillAsPaid = async (
             installationBill,
             application,
             payment[0],
-            { isFree: false },
+            { isFree: false, adminId },
           );
         } catch (emailErr) {
           console.error("Failed to send installation paid receipt:", emailErr);
@@ -5639,7 +5743,7 @@ export const markBillAsPaid = async (
     try {
       const { billId } = req.params;
       const { referenceNumber, notes } = req.body;
-      const adminId = req.user?._id;
+      const adminId = getRequestingAdminId(req);
 
       const existingBill = await Billing.findById(billId).session(session);
       if (!existingBill) {
@@ -5784,7 +5888,7 @@ export const markBillAsPaid = async (
             existingBill,
             application,
             payment[0],
-            { isFree: false },
+            { isFree: false, adminId },
           );
         } catch (emailErr) {
           console.error("Failed to send paid receipt:", emailErr);
@@ -5835,7 +5939,7 @@ export const markBillAsFree = async (
     try {
       const { billId } = req.params;
       const { notes } = req.body;
-      const adminId = req.user?._id;
+      const adminId = getRequestingAdminId(req);
 
       const existingBill = await Billing.findById(billId).session(session);
       if (!existingBill) {
@@ -6001,7 +6105,7 @@ export const markBillAsFree = async (
             existingBill,
             application,
             payment[0],
-            { isFree: true },
+            { isFree: true, adminId },
           );
         } catch (emailErr) {
           console.error("Failed to send free receipt:", emailErr);
@@ -6053,7 +6157,7 @@ export const markInstallationBillAsFree = async (
     try {
       const { billId } = req.params;
       const { notes } = req.body;
-      const adminId = req.user?._id;
+      const adminId = getRequestingAdminId(req);
 
       const installationBill = await Billing.findById(billId).session(session);
       if (!installationBill) {
@@ -6229,7 +6333,7 @@ export const markInstallationBillAsFree = async (
             installationBill,
             application,
             payment[0],
-            { isFree: true },
+            { isFree: true, adminId },
           );
         } catch (emailErr) {
           console.error("Failed to send installation free receipt:", emailErr);

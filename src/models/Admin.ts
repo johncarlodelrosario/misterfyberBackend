@@ -11,7 +11,7 @@ export interface IAdmin extends Document {
   role: "super_admin" | "admin" | "staff";
   status: "active" | "inactive" | "suspended";
   permissions: string[];
-  customerEmailAlertsEnabled: boolean | undefined; // NO DEFAULT - only changes when admin explicitly toggles
+  customerEmailAlertsEnabled: boolean;
   lastLogin?: Date;
   profilePicture?: string;
   createdAt: Date;
@@ -40,7 +40,7 @@ const AdminSchema: Schema = new Schema(
     permissions: [{ type: String }],
     customerEmailAlertsEnabled: {
       type: Boolean,
-      // NO DEFAULT AT ALL - explicit undefined
+      default: true,
     },
     lastLogin: { type: Date },
     profilePicture: { type: String },
@@ -57,7 +57,6 @@ AdminSchema.index({ status: 1 });
 
 AdminSchema.pre<IAdmin>("save", async function (next) {
   if (!this.isModified("password")) return next();
-
   try {
     const salt = await bcrypt.genSalt(10);
     this.password = await bcrypt.hash(this.password, salt);

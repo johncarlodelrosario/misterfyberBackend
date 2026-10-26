@@ -1,6 +1,9 @@
 // backend/src/controllers/adminController.ts - COMPLETE FIXED VERSION
-// FIXED: toggleCustomerEmailAlerts() now verifies the save actually persisted
-// FIXED: Both toggle and preference use the LOGGED-IN admin by ID
+// FIXED: Toggle is now PER-ADMIN (each admin has their own customerEmailAlertsEnabled)
+// When THIS admin's toggle is OFF = NO customer emails sent by THIS admin.
+// When THIS admin's toggle is ON = customer emails sent by THIS admin.
+// FIXED: createManualCustomer now passes adminId to sendWelcomeEmail and
+//        sendApplicationApproved so the per-admin toggle is respected.
 
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
@@ -24,6 +27,22 @@ interface AuthRequest extends Request {
 let dashboardCache: any = null;
 let dashboardCacheTime = 0;
 const CACHE_TTL = 5 * 60 * 1000;
+
+// ⭐ Helper: Get the requesting admin's OWN record (PER-ADMIN toggle)
+// No more global source-of-truth. Each admin controls their own toggle.
+const getRequestingAdmin = async (req: AuthRequest) => {
+  const adminId = req.user?._id || req.user?.id;
+  if (!adminId) return null;
+
+  const admin = await Admin.findById(adminId);
+  return admin;
+};
+
+// ⭐ Helper: Get requesting admin's ID (string) for emailService calls
+const getRequestingAdminId = (req: AuthRequest): string | undefined => {
+  const id = req.user?._id || req.user?.id;
+  return id ? String(id) : undefined;
+};
 
 export const getDashboardStats = async (
   req: AuthRequest,
@@ -179,7 +198,7 @@ export const getDashboardStats = async (
 
     for (const item of userGrowthData) {
       const index = item._id.month - 1;
-      monthlyUserArray[index] = item.total;
+      monthlyUserArray[index] = item.count;
     }
 
     const previousMonthRevenue = monthlyRevenueArray[currentMonth - 1] || 0;
@@ -762,7 +781,7 @@ export const getRecentActivities = async (
           .lean(),
       ]);
 
-    const activities = [];
+    const activities: any[] = [];
 
     for (const payment of recentPayments) {
       const user = payment.userId as any;
@@ -853,7 +872,6 @@ const getTimeAgo = (date: Date): string => {
   return `${diffDays} day${diffDays > 1 ? "s" : ""} ago`;
 };
 
-// ==================== MANUAL CUSTOMER CREATION ====================
 export const createManualCustomer = async (
   req: AuthRequest,
   res: Response,
@@ -940,6 +958,9 @@ export const createManualCustomer = async (
     const appDoc = application[0];
     let billingResult = null;
 
+    // ⭐ Get requesting admin's ID for per-admin toggle
+    const requestingAdminId = getRequestingAdminId(req);
+
     if (startBillingImmediately) {
       try {
         const generatedPassword = Math.random().toString(36).slice(-8);
@@ -1010,12 +1031,19 @@ export const createManualCustomer = async (
         await startBillingService(billingReq, billingRes, next);
         billingResult = capturedData;
 
-        await emailService.sendWelcomeEmail(userDoc);
+        // ⭐ Pass adminId so the per-admin toggle is respected
+        await emailService.sendWelcomeEmail(userDoc, requestingAdminId);
       } catch (billingError) {
         console.error("Error starting billing:", billingError);
       }
     } else {
-      await emailService.sendApplicationApproved(appDoc, plan);
+      // ⭐ Pass adminId so the per-admin toggle is respected
+      await emailService.sendApplicationApproved(
+        appDoc,
+        plan,
+        undefined,
+        requestingAdminId,
+      );
     }
 
     await session.commitTransaction();
@@ -1043,7 +1071,6 @@ export const createManualCustomer = async (
   }
 };
 
-// ==================== GET CUSTOMERS WITHOUT ACCOUNTS ====================
 export const getCustomersWithoutAccounts = async (
   req: AuthRequest,
   res: Response,
@@ -1068,12 +1095,6 @@ export const getCustomersWithoutAccounts = async (
       `✅ [ADMIN] Found ${applications.length} approved applications without user accounts`,
     );
 
-    applications.forEach((app, index) => {
-      console.log(
-        `  ${index + 1}. ${app.firstName} ${app.lastName} - ${app.applicationId}`,
-      );
-    });
-
     res.status(200).json({
       success: true,
       data: applications,
@@ -1086,27 +1107,26 @@ export const getCustomersWithoutAccounts = async (
 };
 
 // ============================================================
-// ⭐⭐⭐ FIXED: TOGGLE CUSTOMER EMAIL ALERTS ⭐⭐⭐
+// ⭐⭐⭐ FIXED: TOGGLE CUSTOMER EMAIL ALERTS - PER ADMIN ⭐⭐⭐
 // ============================================================
-// CRITICAL FIX: Uses the LOGGED-IN admin's ID + verifies save
+// Each admin has their OWN toggle. When John Carlo toggles, it only affects
+// John Carlo's account. When Larianne toggles, it only affects Larianne's.
+// No more shared/global source-of-truth.
 export const toggleCustomerEmailAlerts = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ) => {
   try {
-    const adminId = req.user?.id || req.user?._id;
     const { enabled } = req.body;
+    const requestingAdminId = req.user?._id || req.user?.id;
 
-    console.log(`🔄 Toggle customer emails - Admin ID: ${adminId}`);
-    console.log(`   Requested value: ${enabled}`);
-
-    if (!adminId) {
-      return res.status(401).json({
-        success: false,
-        message: "Admin ID not found in request",
-      });
-    }
+    console.log(`🔄 ========================================`);
+    console.log(`🔄 TOGGLE CUSTOMER EMAIL ALERTS (PER-ADMIN)`);
+    console.log(`🔄 Requesting admin ID: ${requestingAdminId}`);
+    console.log(`🔄 Requesting admin email: ${req.user?.email}`);
+    console.log(`🔄 Requested value: ${enabled} (type: ${typeof enabled})`);
+    console.log(`🔄 ========================================`);
 
     if (typeof enabled !== "boolean") {
       return res.status(400).json({
@@ -1115,96 +1135,132 @@ export const toggleCustomerEmailAlerts = async (
       });
     }
 
-    // ✅ Find the CURRENT admin (the one making the request)
-    const admin = await Admin.findById(adminId);
+    if (!requestingAdminId) {
+      return res.status(401).json({
+        success: false,
+        message: "You must be logged in as admin to toggle this setting",
+      });
+    }
+
+    // ⭐ Get the REQUESTING ADMIN's own record
+    const admin = await Admin.findById(requestingAdminId);
 
     if (!admin) {
       return res.status(404).json({
         success: false,
-        message: "Admin not found",
+        message: "Admin account not found",
       });
     }
 
-    // ✅ Set the EXACT value
+    console.log(`📧 Admin: ${admin.email} (${admin.role})`);
+    console.log(
+      `📧 BEFORE save: customerEmailAlertsEnabled = ${admin.customerEmailAlertsEnabled}`,
+    );
+
+    // ⭐ Set the EXACT value on THIS admin's record only
     admin.customerEmailAlertsEnabled = enabled;
     await admin.save();
 
-    console.log(
-      `✅ Toggled customer emails for ${admin.email}: ${enabled ? "ENABLED" : "DISABLED"}`,
+    // ⭐ VERIFY it actually saved on THIS admin's record
+    const verifyAdmin = await Admin.findById(requestingAdminId).select(
+      "email customerEmailAlertsEnabled",
     );
-
-    // ✅ Double-check the value was actually saved
-    const verifyAdmin = await Admin.findById(adminId);
     const verifiedValue = verifyAdmin?.customerEmailAlertsEnabled === true;
 
+    console.log(`📧 AFTER save: customerEmailAlertsEnabled = ${verifiedValue}`);
+    console.log(
+      `📧 Match: ${verifiedValue === enabled ? "✅ YES" : "❌ NO - MISMATCH!"}`,
+    );
+
     if (verifiedValue !== enabled) {
-      console.error(
-        `❌ WARNING: Save mismatch! Expected ${enabled} but got ${verifiedValue}`,
-      );
+      return res.status(500).json({
+        success: false,
+        message: "Failed to save preference. Please try again.",
+      });
     }
 
-    // Clear cache
     dashboardCache = null;
+
+    console.log(`✅ ========================================`);
+    console.log(
+      `✅ ${admin.email}'s customer emails are now ${verifiedValue ? "ENABLED ✅" : "DISABLED ❌"}`,
+    );
+    console.log(`✅ ========================================`);
 
     return res.status(200).json({
       success: true,
-      message: `Customer email alerts ${verifiedValue ? "enabled" : "disabled"} successfully`,
+      message: `Customer email alerts ${verifiedValue ? "enabled" : "disabled"} successfully for ${admin.email}`,
       data: {
         customerEmailAlertsEnabled: verifiedValue,
         adminEmail: admin.email,
+        adminId: admin._id,
       },
     });
-  } catch (error) {
-    console.error("Error toggling customer email alerts:", error);
+  } catch (error: any) {
+    console.error("❌ Error toggling customer email alerts:", error);
     next(error);
   }
 };
 
 // ============================================================
-// ⭐⭐⭐ FIXED: GET CUSTOMER EMAIL ALERTS PREFERENCE ⭐⭐⭐
+// ⭐⭐⭐ FIXED: GET CUSTOMER EMAIL ALERTS PREFERENCE - PER ADMIN ⭐⭐⭐
 // ============================================================
+// Reads from the REQUESTING ADMIN's own record. Each admin sees their own toggle.
 export const getCustomerEmailAlertsPreference = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ) => {
   try {
-    const adminId = req.user?.id || req.user?._id;
+    const requestingAdminId = req.user?._id || req.user?.id;
 
-    if (!adminId) {
-      return res.status(401).json({
-        success: false,
-        message: "Admin ID not found",
+    console.log(
+      `📧 Preference check for admin: ${req.user?.email} (ID: ${requestingAdminId})`,
+    );
+
+    if (!requestingAdminId) {
+      return res.status(200).json({
+        success: true,
+        data: {
+          customerEmailAlertsEnabled: true,
+          adminEmail: null,
+        },
       });
     }
 
-    const admin = await Admin.findById(adminId).select(
-      "email customerEmailAlertsEnabled",
+    const admin = await Admin.findById(requestingAdminId).select(
+      "email customerEmailAlertsEnabled role",
     );
 
     if (!admin) {
-      return res.status(404).json({
-        success: false,
-        message: "Admin not found",
+      return res.status(200).json({
+        success: true,
+        data: {
+          customerEmailAlertsEnabled: true,
+          adminEmail: null,
+        },
       });
     }
 
-    // ✅ Return the CURRENT admin's value
     const isEnabled = admin.customerEmailAlertsEnabled === true;
 
+    console.log(`📧 ========================================`);
+    console.log(`📧 Preference for: ${admin.email} (${admin.role})`);
     console.log(
-      `📧 Preference check for ${admin.email}: ${isEnabled ? "ON" : "OFF"}`,
+      `📧 customerEmailAlertsEnabled = ${isEnabled ? "ON ✅" : "OFF ❌"}`,
     );
+    console.log(`📧 ========================================`);
 
     return res.status(200).json({
       success: true,
       data: {
         customerEmailAlertsEnabled: isEnabled,
         adminEmail: admin.email,
+        adminId: admin._id,
       },
     });
-  } catch (error) {
-    console.error("Error getting customer email alerts preference:", error);
+  } catch (error: any) {
+    console.error("❌ Error getting customer email alerts preference:", error);
     next(error);
   }
 };

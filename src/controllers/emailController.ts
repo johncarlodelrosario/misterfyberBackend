@@ -1,5 +1,7 @@
 // backend/src/controllers/manualEmailController.ts - COMPLETE FIXED VERSION
 // FIXED: Timezone handling, billIds support, template support, HARD DELETE, LATEST FIRST sorting, and sender safety
+// FIXED: PER-ADMIN toggle — every sendEmail call now passes adminId so the
+//        requesting admin's OWN toggle is checked, not a global one.
 // NEW: Wilconnect buildings (Vitalez, El Pueblo, Newport) use workselpueblo@fyberblizz.com
 
 import { Request, Response, NextFunction } from "express";
@@ -16,6 +18,14 @@ import emailService, {
 } from "../services/emailService";
 
 type AuthRequest = Request & { user?: any };
+
+// ============================================================
+// HELPER: Get the requesting admin's ID for per-admin toggle checks
+// ============================================================
+function getRequestingAdminId(req: AuthRequest): string | undefined {
+  const id = req.user?._id || req.user?.id;
+  return id ? String(id) : undefined;
+}
 
 // ============================================================
 // WILCONNECT BUILDINGS - Use workselpueblo@fyberblizz.com
@@ -697,7 +707,7 @@ export const getSenderOptions = async (
 };
 
 // ============================================================
-// SEND MANUAL EMAIL - UPDATED WITH SENDER TYPE + WILCONNECT
+// SEND MANUAL EMAIL - UPDATED WITH SENDER TYPE + WILCONNECT + PER-ADMIN
 // ============================================================
 export const sendManualEmail = async (
   req: AuthRequest,
@@ -725,11 +735,13 @@ export const sendManualEmail = async (
     } = req.body;
 
     let senderType = getSenderTypeFromRequest(req.body);
+    const adminId = getRequestingAdminId(req);
 
     console.log("📧 sendManualEmail called");
     console.log("   Application ID:", applicationId);
     console.log("   Subject:", subject);
     console.log("   Requested Sender Type:", senderType);
+    console.log("   Requesting Admin ID:", adminId);
 
     if (!applicationId) {
       await session.abortTransaction();
@@ -855,6 +867,7 @@ export const sendManualEmail = async (
           );
         }
       } else {
+        // ⭐ PER-ADMIN: pass adminId so THAT admin's toggle is checked
         emailSent = await emailService.sendEmail(
           application.email,
           subject,
@@ -865,6 +878,7 @@ export const sendManualEmail = async (
             useAdminSender: senderType === "admin",
             senderType: senderType,
             isWilconnect: isWilconnect,
+            adminId: adminId,
           },
         );
 
@@ -901,6 +915,8 @@ export const sendManualEmail = async (
             `[ADMIN COPY] ${subject}`,
             adminHtml,
             false,
+            undefined,
+            { adminId },
           );
         } catch (adminError) {
           console.error("Failed to send admin copy:", adminError);
@@ -986,7 +1002,7 @@ export const sendManualEmail = async (
 };
 
 // ============================================================
-// SEND BULK EMAILS - UPDATED WITH SENDER TYPE + WILCONNECT
+// SEND BULK EMAILS - UPDATED WITH SENDER TYPE + WILCONNECT + PER-ADMIN
 // ============================================================
 export const sendBulkEmails = async (
   req: AuthRequest,
@@ -1010,10 +1026,12 @@ export const sendBulkEmails = async (
     } = req.body;
 
     const baseSenderType = getSenderTypeFromRequest(req.body);
+    const adminId = getRequestingAdminId(req);
 
     console.log("📧 sendBulkEmails called");
     console.log("   Recipients:", applicationIds?.length || 0);
     console.log("   Base Sender Type:", baseSenderType);
+    console.log("   Requesting Admin ID:", adminId);
 
     if (
       !applicationIds ||
@@ -1163,6 +1181,7 @@ export const sendBulkEmails = async (
             if (!isConfigured && process.env.NODE_ENV === "development") {
               emailSent = true;
             } else {
+              // ⭐ PER-ADMIN: pass adminId so THAT admin's toggle is checked
               emailSent = await emailService.sendEmail(
                 application.email,
                 subject,
@@ -1173,6 +1192,7 @@ export const sendBulkEmails = async (
                   useAdminSender: effectiveSenderType === "admin",
                   senderType: effectiveSenderType,
                   isWilconnect: isWilconnect,
+                  adminId: adminId,
                 },
               );
             }
@@ -1622,7 +1642,7 @@ export const previewEmail = async (
 };
 
 // ============================================================
-// SEND REMINDER TO UNPAID - UPDATED WITH SENDER TYPE + WILCONNECT
+// SEND REMINDER TO UNPAID - UPDATED WITH SENDER TYPE + WILCONNECT + PER-ADMIN
 // ============================================================
 export const sendReminderToUnpaid = async (
   req: AuthRequest,
@@ -1640,9 +1660,11 @@ export const sendReminderToUnpaid = async (
     } = req.body;
 
     const baseSenderType = getSenderTypeFromRequest(req.body);
+    const adminId = getRequestingAdminId(req);
 
     console.log("📧 sendReminderToUnpaid called");
     console.log("   Base Sender Type:", baseSenderType);
+    console.log("   Requesting Admin ID:", adminId);
 
     const isConfigured = emailService.isConfigured();
     if (!isConfigured && process.env.NODE_ENV !== "development") {
@@ -1754,6 +1776,7 @@ export const sendReminderToUnpaid = async (
           if (!isConfigured && process.env.NODE_ENV === "development") {
             emailSent = true;
           } else {
+            // ⭐ PER-ADMIN: pass adminId
             emailSent = await emailService.sendEmail(
               application.email,
               `⚠️ Payment Reminder - ${customerBills.length} Unpaid Bill(s)`,
@@ -1764,6 +1787,7 @@ export const sendReminderToUnpaid = async (
                 useAdminSender: effectiveSenderType === "admin",
                 senderType: effectiveSenderType,
                 isWilconnect: isWilconnect,
+                adminId: adminId,
               },
             );
           }

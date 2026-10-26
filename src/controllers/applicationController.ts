@@ -1,7 +1,9 @@
-// controllers/applicationController.ts - COMPLETE FIXED - WILCONNECT EMAIL FIX
+// controllers/applicationController.ts - COMPLETE FIXED - WILCONNECT EMAIL FIX + PER-ADMIN TOGGLE
 // ✅ FIX: approveApplication now explicitly sets billingStarted:false and serviceStatus:"pending"
 //         so approved apps WITHOUT billing are ALWAYS visible in getDashboardData
 // ✅ FIX: Unsets disconnectedAt/disconnectReason on approval so stale flags don't leak
+// ✅ FIX: Passes requesting admin's ID (req.user._id) to emailService calls so the
+//         PER-ADMIN customerEmailAlertsEnabled toggle is respected.
 import { Request, Response, NextFunction } from "express";
 import Application from "../models/Application";
 import Plan from "../models/Plan";
@@ -45,6 +47,12 @@ const getStringQuery = (param: any): string => {
   if (typeof param === "string") return param;
   if (Array.isArray(param)) return param[0] || "";
   return String(param);
+};
+
+// ============ HELPER: Get requesting admin's ID for per-admin toggle ============
+const getRequestingAdminId = (req: AuthRequest): string | undefined => {
+  const id = req.user?._id || req.user?.id;
+  return id ? String(id) : undefined;
 };
 
 // ============ HELPER: Detect Wilconnect building ============
@@ -786,6 +794,8 @@ export const getApplicationStats = async (
 
 // ============================================================
 // ✅ SUBMIT APPLICATION - FIXED: ALLOW DUPLICATE EMAIL/PHONE
+// ✅ FIX: Passes requesting admin's ID to sendApplicationReceived
+//         so the per-admin customerEmailAlertsEnabled toggle is respected.
 // ============================================================
 export const submitApplication = async (
   req: AuthRequest,
@@ -982,12 +992,16 @@ export const submitApplication = async (
 
     const buildingNameForEmail = building.buildingName || "";
 
+    // ⭐ Get requesting admin's ID (may be undefined if submitted publicly)
+    const requestingAdminId = getRequestingAdminId(req);
+
     setImmediate(() => {
       emailService
         .sendApplicationReceived(
           application,
           populatedPlan,
           buildingNameForEmail,
+          requestingAdminId,
         )
         .then(() =>
           console.log(`📧 Welcome email sent to ${application.email}`),
@@ -1152,6 +1166,7 @@ export const getApplication = async (
 //         so getDashboardData's filter picks it up correctly.
 // ✅ FIX: Uses $unset on disconnectedAt/disconnectReason so approved apps
 //         are never hidden by stale disconnect flags.
+// ✅ FIX: Passes requesting admin's ID to sendApplicationApproved.
 // ============================================================
 export const approveApplication = async (
   req: AuthRequest,
@@ -1255,12 +1270,16 @@ export const approveApplication = async (
       buildingName: buildingNameForEmail,
     };
 
+    // ⭐ Get requesting admin's ID
+    const requestingAdminId = getRequestingAdminId(req);
+
     setImmediate(() => {
       emailService
         .sendApplicationApproved(
           applicationForEmail,
           plan,
           buildingNameForEmail,
+          requestingAdminId,
         )
         .then(() =>
           console.log(`📧 Approval email sent to ${application.email}`),
@@ -1291,6 +1310,7 @@ export const approveApplication = async (
 
 // ============================================================
 // ✅ REJECT APPLICATION - FIXED WILCONNECT DETECTION
+// ✅ FIX: Passes requesting admin's ID to sendApplicationRejected.
 // ============================================================
 export const rejectApplication = async (
   req: AuthRequest,
@@ -1375,12 +1395,16 @@ export const rejectApplication = async (
       buildingName: buildingNameForEmail,
     };
 
+    // ⭐ Get requesting admin's ID
+    const requestingAdminId = getRequestingAdminId(req);
+
     setImmediate(() => {
       emailService
         .sendApplicationRejected(
           applicationForEmail,
           adminNotes || "No specific reason provided",
           buildingNameForEmail,
+          requestingAdminId,
         )
         .then(() =>
           console.log(`📧 Rejection email sent to ${application.email}`),
@@ -2315,6 +2339,7 @@ export const startBillingForApplication = async (
     dashboardCacheTime = 0;
 
     const buildingNameForEmail = application.buildingName || "";
+    const requestingAdminId = getRequestingAdminId(req);
 
     setImmediate(() => {
       emailService
@@ -2323,6 +2348,10 @@ export const startBillingForApplication = async (
           bill[0],
           plan,
           buildingNameForEmail,
+          undefined,
+          false,
+          undefined,
+          requestingAdminId,
         )
         .then(() => console.log(`📧 Bill email sent to ${application.email}`))
         .catch((err) => console.error("❌ Bill email failed:", err));

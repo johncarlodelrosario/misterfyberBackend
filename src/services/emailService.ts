@@ -1,8 +1,12 @@
 // backend/src/services/emailService.ts - COMPLETE FIXED VERSION
-// FIXED: Hardcoded correct fallbacks and safety checks for workselpueblo
-// NEW: Wilconnect buildings (El Pueblo, Vitalez, Newport) ALWAYS use workselpueblo@fyberblizz.com
-// NEW: Wilconnect-specific footer (support + collection = workselpueblo@fyberblizz.com)
-// NEW: Building-specific BDO accounts (Vitalez/Newport and El Pueblo)
+// ✅ MAIN FIX: getBrandForApplication uses buildingName directly.
+// ✅ FIX (NEW): areCustomerEmailsEnabled — when no adminId is provided
+//    (e.g. public application submission), fall back to the PRIMARY ADMIN
+//    and use THAT admin's customerEmailAlertsEnabled toggle.
+//    So: toggle ON → send. Toggle OFF → block.
+//    No forceSend. No bypass. Real toggle check.
+// ✅ sendToAdmin RESPECTS the toggle.
+// ✅ Password reset / account credentials use forceSend: true (security-critical only).
 
 import { IUser } from "../models/User";
 import Admin from "../models/Admin";
@@ -73,7 +77,6 @@ const safeToFixed = (value: any, decimals: number = 2): string => {
   return Number(value).toFixed(decimals);
 };
 
-// ==================== LOCATION EMAIL MAPPING ====================
 const LOCATION_EMAIL_MAP: { [key: string]: string } = {
   breeze:
     process.env.COLLECTION_EMAIL_BREEZE || "collection.breeze@misterfyber.com",
@@ -83,12 +86,9 @@ const LOCATION_EMAIL_MAP: { [key: string]: string } = {
 const DEFAULT_COLLECTION_EMAIL =
   process.env.COLLECTION_EMAIL_DEFAULT || "admin@misterfyber.com";
 
-// ==================== ADDITIONAL SENDER EMAILS ====================
-// ✅ FIX: Ensure that if .env is wrong, we still fallback to the correct verified domain
 const getSafeSenderEmail = (envKey: string, fallback: string): string => {
   const envValue = process.env[envKey];
   if (envValue && envValue.trim().length > 0) {
-    // Safety check: if env value is a gmail for workselpueblo, ignore it
     if (envKey === "SENDER_EMAIL_WORKSELPUEBLO" && envValue.includes("gmail")) {
       console.warn(
         `⚠️ WARNING: ${envKey} is set to a Gmail address. Using fallback instead.`,
@@ -123,41 +123,31 @@ export type SenderType =
   | "workselpueblo"
   | "fbsilkresidence";
 
-// ==================== BRAND CONFIGURATION ====================
 const WILCONNECT_BUILDINGS = ["el pueblo", "vitalez", "newport"];
 
-// ✅ HELPER: Check if a building name belongs to Wilconnect
-// El Pueblo, Vitalez, Newport → use workselpueblo@fyberblizz.com
 export function isWilconnectBuildingName(buildingName?: string): boolean {
   if (!buildingName) return false;
   const normalized = buildingName.toLowerCase().trim();
   return WILCONNECT_BUILDINGS.some((b) => normalized.includes(b));
 }
 
-// ✅ HELPER: Detect El Pueblo specifically
 export function isElPuebloBuilding(buildingName?: string): boolean {
   if (!buildingName) return false;
   return buildingName.toLowerCase().trim().includes("el pueblo");
 }
 
-// ✅ HELPER: Detect Vitalez or Newport
 export function isVitalezOrNewportBuilding(buildingName?: string): boolean {
   if (!buildingName) return false;
   const normalized = buildingName.toLowerCase().trim();
   return normalized.includes("vitalez") || normalized.includes("newport");
 }
 
-// ==================== BUILDING-SPECIFIC BANK ACCOUNT ====================
 interface BankAccountInfo {
   bankName: string;
   accountName: string;
   accountNumber: string;
 }
 
-// ✅ Get the correct BDO account for a given building
-// - Vitalez / Newport → 013448003703 / RANDY MANZANARES AND ANGELA TAPEL
-// - El Pueblo → 013448003711 / RANDY D MANZANARES AND ANGELA C TAPEL
-// - All other Wilconnect / Mister Fyber → default fallback
 export function getBankAccountForBuilding(
   buildingName?: string,
   location?: string,
@@ -168,7 +158,6 @@ export function getBankAccountForBuilding(
     .join(" ")
     .toLowerCase();
 
-  // El Pueblo takes priority
   if (hint.includes("el pueblo")) {
     return {
       bankName: "BDO",
@@ -177,7 +166,6 @@ export function getBankAccountForBuilding(
     };
   }
 
-  // Vitalez / Newport
   if (hint.includes("vitalez") || hint.includes("newport")) {
     return {
       bankName: "BDO",
@@ -186,7 +174,6 @@ export function getBankAccountForBuilding(
     };
   }
 
-  // Fallback (any other Wilconnect building or generic)
   const isWilconnect =
     hint.includes("wilconnect") ||
     WILCONNECT_BUILDINGS.some((b) => hint.includes(b));
@@ -194,7 +181,7 @@ export function getBankAccountForBuilding(
   if (isWilconnect) {
     return {
       bankName: "BDO",
-      accountName: "FYBERBLIZZ NETWORK CORPORATION",
+      accountName: "WILCONNECT NETWORK CORPORATION",
       accountNumber: "013448002421",
     };
   }
@@ -219,7 +206,6 @@ interface BrandInfo {
 
 function getBrandForBuilding(buildingName?: string): BrandInfo {
   const normalizedBuilding = (buildingName || "").toLowerCase().trim();
-
   const isWilconnect = WILCONNECT_BUILDINGS.some((b) =>
     normalizedBuilding.includes(b),
   );
@@ -231,7 +217,6 @@ function getBrandForBuilding(buildingName?: string): BrandInfo {
       companyName: "WILCONNECT NETWORK CORPORATION",
       brandName: "Wilconnect",
       adminEmail: "admin@misterfyber.com",
-      // ✅ For Wilconnect: support email = workselpueblo@fyberblizz.com
       supportEmail: ADDITIONAL_SENDER_EMAILS.workselpueblo,
       companyAddress:
         "UNIT 6 BLDG 2 G/F EL PUEBLO CONDO, ANONAS ST., STA. MESA, MANILA",
@@ -259,48 +244,18 @@ async function getBrandForApplication(application: any): Promise<BrandInfo> {
     if (!application) return getBrandForBuilding();
 
     if (application.buildingName) {
-      const brand = getBrandForBuilding(application.buildingName);
-      if (brand.isWilconnect) return brand;
+      return getBrandForBuilding(application.buildingName);
     }
 
     if (application.buildingId) {
       try {
         const building = await Building.findById(application.buildingId).lean();
         if (building && building.buildingName) {
-          const brand = getBrandForBuilding(building.buildingName);
-          if (brand.isWilconnect) return brand;
+          return getBrandForBuilding(building.buildingName);
         }
       } catch (e) {
         console.error("Error finding building by ID:", e);
       }
-    }
-
-    if (application.buildingName) {
-      try {
-        const building = await Building.findOne({
-          buildingName: { $regex: application.buildingName, $options: "i" },
-        }).lean();
-        if (building && building.buildingName) {
-          const brand = getBrandForBuilding(building.buildingName);
-          if (brand.isWilconnect) return brand;
-        }
-      } catch (e) {
-        console.error("Error finding building by name regex:", e);
-      }
-    }
-
-    try {
-      for (const wilBuilding of WILCONNECT_BUILDINGS) {
-        const building = await Building.findOne({
-          buildingName: { $regex: wilBuilding, $options: "i" },
-        }).lean();
-        if (building && building.buildingName) {
-          const brand = getBrandForBuilding(building.buildingName);
-          if (brand.isWilconnect) return brand;
-        }
-      }
-    } catch (e) {
-      console.error("Error checking Wilconnect buildings in DB:", e);
     }
 
     return getBrandForBuilding();
@@ -388,7 +343,6 @@ export const getSenderEmailByType = (
   location?: string,
   buildingName?: string,
 ): { email: string; name: string } => {
-  // ✅ WILCONNECT OVERRIDE: El Pueblo, Vitalez, Newport ALWAYS use workselpueblo
   if (isWilconnectBuildingName(buildingName)) {
     console.log(
       `🏢 Wilconnect building detected in getSenderEmailByType: "${buildingName}" → workselpueblo@fyberblizz.com`,
@@ -448,7 +402,6 @@ export const getAllSenderOptions = (
 ): { value: SenderType; label: string; email: string }[] => {
   const options: { value: SenderType; label: string; email: string }[] = [];
 
-  // ✅ If Wilconnect building, add workselpueblo first
   if (isWilconnectBuildingName(buildingName)) {
     options.push({
       value: "workselpueblo",
@@ -469,7 +422,6 @@ export const getAllSenderOptions = (
     }
   }
 
-  // Add workselpueblo if not already added
   if (!isWilconnectBuildingName(buildingName)) {
     options.push({
       value: "workselpueblo",
@@ -639,12 +591,10 @@ export const getCollectionEmailForApplication = async (
   }
 };
 
-// ✅ HELPER: Get the resolved collection email (respects Wilconnect buildings)
 function getResolvedCollectionEmail(
   buildingName: string | undefined,
   location: string | undefined,
 ): string {
-  // For Wilconnect buildings, collection email is ALWAYS workselpueblo@fyberblizz.com
   if (isWilconnectBuildingName(buildingName)) {
     return ADDITIONAL_SENDER_EMAILS.workselpueblo;
   }
@@ -690,7 +640,92 @@ class EmailService {
     }
   }
 
-  // ==================== HTML EMAIL TEMPLATE GENERATORS ====================
+  // ============================================================
+  // ⭐ FIXED: areCustomerEmailsEnabled
+  // ------------------------------------------------------------
+  // Behavior:
+  //   1. If adminId is provided → check THAT admin's toggle.
+  //   2. If adminId is NOT provided (e.g. public submission) →
+  //      fall back to the PRIMARY ADMIN (oldest super_admin / admin).
+  //      Use THAT admin's toggle.
+  //   3. If no admin exists at all → BLOCK (safe default).
+  //   4. Any error → BLOCK.
+  //
+  // ⚠️ NO forceSend bypass. This is a real toggle check.
+  //    Toggle ON  → email sends.
+  //    Toggle OFF → email blocks.
+  // ============================================================
+  private async areCustomerEmailsEnabled(adminId?: string): Promise<boolean> {
+    let admin = null;
+
+    try {
+      if (adminId) {
+        // Rule 1: check the specific admin
+        admin = await Admin.findById(adminId);
+        if (!admin) {
+          console.log("📧 ========================================");
+          console.log("📧 CUSTOMER EMAIL TOGGLE CHECK");
+          console.log(`📧 ⛔ Admin with ID ${adminId} NOT FOUND → BLOCKING.`);
+          console.log("📧 ========================================");
+          return false;
+        }
+      } else {
+        // Rule 2: fall back to the primary admin
+        // Prefer oldest super_admin; then oldest admin; then any admin.
+        admin = await Admin.findOne({ role: "super_admin" })
+          .sort({ createdAt: 1 })
+          .select("email customerEmailAlertsEnabled role");
+
+        if (!admin) {
+          admin = await Admin.findOne({ role: "admin" })
+            .sort({ createdAt: 1 })
+            .select("email customerEmailAlertsEnabled role");
+        }
+
+        if (!admin) {
+          admin = await Admin.findOne({})
+            .sort({ createdAt: 1 })
+            .select("email customerEmailAlertsEnabled role");
+        }
+
+        if (!admin) {
+          console.log("📧 ========================================");
+          console.log("📧 CUSTOMER EMAIL TOGGLE CHECK");
+          console.log("📧 ⛔ NO ADMIN FOUND IN DATABASE → BLOCKING.");
+          console.log("📧 ========================================");
+          return false;
+        }
+
+        console.log("📧 ========================================");
+        console.log("📧 CUSTOMER EMAIL TOGGLE CHECK");
+        console.log("📧 (No adminId provided — using primary admin's toggle)");
+        console.log(`📧 Primary admin: ${admin.email} (${admin.role})`);
+        console.log("📧 ========================================");
+      }
+
+      const isEnabled = admin.customerEmailAlertsEnabled === true;
+
+      console.log("📧 ========================================");
+      console.log("📧 CUSTOMER EMAIL TOGGLE CHECK (RESULT)");
+      console.log(`📧 Admin ID: ${admin._id}`);
+      console.log(`📧 Admin: ${admin.email} (${admin.role})`);
+      console.log(
+        `📧 customerEmailAlertsEnabled = ${admin.customerEmailAlertsEnabled}`,
+      );
+      console.log(
+        `📧 RESULT: ${isEnabled ? "EMAILS ENABLED ✅ - will send" : "EMAILS DISABLED ❌ - will BLOCK"}`,
+      );
+      console.log("📧 ========================================");
+
+      return isEnabled;
+    } catch (error) {
+      console.error(
+        "📧 ⛔ ERROR checking customer email toggle → BLOCKING:",
+        error,
+      );
+      return false;
+    }
+  }
 
   generatePaymentConfirmationHTML(
     invoice: any,
@@ -704,8 +739,6 @@ class EmailService {
     buildingInstallationFee?: number,
   ): string {
     const brand = getBrandForBuilding(buildingName);
-
-    // ✅ Resolve collection email respecting Wilconnect
     const resolvedCollectionEmail = getResolvedCollectionEmail(
       buildingName,
       location,
@@ -870,13 +903,11 @@ class EmailService {
     const frontendUrl =
       process.env.FRONTEND_URL || "https://www.misterfyber.com";
 
-    // ✅ Resolve collection email respecting Wilconnect
     const resolvedCollectionEmail = getResolvedCollectionEmail(
       buildingName,
       location,
     );
 
-    // ✅ Resolve bank account for this building
     const bankAccount = getBankAccountForBuilding(
       buildingName,
       location,
@@ -927,7 +958,6 @@ class EmailService {
       `;
     }
 
-    // ✅ WILCONNECT OVERRIDE: If building is Wilconnect, use workselpueblo
     let senderName = brand.brandName;
     let senderEmailAddress = brand.adminEmail;
 
@@ -957,7 +987,6 @@ class EmailService {
       }
     }
 
-    // ✅ Build the payment/bank instructions block ONLY if not paid
     const isBillingPaid =
       billing.status === "paid" || (billing as any).paidAt != null;
     const isBillingFree =
@@ -1074,14 +1103,10 @@ class EmailService {
     buildingInstallationFee?: number,
   ): string {
     const brand = getBrandForBuilding(buildingName);
-
-    // ✅ Resolve collection email respecting Wilconnect
     const resolvedCollectionEmail = getResolvedCollectionEmail(
       buildingName,
       location,
     );
-
-    // ✅ Resolve bank account for this building
     const bankAccount = getBankAccountForBuilding(
       buildingName,
       location,
@@ -1122,7 +1147,6 @@ class EmailService {
       `
         : "";
 
-    // ✅ WILCONNECT OVERRIDE
     let senderNote = "";
     if (isWilconnectBuildingName(buildingName)) {
       senderNote = `
@@ -1190,14 +1214,10 @@ class EmailService {
     buildingInstallationFee?: number,
   ): string {
     const brand = getBrandForBuilding(buildingName);
-
-    // ✅ Resolve collection email respecting Wilconnect
     const resolvedCollectionEmail = getResolvedCollectionEmail(
       buildingName,
       location,
     );
-
-    // ✅ Resolve bank account
     const bankAccount = getBankAccountForBuilding(
       buildingName,
       location,
@@ -1333,21 +1353,17 @@ class EmailService {
       buildingName || application?.buildingName,
     );
     const resolvedBuilding = buildingName || application?.buildingName;
-
-    // ✅ Resolve collection email respecting Wilconnect
     const resolvedCollectionEmail = getResolvedCollectionEmail(
       resolvedBuilding,
       location,
     );
-
-    // ✅ Resolve bank account
     const bankAccount = getBankAccountForBuilding(
       resolvedBuilding,
       location,
       application?.customerAddress,
     );
-
     const registerUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/register`;
+
     const locationBadge = location
       ? `
       <div style="display: inline-block; background: ${location.toLowerCase() === "breeze" ? "#1a56db" : "#7c3aed"}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: bold; margin-bottom: 10px;">
@@ -1516,44 +1532,6 @@ class EmailService {
     return configured;
   }
 
-  private async areCustomerEmailsEnabled(): Promise<boolean> {
-    try {
-      const enabledAdmin = await Admin.findOne({
-        customerEmailAlertsEnabled: true,
-        status: "active",
-      });
-
-      if (enabledAdmin) {
-        console.log(`📧 Found admin with customer emails ENABLED:`);
-        console.log(`   Admin email: ${enabledAdmin.email}`);
-        console.log(`   Admin role: ${enabledAdmin.role}`);
-        console.log(`   customerEmailAlertsEnabled: true`);
-        return true;
-      }
-
-      console.log("📧 No admin has customerEmailAlertsEnabled === true");
-
-      const allAdmins = await Admin.find({ status: "active" })
-        .select("email role customerEmailAlertsEnabled")
-        .lean();
-
-      console.log("📧 All active admins:");
-      allAdmins.forEach((a: any) => {
-        console.log(
-          `   - ${a.email} (${a.role}): customerEmailAlertsEnabled = ${a.customerEmailAlertsEnabled}`,
-        );
-      });
-
-      return false;
-    } catch (error) {
-      console.warn(
-        "⚠️ Could not check customer email setting, returning FALSE:",
-        error,
-      );
-      return false;
-    }
-  }
-
   private formatDateForDisplay(date: any): string {
     if (!date) return "N/A";
     const d = new Date(date);
@@ -1607,7 +1585,6 @@ class EmailService {
     return options;
   }
 
-  // ==================== CORE EMAIL SENDING ====================
   async sendEmail(
     to: string | string[],
     subject: string,
@@ -1624,6 +1601,7 @@ class EmailService {
       forceSend?: boolean;
       isWilconnect?: boolean;
       buildingName?: string;
+      adminId?: string;
     },
   ): Promise<boolean> {
     try {
@@ -1641,23 +1619,33 @@ class EmailService {
       console.log(
         `   buildingName (options): ${options?.buildingName || "N/A"}`,
       );
+      console.log(`   adminId (options): ${options?.adminId || "N/A"}`);
 
-      if (isCustomerEmail && !options?.forceSend) {
-        const customerEmailsEnabled = await this.areCustomerEmailsEnabled();
+      // ⚠️ forceSend is ONLY used by password reset / account credentials (security-critical).
+      //    For ALL other email types, areCustomerEmailsEnabled() decides based on
+      //    the toggle. No forceSend bypass for customer or admin notification emails.
+      if (!options?.forceSend) {
+        const customerEmailsEnabled = await this.areCustomerEmailsEnabled(
+          options?.adminId,
+        );
         if (!customerEmailsEnabled) {
+          console.log(`⚠️ ========================================`);
           console.log(
-            `⚠️ CUSTOMER EMAILS ARE DISABLED (OFF). Skipping email to: ${to}`,
+            `⚠️ EMAIL NOTIFICATIONS ARE DISABLED (OFF). SKIPPING EMAIL!`,
           );
-          console.log(`   Subject: ${subject}`);
-          console.log(`   No admin has customerEmailAlertsEnabled === true`);
-          console.log(`   This email was NOT sent because the toggle is OFF.`);
+          console.log(`⚠️ Admin ID: ${options?.adminId || "not provided"}`);
+          console.log(`⚠️ To: ${to}`);
+          console.log(`⚠️ Subject: ${subject}`);
+          console.log(`⚠️ isCustomerEmail: ${isCustomerEmail}`);
+          console.log(`⚠️ This email was NOT sent because the toggle is OFF.`);
+          console.log(`⚠️ ========================================`);
           return true;
         }
-        console.log(`✅ Customer emails are ENABLED. Sending email to: ${to}`);
-      } else if (isCustomerEmail && options?.forceSend) {
         console.log(
-          `📧 [FORCE SEND] Bypassing customer-email toggle for transactional email to: ${to}`,
+          `✅ Email notifications are ENABLED. Sending email to: ${to}`,
         );
+      } else {
+        console.log(`📧 [SECURITY-CRITICAL] Sending email to: ${to}`);
       }
 
       if (process.env.NODE_ENV === "development" && !this.apiKey) {
@@ -1697,14 +1685,12 @@ class EmailService {
         return false;
       }
 
-      // ✅ Determine if this is a Wilconnect building
       const buildingName =
         options?.buildingName || (options?.isWilconnect ? location : undefined);
       const isWilconnectLocation =
         options?.isWilconnect === true ||
         isWilconnectBuildingName(buildingName);
 
-      // ✅ Resolve collection email respecting Wilconnect
       let collectionEmail = DEFAULT_COLLECTION_EMAIL;
       if (isWilconnectLocation) {
         collectionEmail = ADDITIONAL_SENDER_EMAILS.workselpueblo;
@@ -1737,7 +1723,6 @@ class EmailService {
         options?.senderType ||
         (options?.useAdminSender ? "admin" : "collection");
 
-      // ✅ WILCONNECT OVERRIDE: HIGHEST PRIORITY - El Pueblo, Vitalez, Newport ALWAYS use workselpueblo
       if (isWilconnectLocation) {
         senderEmailAddress = ADDITIONAL_SENDER_EMAILS.workselpueblo;
         senderName = ADDITIONAL_SENDER_NAMES.workselpueblo;
@@ -1985,8 +1970,6 @@ class EmailService {
     }
   }
 
-  // ==================== EMAIL SENDING METHODS ====================
-
   async sendInvoiceWithPDF(
     invoiceData: any,
     pdfBuffer: Buffer,
@@ -1994,15 +1977,19 @@ class EmailService {
     location?: string,
     useAdminSender?: boolean,
     senderType?: SenderType,
+    adminId?: string,
   ): Promise<boolean> {
     try {
-      const customerEmailsEnabled = await this.areCustomerEmailsEnabled();
+      const customerEmailsEnabled =
+        await this.areCustomerEmailsEnabled(adminId);
       if (!customerEmailsEnabled) {
+        console.log(`⚠️ ========================================`);
         console.log(
-          `⚠️ CUSTOMER EMAILS ARE DISABLED (OFF). Skipping invoice email to: ${invoiceData.customerEmail}`,
+          `⚠️ CUSTOMER EMAILS ARE DISABLED (OFF). SKIPPING INVOICE EMAIL!`,
         );
-        console.log(`   Invoice: ${invoiceData.invoiceNumber}`);
-        console.log(`   This email was NOT sent because the toggle is OFF.`);
+        console.log(`⚠️ Invoice: ${invoiceData.invoiceNumber}`);
+        console.log(`⚠️ This email was NOT sent because the toggle is OFF.`);
+        console.log(`⚠️ ========================================`);
         return true;
       }
       console.log(
@@ -2048,13 +2035,11 @@ class EmailService {
         }
       }
 
-      // ✅ Resolve collection email respecting Wilconnect
       const isWilconnect = isWilconnectBuildingName(buildingName);
       const collectionEmail = isWilconnect
         ? ADDITIONAL_SENDER_EMAILS.workselpueblo
         : getCollectionEmailByLocation(userLocation);
 
-      // ✅ Resolve bank account
       const bankAccount = getBankAccountForBuilding(
         buildingName,
         userLocation,
@@ -2069,7 +2054,6 @@ class EmailService {
       const effectiveSenderType: SenderType =
         senderType || (useAdminSender ? "admin" : "collection");
 
-      // ✅ WILCONNECT OVERRIDE: El Pueblo, Vitalez, Newport ALWAYS use workselpueblo
       if (isWilconnect) {
         senderEmailAddress = ADDITIONAL_SENDER_EMAILS.workselpueblo;
         senderName = ADDITIONAL_SENDER_NAMES.workselpueblo;
@@ -2248,7 +2232,6 @@ class EmailService {
         invoiceData.status !== "free" &&
         !invoiceData.isFree
       ) {
-        // Use building-specific bank account
         paymentInstructions = `
           <div style="background: #e7f3ff; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #1a56db;">
             <h4 style="margin-top: 0; color: #1a56db;">💳 NEW ACCOUNT FOR PAYMENT</h4>
@@ -2444,17 +2427,21 @@ class EmailService {
     notes?: string,
     adminName?: string,
     senderType?: SenderType,
+    adminId?: string,
   ): Promise<boolean> {
     console.log(`📧 sendPaymentConfirmationEmail called`);
 
     try {
-      const customerEmailsEnabled = await this.areCustomerEmailsEnabled();
+      const customerEmailsEnabled =
+        await this.areCustomerEmailsEnabled(adminId);
       if (!customerEmailsEnabled) {
+        console.log(`⚠️ ========================================`);
         console.log(
-          `⚠️ CUSTOMER EMAILS ARE DISABLED (OFF). Skipping payment confirmation email to: ${invoice.customerEmail}`,
+          `⚠️ CUSTOMER EMAILS ARE DISABLED (OFF). SKIPPING PAYMENT CONFIRMATION!`,
         );
-        console.log(`   Invoice: ${invoice.invoiceNumber}`);
-        console.log(`   This email was NOT sent because the toggle is OFF.`);
+        console.log(`⚠️ Invoice: ${invoice.invoiceNumber}`);
+        console.log(`⚠️ This email was NOT sent because the toggle is OFF.`);
+        console.log(`⚠️ ========================================`);
         return true;
       }
       console.log(
@@ -2574,6 +2561,9 @@ class EmailService {
         location,
         useAdminSender,
         senderType,
+        false,
+        false,
+        adminId,
       );
     } catch (error) {
       console.error(`❌ Error in sendPaymentConfirmationEmail:`, error);
@@ -2602,6 +2592,7 @@ class EmailService {
             replyTo: getCollectionEmailByLocation(location || ""),
             senderType,
             buildingName: invoice.buildingName,
+            adminId,
           },
         );
         console.log(
@@ -2625,6 +2616,7 @@ class EmailService {
     senderType?: SenderType,
     forceSend: boolean = false,
     isFree: boolean = false,
+    adminId?: string,
   ): Promise<boolean> {
     try {
       const free =
@@ -2646,18 +2638,24 @@ class EmailService {
       console.log(`📧 PDF size: ${pdfBuffer ? pdfBuffer.length : 0} bytes`);
       console.log(`📧 forceSend: ${forceSend}`);
       console.log(`📧 isFree: ${free}`);
+      console.log(`📧 adminId: ${adminId || "N/A"}`);
 
       if (!forceSend) {
-        const customerEmailsEnabled = await this.areCustomerEmailsEnabled();
+        const customerEmailsEnabled =
+          await this.areCustomerEmailsEnabled(adminId);
         if (!customerEmailsEnabled) {
+          console.log(`⚠️ ========================================`);
           console.log(
-            `⚠️ CUSTOMER EMAILS ARE DISABLED (OFF). Skipping receipt email to: ${invoiceData.customerEmail}`,
+            `⚠️ CUSTOMER EMAILS ARE DISABLED (OFF). SKIPPING RECEIPT EMAIL!`,
           );
+          console.log(`⚠️ Invoice: ${invoiceData.invoiceNumber}`);
+          console.log(`⚠️ This email was NOT sent because the toggle is OFF.`);
+          console.log(`⚠️ ========================================`);
           return true;
         }
       } else {
         console.log(
-          `📧 [FORCE SEND] Bypassing customer-email toggle for ${free ? "FREE" : "paid"} receipt: ${invoiceData.customerEmail}`,
+          `📧 [SECURITY-CRITICAL] Sending receipt to: ${invoiceData.customerEmail}`,
         );
       }
 
@@ -2759,6 +2757,7 @@ class EmailService {
             senderType,
             forceSend,
             buildingName: invoiceData.buildingName,
+            adminId,
           },
         );
       }
@@ -2788,7 +2787,6 @@ class EmailService {
 
       const userLocation = location || invoiceData.location || "";
 
-      // ✅ Resolve collection email respecting Wilconnect
       const isWilconnect = isWilconnectBuildingName(invoiceData.buildingName);
       const collectionEmail = isWilconnect
         ? ADDITIONAL_SENDER_EMAILS.workselpueblo
@@ -2802,7 +2800,6 @@ class EmailService {
       const effectiveSenderType: SenderType =
         senderType || (useAdminSender ? "admin" : "collection");
 
-      // ✅ WILCONNECT OVERRIDE: El Pueblo, Vitalez, Newport ALWAYS use workselpueblo
       if (isWilconnect) {
         senderEmailAddress = ADDITIONAL_SENDER_EMAILS.workselpueblo;
         senderName = ADDITIONAL_SENDER_NAMES.workselpueblo;
@@ -3169,8 +3166,6 @@ class EmailService {
     }
   }
 
-  // ==================== SIMPLE EMAIL METHODS ====================
-
   async sendBillingEmail(
     user: IUser | any,
     billing: any,
@@ -3181,6 +3176,7 @@ class EmailService {
       replyTo?: string;
       useAdminSender?: boolean;
       senderType?: SenderType;
+      adminId?: string;
     },
   ): Promise<boolean> {
     try {
@@ -3211,7 +3207,6 @@ class EmailService {
         }
       }
 
-      // ✅ Resolve collection email respecting Wilconnect
       const resolvedCollectionEmail = getResolvedCollectionEmail(
         buildingName,
         userLocation,
@@ -3242,6 +3237,7 @@ class EmailService {
           senderType: options?.senderType,
           isWilconnect: brand.isWilconnect,
           buildingName: buildingName,
+          adminId: options?.adminId,
         },
       );
     } catch (error) {
@@ -3256,12 +3252,14 @@ class EmailService {
     location?: string,
     useAdminSender?: boolean,
     senderType?: SenderType,
+    adminId?: string,
   ): Promise<void> {
     try {
       const userLocation = location || (await getLocationFromEntity(user));
       await this.sendBillingEmail(user, billing, userLocation, {
         useAdminSender,
         senderType,
+        adminId,
       });
     } catch (error) {
       console.error(`❌ Error sending invoice:`, error);
@@ -3274,6 +3272,7 @@ class EmailService {
     location?: string,
     useAdminSender?: boolean,
     senderType?: SenderType,
+    adminId?: string,
   ): Promise<void> {
     try {
       const userLocation = location || (await getLocationFromEntity(user));
@@ -3303,7 +3302,6 @@ class EmailService {
         }
       }
 
-      // ✅ Resolve collection email respecting Wilconnect
       const resolvedCollectionEmail = getResolvedCollectionEmail(
         buildingName,
         userLocation,
@@ -3341,6 +3339,7 @@ class EmailService {
           senderType,
           isWilconnect: brand.isWilconnect,
           buildingName: buildingName,
+          adminId,
         },
       );
     } catch (error) {
@@ -3354,6 +3353,7 @@ class EmailService {
     location?: string,
     useAdminSender?: boolean,
     senderType?: SenderType,
+    adminId?: string,
   ): Promise<void> {
     try {
       const userLocation = location || (await getLocationFromEntity(user));
@@ -3383,7 +3383,6 @@ class EmailService {
         }
       }
 
-      // ✅ Resolve collection email respecting Wilconnect
       const resolvedCollectionEmail = getResolvedCollectionEmail(
         buildingName,
         userLocation,
@@ -3421,6 +3420,7 @@ class EmailService {
           senderType,
           isWilconnect: brand.isWilconnect,
           buildingName: buildingName,
+          adminId,
         },
       );
     } catch (error) {
@@ -3436,6 +3436,7 @@ class EmailService {
     location?: string,
     useAdminSender?: boolean,
     senderType?: SenderType,
+    adminId?: string,
   ): Promise<void> {
     try {
       const userLocation =
@@ -3459,7 +3460,6 @@ class EmailService {
         }
       }
 
-      // ✅ Resolve collection email respecting Wilconnect
       const resolvedCollectionEmail = getResolvedCollectionEmail(
         buildingName,
         userLocation,
@@ -3496,6 +3496,7 @@ class EmailService {
           senderType,
           isWilconnect: brand.isWilconnect,
           buildingName: buildingName,
+          adminId,
         },
       );
     } catch (error) {
@@ -3509,6 +3510,7 @@ class EmailService {
     location?: string,
     useAdminSender?: boolean,
     senderType?: SenderType,
+    adminId?: string,
   ): Promise<void> {
     try {
       const userLocation = location || (await getLocationFromEntity(user));
@@ -3538,19 +3540,15 @@ class EmailService {
         }
       }
 
-      // ✅ Resolve collection email respecting Wilconnect
       const resolvedCollectionEmail = getResolvedCollectionEmail(
         buildingName,
         userLocation,
       );
-
-      // ✅ Resolve bank account
       const bankAccount = getBankAccountForBuilding(
         buildingName,
         userLocation,
         undefined,
       );
-
       const brand = getBrandForBuilding(buildingName);
       const dueDate = billing.dueDate
         ? new Date(billing.dueDate).toLocaleDateString()
@@ -3649,6 +3647,7 @@ class EmailService {
           senderType,
           isWilconnect: brand.isWilconnect,
           buildingName: buildingName,
+          adminId,
         },
       );
     } catch (error) {
@@ -3656,37 +3655,39 @@ class EmailService {
     }
   }
 
-  // ==================== OTHER EMAIL METHODS ====================
-
-  async sendWelcomeEmail(user: IUser): Promise<void> {
-    const customerEmailsEnabled = await this.areCustomerEmailsEnabled();
-    if (!customerEmailsEnabled) {
-      console.log(
-        `⚠️ CUSTOMER EMAILS ARE DISABLED (OFF). Skipping welcome email to: ${user.email}`,
-      );
-      console.log(`   This email was NOT sent because the toggle is OFF.`);
-      return;
-    }
-    console.log(
-      `✅ Customer emails are ENABLED. Sending welcome email to: ${user.email}`,
-    );
+  async sendWelcomeEmail(user: IUser, adminId?: string): Promise<void> {
+    // Toggle check will happen inside sendEmail → areCustomerEmailsEnabled.
+    // If no adminId is passed, areCustomerEmailsEnabled uses primary admin.
+    console.log(`📧 Sending welcome email to: ${user.email} (checking toggle)`);
 
     const html = this.generateWelcomeHTML(user);
-    await this.sendEmail(
+    const sent = await this.sendEmail(
       user.email,
       `🎉 Welcome to Mister Fyber, ${user.firstName || user.email}!`,
       html,
       true,
+      undefined,
+      { adminId },
     );
 
-    console.log(
-      `📧 Welcome email sent to ${user.email} - Admin notification skipped`,
-    );
+    if (sent) {
+      console.log(`✅ Welcome email processed for ${user.email}`);
+    } else {
+      console.warn(`⚠️ Welcome email failed for ${user.email}`);
+    }
   }
 
   async sendPasswordReset(user: IUser, resetToken: string): Promise<void> {
+    // Security-critical: always send.
     const html = this.generatePasswordResetHTML(user, resetToken);
-    await this.sendEmail(user.email, "Password Reset Request", html, true);
+    await this.sendEmail(
+      user.email,
+      "Password Reset Request",
+      html,
+      true,
+      undefined,
+      { forceSend: true },
+    );
   }
 
   async sendAccountCredentials(
@@ -3695,6 +3696,7 @@ class EmailService {
     password: string,
     applicationId: string,
   ): Promise<void> {
+    // Security-critical: always send.
     const html = this.generateAccountCredentialsHTML(
       user,
       username,
@@ -3706,6 +3708,8 @@ class EmailService {
       `🔐 Your Mister Fyber Account Credentials`,
       html,
       true,
+      undefined,
+      { forceSend: true },
     );
   }
 
@@ -3713,6 +3717,7 @@ class EmailService {
     application: any,
     plan: any,
     buildingNameFromController?: string,
+    adminId?: string,
   ): Promise<void> {
     console.log(`📧 ========================================`);
     console.log(`📧 sendApplicationReceived called`);
@@ -3726,6 +3731,9 @@ class EmailService {
     console.log(`   Passed plan is valid? ${isValidPlan(plan)}`);
     console.log(
       `   buildingNameFromController: "${buildingNameFromController || "N/A"}"`,
+    );
+    console.log(
+      `   adminId: ${adminId || "N/A (will use primary admin's toggle)"}`,
     );
 
     let resolvedPlan: any = null;
@@ -3770,6 +3778,7 @@ class EmailService {
       brand,
     );
 
+    // Customer confirmation email — sendEmail will check the toggle internally.
     await this.sendEmail(
       application.email,
       `Application Received - ${application.applicationId}`,
@@ -3780,6 +3789,7 @@ class EmailService {
         senderType: "admin",
         isWilconnect: brand.isWilconnect,
         buildingName: buildingName,
+        adminId,
       },
     );
 
@@ -3800,6 +3810,8 @@ class EmailService {
     await this.sendToAdmin(
       `New Application: ${application.applicationId} from ${application.firstName} ${application.lastName}`,
       adminHtml,
+      undefined,
+      adminId,
     );
   }
 
@@ -3807,6 +3819,7 @@ class EmailService {
     application: any,
     plan: any,
     buildingNameFromController?: string,
+    adminId?: string,
   ): Promise<void> {
     let resolvedPlan: any = null;
 
@@ -3841,6 +3854,9 @@ class EmailService {
     console.log(`   Brand: ${brand.brandName}`);
     console.log(`   isWilconnect: ${brand.isWilconnect}`);
     console.log(`   buildingName: "${buildingName}"`);
+    console.log(
+      `   adminId: ${adminId || "N/A (will use primary admin's toggle)"}`,
+    );
 
     const html = this.generateApplicationApprovedHTML(
       application,
@@ -3858,6 +3874,7 @@ class EmailService {
         senderType: "admin",
         isWilconnect: brand.isWilconnect,
         buildingName: buildingName,
+        adminId,
       },
     );
 
@@ -3874,6 +3891,8 @@ class EmailService {
     await this.sendToAdmin(
       `Application Approved: ${application.applicationId}`,
       adminHtml,
+      undefined,
+      adminId,
     );
   }
 
@@ -3881,6 +3900,7 @@ class EmailService {
     application: any,
     reason: string,
     buildingNameFromController?: string,
+    adminId?: string,
   ): Promise<void> {
     let buildingName =
       buildingNameFromController || application.buildingName || "";
@@ -3914,6 +3934,7 @@ class EmailService {
         senderType: "admin",
         isWilconnect: brand.isWilconnect,
         buildingName: buildingName,
+        adminId,
       },
     );
 
@@ -3929,12 +3950,15 @@ class EmailService {
     await this.sendToAdmin(
       `Application Rejected: ${application.applicationId}`,
       adminHtml,
+      undefined,
+      adminId,
     );
   }
 
   async sendNewApplicationNotification(
     application: any,
     plan: any,
+    adminId?: string,
   ): Promise<void> {
     let resolvedPlan: any = null;
     if (isValidPlan(plan)) {
@@ -3953,6 +3977,8 @@ class EmailService {
     await this.sendToAdmin(
       `🆕 NEW APPLICATION: ${application.applicationId} from ${application.firstName} ${application.lastName}`,
       html,
+      undefined,
+      adminId,
     );
   }
 
@@ -3995,6 +4021,8 @@ class EmailService {
       "Password Changed Successfully",
       html,
       true,
+      undefined,
+      { forceSend: true },
     );
   }
 
@@ -4003,6 +4031,7 @@ class EmailService {
     status: string,
     message: string,
     location?: string,
+    adminId?: string,
   ): Promise<void> {
     const html = this.generateServiceStatusHTML(
       user.firstName || "",
@@ -4016,6 +4045,7 @@ class EmailService {
       html,
       true,
       location,
+      { adminId },
     );
   }
 
@@ -4024,6 +4054,7 @@ class EmailService {
     reason: string,
     estimatedDuration?: Date,
     location?: string,
+    adminId?: string,
   ): Promise<void> {
     const duration = estimatedDuration
       ? new Date(estimatedDuration).toLocaleString()
@@ -4057,10 +4088,15 @@ class EmailService {
       html,
       true,
       location,
+      { adminId },
     );
   }
 
-  async sendAccountStatusUpdate(user: any, location?: string): Promise<void> {
+  async sendAccountStatusUpdate(
+    user: any,
+    location?: string,
+    adminId?: string,
+  ): Promise<void> {
     const statusMessages: Record<string, string> = {
       active:
         "Your Mister Fyber account has been activated! You can now log in and enjoy our services.",
@@ -4102,6 +4138,7 @@ class EmailService {
       html,
       true,
       location,
+      { adminId },
     );
   }
 
@@ -4110,6 +4147,7 @@ class EmailService {
     oldPlan: any,
     newPlan: any,
     location?: string,
+    adminId?: string,
   ): Promise<void> {
     const html = this.generatePlanChangeNotificationHTML(
       user,
@@ -4122,10 +4160,15 @@ class EmailService {
       html,
       true,
       location,
+      { adminId },
     );
   }
 
-  async sendServiceReminder(user: any, location?: string): Promise<void> {
+  async sendServiceReminder(
+    user: any,
+    location?: string,
+    adminId?: string,
+  ): Promise<void> {
     const frontendUrl =
       process.env.FRONTEND_URL || "https://www.misterfyber.com";
     const html = `
@@ -4155,10 +4198,10 @@ class EmailService {
       html,
       true,
       location,
+      { adminId },
     );
   }
 
-  // ==================== HELPER GENERATORS ====================
   private generateWelcomeHTML(user: IUser): string {
     const loginUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/login`;
     const dashboardUrl = `${process.env.FRONTEND_URL || "https://www.misterfyber.com"}/dashboard`;
@@ -4511,17 +4554,36 @@ class EmailService {
     subject: string,
     html: string,
     location?: string,
+    adminId?: string,
   ): Promise<boolean> {
     if (!this.adminEmail) {
       console.error("❌ Admin email not configured");
       return false;
     }
+
+    const customerEmailsEnabled = await this.areCustomerEmailsEnabled(adminId);
+    if (!customerEmailsEnabled) {
+      console.log(`⚠️ ========================================`);
+      console.log(
+        `⚠️ EMAIL NOTIFICATIONS ARE DISABLED (OFF). SKIPPING ADMIN EMAIL!`,
+      );
+      console.log(`⚠️ Admin ID: ${adminId || "using primary admin"}`);
+      console.log(`⚠️ To: ${this.adminEmail}`);
+      console.log(`⚠️ Subject: [ADMIN] ${subject}`);
+      console.log(
+        `⚠️ This admin email was NOT sent because the toggle is OFF.`,
+      );
+      console.log(`⚠️ ========================================`);
+      return true;
+    }
+
     return await this.sendEmail(
       this.adminEmail,
       `[ADMIN] ${subject}`,
       html,
       false,
       location,
+      { adminId },
     );
   }
 
@@ -4607,6 +4669,8 @@ class EmailService {
         "Test Email - Mister Fyber",
         testHtml,
         false,
+        undefined,
+        { forceSend: true },
       );
       return {
         success: result,
@@ -4629,13 +4693,10 @@ class EmailService {
   }
 }
 
-// ==================== EXPORT FUNCTIONS ====================
 export const getLocationEmailMap = () => LOCATION_EMAIL_MAP;
 export const getDefaultCollectionEmail = () => DEFAULT_COLLECTION_EMAIL;
 export const getWilconnectBuildings = () => WILCONNECT_BUILDINGS;
 
-// Create a singleton instance
 const emailServiceInstance = new EmailService();
 
-// Export the instance
 export default emailServiceInstance;
