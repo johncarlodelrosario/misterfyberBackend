@@ -350,17 +350,6 @@ export async function generateInvoicePDF(
         .font("Helvetica")
         .fontSize(10)
         .fillColor("#333")
-        .text(
-          `VAT-REG.: ${resolvedCompanyVat} | CONTACT NO.: ${resolvedCompanyContact}`,
-          50,
-          92,
-          { align: "center" },
-        );
-
-      doc
-        .font("Helvetica")
-        .fontSize(10)
-        .fillColor("#333")
         .text(invoiceData.companyEmail, 50, 109, { align: "center" });
 
       // ==================== PAID / FREE BANNER (top-right) ====================
