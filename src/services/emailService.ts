@@ -7,6 +7,16 @@
 //    No forceSend. No bypass. Real toggle check.
 // ✅ sendToAdmin RESPECTS the toggle.
 // ✅ Password reset / account credentials use forceSend: true (security-critical only).
+// ✅ FIX (BANK ACCOUNTS): getBankAccountForBuilding ordering is:
+//      El Pueblo → 013448003711 / RANDY D MANZANARES AND ANGELA C TAPEL
+//      Vitalez | Newport → 013448003703 / RANDY MANZANARES AND ANGELA TAPEL
+//      Generic "Wilconnect" (no building) → 013448002421 / WILCONNECT NETWORK CORPORATION
+//      Everything else → 013448002421 / FYBERBLIZZ NETWORK CORPORATION
+// ✅ FIX (INVOICE PAYMENT BLOCK): sendInvoiceWithPDF() now ALWAYS uses
+//    getBankAccountForBuilding() as the source of truth for the
+//    "NEW ACCOUNT FOR PAYMENT" block. It no longer trusts
+//    invoiceData.bankName / invoiceData.accountName / invoiceData.accountNumber
+//    (those were sometimes populated with the wrong corporate account).
 
 import { IUser } from "../models/User";
 import Admin from "../models/Admin";
@@ -158,6 +168,11 @@ export function getBankAccountForBuilding(
     .join(" ")
     .toLowerCase();
 
+  // ── El Pueblo ──────────────────────────────────────────────
+  // NEW ACCOUNT NUMBER FOR PAYMENT
+  // ACCOUNT NUMBER: 013448003711
+  // RANDY D MANZANARES AND ANGELA C TAPEL
+  // BDO Unibank
   if (hint.includes("el pueblo")) {
     return {
       bankName: "BDO",
@@ -166,6 +181,10 @@ export function getBankAccountForBuilding(
     };
   }
 
+  // ── Vitalez / Newport ──────────────────────────────────────
+  // NEW ACCOUNT FOR PAYMENT
+  // ACCOUNT NUMBER: 013448003703
+  // RANDY MANZANARES AND ANGELA TAPEL
   if (hint.includes("vitalez") || hint.includes("newport")) {
     return {
       bankName: "BDO",
@@ -174,6 +193,7 @@ export function getBankAccountForBuilding(
     };
   }
 
+  // ── Generic Wilconnect (no specific building) ─────────────
   const isWilconnect =
     hint.includes("wilconnect") ||
     WILCONNECT_BUILDINGS.some((b) => hint.includes(b));
@@ -186,6 +206,11 @@ export function getBankAccountForBuilding(
     };
   }
 
+  // ── Default (Fyberblizz) ──────────────────────────────────
+  // NEW ACCOUNT FOR PAYMENT
+  // BANK: BDO
+  // ACCOUNT NUMBER: 013448002421
+  // ACCOUNT NAME: FYBERBLIZZ NETWORK CORPORATION
   return {
     bankName: "BDO",
     accountName: "FYBERBLIZZ NETWORK CORPORATION",
@@ -2040,6 +2065,10 @@ class EmailService {
         ? ADDITIONAL_SENDER_EMAILS.workselpueblo
         : getCollectionEmailByLocation(userLocation);
 
+      // ✅ FIX: Always derive the bank account from getBankAccountForBuilding()
+      // so Vitalez/Newport and El Pueblo get their correct sub-account, and
+      // El Pueblo gets its correct sub-account regardless of what the caller
+      // passed in invoiceData.bankName / accountName / accountNumber.
       const bankAccount = getBankAccountForBuilding(
         buildingName,
         userLocation,
@@ -2209,29 +2238,19 @@ class EmailService {
         </div>
       `;
 
+      // ✅ FIX: Always render payment instructions using the resolved
+      // bankAccount — ignore any invoiceData.bankName / accountName /
+      // accountNumber that the caller may have set. This guarantees
+      // El Pueblo (013448003711), Vitalez/Newport (013448003703), and
+      // generic Wilconnect/Fyberblizz accounts are correct.
       let paymentInstructions = "";
-      if (
-        invoiceData.bankName &&
-        invoiceData.accountName &&
-        invoiceData.accountNumber
-      ) {
-        paymentInstructions = `
-          <div style="background: #e7f3ff; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #1a56db;">
-            <h4 style="margin-top: 0; color: #1a56db;">💳 NEW ACCOUNT FOR PAYMENT</h4>
-            <p><strong>BANK:</strong> ${invoiceData.bankName}</p>
-            <p><strong>ACCOUNT NUMBER:</strong> <span style="font-family: monospace; font-size: 15px; font-weight: bold; color: #1a237e;">${invoiceData.accountNumber}</span></p>
-            <p><strong>ACCOUNT NAME:</strong> ${invoiceData.accountName}</p>
-            <p style="font-size: 12px; color: #666; margin-top: 10px;">
-              Kindly send your proof of payment via Viber ${brand.companyContact} or at ${collectionEmail} after completing the transaction.
-            </p>
-          </div>
-        `;
-      } else if (
-        !invoiceData.paidAt &&
-        invoiceData.status !== "paid" &&
-        invoiceData.status !== "free" &&
-        !invoiceData.isFree
-      ) {
+      const isPaid =
+        invoiceData.paidAt != null ||
+        invoiceData.status === "paid" ||
+        invoiceData.status === "free" ||
+        invoiceData.isFree === true;
+
+      if (!isPaid) {
         paymentInstructions = `
           <div style="background: #e7f3ff; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #1a56db;">
             <h4 style="margin-top: 0; color: #1a56db;">💳 NEW ACCOUNT FOR PAYMENT</h4>
@@ -2361,6 +2380,9 @@ class EmailService {
       console.log(`📧 BCC: ${collectionEmail}`);
       console.log(
         `📧 PDF Attachment: ${pdfFileName} (${pdfBuffer.length} bytes)`,
+      );
+      console.log(
+        `📧 Bank: ${bankAccount.bankName} / ${bankAccount.accountNumber} / ${bankAccount.accountName}`,
       );
       if (isInstallationFee) {
         console.log(
