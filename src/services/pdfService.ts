@@ -13,8 +13,8 @@ export interface InvoiceData {
   customerPhone?: string;
   companyName: string;
   companyAddress: string;
-  companyVat: string;
-  companyContact: string;
+  companyVat?: string; // kept optional for backward-compat but no longer rendered
+  companyContact?: string; // kept optional for backward-compat but no longer rendered
   companyEmail: string;
   billingPeriod: { start: Date; end: Date };
   dueDate: Date;
@@ -40,24 +40,18 @@ export interface InvoiceData {
   isInstallationFee: boolean;
   isProRated: boolean;
   proRatedDays?: number;
-  // Optional: hint fields for brand resolution
   buildingName?: string;
   location?: string;
-  // Status fields (for PAID / FREE stamp/watermark)
-  status?: string; // "draft" | "sent" | "paid" | "overdue" | "cancelled" | "free"
+  status?: string;
   paidAt?: Date | string | null;
-  // 🆕 Free marker
   isFree?: boolean;
 }
 
 // ==================== WILCONNECT BRAND RESOLUTION ====================
 const WILCONNECT_BUILDINGS = ["el pueblo", "vitalez", "newport"];
 
-// ✅ Workselpueblo sender email used as footer support/collection email
-// for Wilconnect buildings
 const WORKSELPUEBLO_EMAIL = "workselpueblo@fyberblizz.com";
 
-// ✅ Building-specific detection helpers
 function isElPuebloBuilding(
   buildingName?: string,
   location?: string,
@@ -88,10 +82,10 @@ interface BankAccountInfo {
   accountNumber: string;
 }
 
-// ✅ Get the correct BDO account for a given building
+// ✅ Correct BDO account per building
 // - Vitalez / Newport → 013448003703 / RANDY MANZANARES AND ANGELA TAPEL
-// - El Pueblo → 013448003711 / RANDY D MANZANARES AND ANGELA C TAPEL
-// - All other Wilconnect / Mister Fyber → default fallback
+// - El Pueblo         → 013448003711 / RANDY D MANZANARES AND ANGELA C TAPEL
+// - Generic Wilconnect / Mister Fyber → default fallback
 function getBankAccountForBuilding(
   buildingName?: string,
   location?: string,
@@ -102,7 +96,6 @@ function getBankAccountForBuilding(
     .join(" ")
     .toLowerCase();
 
-  // El Pueblo takes priority
   if (hint.includes("el pueblo")) {
     return {
       bankName: "BDO",
@@ -111,7 +104,6 @@ function getBankAccountForBuilding(
     };
   }
 
-  // Vitalez / Newport
   if (hint.includes("vitalez") || hint.includes("newport")) {
     return {
       bankName: "BDO",
@@ -120,7 +112,6 @@ function getBankAccountForBuilding(
     };
   }
 
-  // Fallback (any other Wilconnect building or generic)
   const isWilconnect =
     hint.includes("wilconnect") ||
     WILCONNECT_BUILDINGS.some((b) => hint.includes(b));
@@ -144,8 +135,6 @@ interface PdfBrand {
   isWilconnect: boolean;
   companyName: string;
   companyAddress: string;
-  companyVat: string;
-  companyContact: string;
   bankName: string;
   accountName: string;
   accountNumber: string;
@@ -173,7 +162,6 @@ function getBrandForPdf(invoiceData: InvoiceData): PdfBrand {
     WILCONNECT_BUILDINGS.some((b) => hint.includes(b));
 
   if (isWilconnect) {
-    // ✅ Resolve the specific bank account for this Wilconnect building
     const bankAccount = getBankAccountForBuilding(
       (invoiceData as any)?.buildingName,
       (invoiceData as any)?.location,
@@ -185,12 +173,9 @@ function getBrandForPdf(invoiceData: InvoiceData): PdfBrand {
       companyName: "WILCONNECT NETWORK CORPORATION",
       companyAddress:
         "UNIT 6 BLDG 2 G/F EL PUEBLO CONDO, ANONAS ST., STA. MESA, MANILA",
-      companyVat: "697-461-165-00000",
-      companyContact: "0969-341-4876",
       bankName: bankAccount.bankName,
       accountName: bankAccount.accountName,
       accountNumber: bankAccount.accountNumber,
-      // ✅ Wilconnect footer: support + collection = workselpueblo@fyberblizz.com
       supportEmail: WORKSELPUEBLO_EMAIL,
       collectionEmail: WORKSELPUEBLO_EMAIL,
       sentFromName: "Workselpueblo",
@@ -203,12 +188,9 @@ function getBrandForPdf(invoiceData: InvoiceData): PdfBrand {
     companyName: "FYBERBLIZZ NETWORK CORPORATION",
     companyAddress:
       "UNIT 6 BLDG 2 G/F EL PUEBLO CONDO, ANONAS ST., STA. MESA, MANILA",
-    companyVat: "697-461-165-00000",
-    companyContact: "0969-341-4876",
     bankName: "BDO",
     accountName: "FYBERBLIZZ NETWORK CORPORATION",
     accountNumber: "013448002421",
-    // ✅ Mister Fyber footer: support + collection = admin@misterfyber.com
     supportEmail: "admin@misterfyber.com",
     collectionEmail: "admin@misterfyber.com",
     sentFromName: "Mister Fyber",
@@ -219,7 +201,7 @@ function getBrandForPdf(invoiceData: InvoiceData): PdfBrand {
 // ==================== PAID / FREE DETECTION ====================
 function isPaidInvoice(invoiceData: InvoiceData): boolean {
   if (!invoiceData) return false;
-  if (invoiceData.isFree === true) return false; // free wins
+  if (invoiceData.isFree === true) return false;
   if (invoiceData.status && invoiceData.status.toLowerCase() === "free")
     return false;
   if (invoiceData.status && invoiceData.status.toLowerCase() === "paid") {
@@ -231,7 +213,6 @@ function isPaidInvoice(invoiceData: InvoiceData): boolean {
   return false;
 }
 
-// 🆕 Free detection
 function isFreeInvoice(invoiceData: InvoiceData): boolean {
   if (!invoiceData) return false;
   if (invoiceData.isFree === true) return true;
@@ -272,17 +253,13 @@ export async function generateInvoicePDF(
   const free = isFreeInvoice(invoiceData);
   const paid = !free && isPaidInvoice(invoiceData);
 
-  // ✅ Use brand-specific bank account (Wilconnect buildings have their own BDO accounts)
   const bankName = invoiceData.bankName || brand.bankName;
   const accountName = invoiceData.accountName || brand.accountName;
   const accountNumber = invoiceData.accountNumber || brand.accountNumber;
 
   const resolvedCompanyName = brand.companyName;
   const resolvedCompanyAddress = brand.companyAddress;
-  const resolvedCompanyVat = brand.companyVat;
-  const resolvedCompanyContact = brand.companyContact;
 
-  // ✅ Footer-specific values (support + collection + sent from)
   const resolvedSupportEmail = brand.supportEmail;
   const resolvedCollectionEmail = brand.collectionEmail;
   const resolvedSentFromName = brand.sentFromName;
@@ -306,12 +283,12 @@ export async function generateInvoicePDF(
       const pageHeight = doc.page.height;
 
       // ============================================================
-      // WATERMARK (PAID or FREE) — drawn FIRST so it appears behind
+      // WATERMARK (PAID or FREE)
       // ============================================================
       if (paid || free) {
         try {
           const watermarkText = free ? "FREE" : "PAID";
-          const watermarkColor = free ? "#0ea5e9" : "#28a745"; // sky blue for free
+          const watermarkColor = free ? "#0ea5e9" : "#28a745";
           const fontSize = free ? 140 : 130;
 
           doc.save();
@@ -334,6 +311,7 @@ export async function generateInvoicePDF(
       }
 
       // ==================== HEADER ====================
+      // ⚠️ VAT-REG. / CONTACT NO. line REMOVED here.
       doc
         .font("Helvetica-Bold")
         .fontSize(22)
@@ -454,7 +432,6 @@ export async function generateInvoicePDF(
         doc.text(`Pro-rated Days: ${invoiceData.proRatedDays} days`, 350, 286);
       }
 
-      // Paid At (only when paid, not free)
       if (paid && invoiceData.paidAt) {
         doc
           .font("Helvetica-Bold")
@@ -467,7 +444,6 @@ export async function generateInvoicePDF(
           );
       }
 
-      // 🆕 Waived label (only when free)
       if (free) {
         doc
           .font("Helvetica-Bold")
@@ -621,7 +597,6 @@ export async function generateInvoicePDF(
           align: "right",
         });
 
-      // Paid / Free label under TOTAL
       if (paid) {
         doc
           .font("Helvetica-Bold")
@@ -649,8 +624,6 @@ export async function generateInvoicePDF(
         .stroke("#ccc");
 
       // ==================== PAYMENT STATUS SECTION ====================
-      // ✅ REMOVED: The "Payment Method (Bank Transfer)" block is no longer rendered.
-      // Only the PAID / FREE status text remains.
       const paymentY = totalY + (paid || free ? 80 : 60);
 
       if (free) {
@@ -710,8 +683,6 @@ export async function generateInvoicePDF(
             { width: 500 },
           );
       }
-      // NOTE: When the invoice is unpaid (not paid, not free), no bank transfer
-      // instructions are rendered anymore — that section has been removed.
 
       // ==================== NOTES ====================
       let notesY = paymentY + (paid || free ? 90 : 40);
@@ -750,9 +721,7 @@ export async function generateInvoicePDF(
       }
 
       // ==================== FOOTER ====================
-      // ✅ Footer uses brand-resolved values:
-      //    - Wilconnect (El Pueblo/Vitalez/Newport) → workselpueblo@fyberblizz.com
-      //    - Others → admin@misterfyber.com
+      // ⚠️ VAT-REG. / CONTACT NO. line REMOVED from footer as well.
       doc
         .font("Helvetica")
         .fontSize(9)

@@ -17,6 +17,7 @@
 //    "NEW ACCOUNT FOR PAYMENT" block. It no longer trusts
 //    invoiceData.bankName / invoiceData.accountName / invoiceData.accountNumber
 //    (those were sometimes populated with the wrong corporate account).
+// ✅ REMOVED: "VAT-REG.: ... | CONTACT NO.: ..." line from invoice email template.
 
 import { IUser } from "../models/User";
 import Admin from "../models/Admin";
@@ -169,10 +170,6 @@ export function getBankAccountForBuilding(
     .toLowerCase();
 
   // ── El Pueblo ──────────────────────────────────────────────
-  // NEW ACCOUNT NUMBER FOR PAYMENT
-  // ACCOUNT NUMBER: 013448003711
-  // RANDY D MANZANARES AND ANGELA C TAPEL
-  // BDO Unibank
   if (hint.includes("el pueblo")) {
     return {
       bankName: "BDO",
@@ -182,9 +179,6 @@ export function getBankAccountForBuilding(
   }
 
   // ── Vitalez / Newport ──────────────────────────────────────
-  // NEW ACCOUNT FOR PAYMENT
-  // ACCOUNT NUMBER: 013448003703
-  // RANDY MANZANARES AND ANGELA TAPEL
   if (hint.includes("vitalez") || hint.includes("newport")) {
     return {
       bankName: "BDO",
@@ -207,10 +201,6 @@ export function getBankAccountForBuilding(
   }
 
   // ── Default (Fyberblizz) ──────────────────────────────────
-  // NEW ACCOUNT FOR PAYMENT
-  // BANK: BDO
-  // ACCOUNT NUMBER: 013448002421
-  // ACCOUNT NAME: FYBERBLIZZ NETWORK CORPORATION
   return {
     bankName: "BDO",
     accountName: "FYBERBLIZZ NETWORK CORPORATION",
@@ -665,27 +655,11 @@ class EmailService {
     }
   }
 
-  // ============================================================
-  // ⭐ FIXED: areCustomerEmailsEnabled
-  // ------------------------------------------------------------
-  // Behavior:
-  //   1. If adminId is provided → check THAT admin's toggle.
-  //   2. If adminId is NOT provided (e.g. public submission) →
-  //      fall back to the PRIMARY ADMIN (oldest super_admin / admin).
-  //      Use THAT admin's toggle.
-  //   3. If no admin exists at all → BLOCK (safe default).
-  //   4. Any error → BLOCK.
-  //
-  // ⚠️ NO forceSend bypass. This is a real toggle check.
-  //    Toggle ON  → email sends.
-  //    Toggle OFF → email blocks.
-  // ============================================================
   private async areCustomerEmailsEnabled(adminId?: string): Promise<boolean> {
     let admin = null;
 
     try {
       if (adminId) {
-        // Rule 1: check the specific admin
         admin = await Admin.findById(adminId);
         if (!admin) {
           console.log("📧 ========================================");
@@ -695,8 +669,6 @@ class EmailService {
           return false;
         }
       } else {
-        // Rule 2: fall back to the primary admin
-        // Prefer oldest super_admin; then oldest admin; then any admin.
         admin = await Admin.findOne({ role: "super_admin" })
           .sort({ createdAt: 1 })
           .select("email customerEmailAlertsEnabled role");
@@ -1646,9 +1618,6 @@ class EmailService {
       );
       console.log(`   adminId (options): ${options?.adminId || "N/A"}`);
 
-      // ⚠️ forceSend is ONLY used by password reset / account credentials (security-critical).
-      //    For ALL other email types, areCustomerEmailsEnabled() decides based on
-      //    the toggle. No forceSend bypass for customer or admin notification emails.
       if (!options?.forceSend) {
         const customerEmailsEnabled = await this.areCustomerEmailsEnabled(
           options?.adminId,
@@ -2065,10 +2034,6 @@ class EmailService {
         ? ADDITIONAL_SENDER_EMAILS.workselpueblo
         : getCollectionEmailByLocation(userLocation);
 
-      // ✅ FIX: Always derive the bank account from getBankAccountForBuilding()
-      // so Vitalez/Newport and El Pueblo get their correct sub-account, and
-      // El Pueblo gets its correct sub-account regardless of what the caller
-      // passed in invoiceData.bankName / accountName / accountNumber.
       const bankAccount = getBankAccountForBuilding(
         buildingName,
         userLocation,
@@ -2238,11 +2203,6 @@ class EmailService {
         </div>
       `;
 
-      // ✅ FIX: Always render payment instructions using the resolved
-      // bankAccount — ignore any invoiceData.bankName / accountName /
-      // accountNumber that the caller may have set. This guarantees
-      // El Pueblo (013448003711), Vitalez/Newport (013448003703), and
-      // generic Wilconnect/Fyberblizz accounts are correct.
       let paymentInstructions = "";
       const isPaid =
         invoiceData.paidAt != null ||
@@ -2292,7 +2252,6 @@ class EmailService {
                 <div class="header">
                     <h1>${brand.companyName}</h1>
                     <p>${brand.companyAddress}</p>
-                    <p>VAT-REG.: ${brand.companyVat} | CONTACT NO.: ${brand.companyContact}</p>
                     <h2 style="color: #1a237e; margin-top: 15px;">${brand.brandName.toUpperCase()}</h2>
                     <h3 style="color: #1a237e; margin: 5px 0;">INVOICE</h3>
                     <p><span class="invoice-type">${invoiceData.invoiceType || "Monthly"}</span></p>
@@ -3042,7 +3001,6 @@ class EmailService {
                     <p>${brand.brandName.toUpperCase()}</p>
                     <p>${brand.companyName}</p>
                     <p>${brand.companyAddress}</p>
-                    <p>VAT-REG.: ${brand.companyVat} | CONTACT NO.: ${brand.companyContact}</p>
                     <div style="margin: 15px 0;">
                         <span class="paid-badge">${badgeText}</span>
                     </div>
@@ -3678,8 +3636,6 @@ class EmailService {
   }
 
   async sendWelcomeEmail(user: IUser, adminId?: string): Promise<void> {
-    // Toggle check will happen inside sendEmail → areCustomerEmailsEnabled.
-    // If no adminId is passed, areCustomerEmailsEnabled uses primary admin.
     console.log(`📧 Sending welcome email to: ${user.email} (checking toggle)`);
 
     const html = this.generateWelcomeHTML(user);
@@ -3700,7 +3656,6 @@ class EmailService {
   }
 
   async sendPasswordReset(user: IUser, resetToken: string): Promise<void> {
-    // Security-critical: always send.
     const html = this.generatePasswordResetHTML(user, resetToken);
     await this.sendEmail(
       user.email,
@@ -3718,7 +3673,6 @@ class EmailService {
     password: string,
     applicationId: string,
   ): Promise<void> {
-    // Security-critical: always send.
     const html = this.generateAccountCredentialsHTML(
       user,
       username,
@@ -3800,7 +3754,6 @@ class EmailService {
       brand,
     );
 
-    // Customer confirmation email — sendEmail will check the toggle internally.
     await this.sendEmail(
       application.email,
       `Application Received - ${application.applicationId}`,
