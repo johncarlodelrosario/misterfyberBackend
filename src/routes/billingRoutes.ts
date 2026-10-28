@@ -1,4 +1,4 @@
-// backend/src/routes/billingRoutes.ts - COMPLETE WITH DISCONNECT/RECONNECT
+// backend/src/routes/billingRoutes.ts - COMPLETE FIXED WITH USER ROUTES
 
 import express from "express";
 import { optionalAuth, adminMiddleware } from "../middleware/auth";
@@ -47,6 +47,9 @@ import {
   manuallyGenerateEarlyBill,
   checkForNewCustomers,
   updateBillPrice,
+  // ✅ BAGONG DAGDAG PARA SA USER DASHBOARD
+  getUserCurrentBilling,
+  getUserBillingHistory,
 } from "../controllers/billingController";
 
 const router = express.Router();
@@ -55,6 +58,14 @@ console.log("🔄 Registering billing routes...");
 
 // ==================== USE OPTIONAL AUTH ====================
 router.use(optionalAuth);
+
+// ============================================================
+// ✅ USER ROUTES (DASHBOARD) - BAGONG DAGDAG
+// ============================================================
+// Ito ang nag-fix ng 404 error sa frontend console
+router.get("/user/current", getUserCurrentBilling);
+router.get("/user/history", getUserBillingHistory);
+console.log("✅ /user/current and /user/history routes registered");
 
 // ==================== DASHBOARD DATA ENDPOINTS ====================
 router.get("/dashboard-data", adminMiddleware, getDashboardData);

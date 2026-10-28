@@ -168,14 +168,16 @@ export const checkApplication = async (
 };
 
 // ==================== REGISTER WITH APPLICATION ====================
+// ✅ FIXED: Removed Mongoose transactions (they fail on standalone MongoDB
+//    with "Transaction numbers are only allowed on a replica set member or
+//    mongos" — the root cause of the 500 error on this route).
+// ✅ FIXED: Application.updateOne now uses application._id (ObjectId) instead
+//    of application.applicationId (String), which was silently failing before.
 export const registerWithApplication = async (
   req: Request,
   res: Response,
   next: NextFunction,
 ) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -270,30 +272,27 @@ export const registerWithApplication = async (
       },
     };
 
-    const user = await User.create([userData], { session });
-    const userDoc = user[0];
+    // ✅ NO TRANSACTIONS — works on standalone MongoDB AND Atlas.
+    const userDoc = await User.create(userData);
 
+    // ✅ Use application._id (ObjectId) — the previous code used
+    //    application.applicationId (String) which never matched.
     await Application.updateOne(
-      { _id: application.applicationId },
+      { _id: application._id },
       { $set: { registeredUserId: userDoc._id } },
-      { session },
     );
 
     if (application.billingStarted && application.billingCycleId) {
       await BillingCycle.updateOne(
         { _id: application.billingCycleId },
         { $set: { userId: userDoc._id } },
-        { session },
       );
 
       await Billing.updateMany(
         { applicationId: application.applicationId },
         { $set: { userId: userDoc._id } },
-        { session },
       );
     }
-
-    await session.commitTransaction();
 
     try {
       await emailService.sendWelcomeEmail(userDoc);
@@ -306,11 +305,10 @@ export const registerWithApplication = async (
 
     sendTokenResponse(userDoc, 201, res, false);
   } catch (error: any) {
-    await session.abortTransaction();
     console.error("Registration with application error:", error);
 
     if (error.code === 11000) {
-      const field = Object.keys(error.keyPattern)[0];
+      const field = Object.keys(error.keyPattern || {})[0] || "field";
       return res.status(400).json({
         success: false,
         message: `${field} already exists. Please use a different ${field}.`,
@@ -321,13 +319,13 @@ export const registerWithApplication = async (
       return res.status(400).json({
         success: false,
         message: error.message,
-        errors: Object.values(error.errors).map((err: any) => err.message),
+        errors: Object.values(error.errors || {}).map(
+          (err: any) => err.message,
+        ),
       });
     }
 
     next(error);
-  } finally {
-    session.endSession();
   }
 };
 

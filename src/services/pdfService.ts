@@ -13,8 +13,8 @@ export interface InvoiceData {
   customerPhone?: string;
   companyName: string;
   companyAddress: string;
-  companyVat?: string; // kept optional for backward-compat but no longer rendered
-  companyContact?: string; // kept optional for backward-compat but no longer rendered
+  companyVat?: string;
+  companyContact?: string;
   companyEmail: string;
   billingPeriod: { start: Date; end: Date };
   dueDate: Date;
@@ -50,6 +50,8 @@ export interface InvoiceData {
 // ==================== WILCONNECT BRAND RESOLUTION ====================
 const WILCONNECT_BUILDINGS = ["el pueblo", "vitalez", "newport"];
 
+// ✅ Footer support + collection email for Wilconnect buildings
+//    (El Pueblo / Vitalez / Newport) — ALWAYS use this, never admin@misterfyber.com
 const WORKSELPUEBLO_EMAIL = "workselpueblo@fyberblizz.com";
 
 function isElPuebloBuilding(
@@ -74,6 +76,37 @@ function isVitalezOrNewportBuilding(
     .join(" ")
     .toLowerCase();
   return hint.includes("vitalez") || hint.includes("newport");
+}
+
+/**
+ * ✅ Returns true if the building is one of the Wilconnect-managed buildings:
+ *    El Pueblo / Vitalez / Newport
+ */
+function isWilconnectBuilding(
+  buildingName?: string,
+  location?: string,
+  customerAddress?: string,
+): boolean {
+  const hint = [buildingName, location, customerAddress]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  if (!hint) return false;
+
+  // Direct match on known Wilconnect building keywords
+  if (
+    hint.includes("el pueblo") ||
+    hint.includes("vitalez") ||
+    hint.includes("newport")
+  ) {
+    return true;
+  }
+
+  // Also treat explicit "wilconnect" keyword as Wilconnect
+  if (hint.includes("wilconnect")) return true;
+
+  return false;
 }
 
 interface BankAccountInfo {
@@ -138,7 +171,6 @@ interface PdfBrand {
   bankName: string;
   accountName: string;
   accountNumber: string;
-  // ✅ Footer-specific values
   supportEmail: string;
   collectionEmail: string;
   sentFromName: string;
@@ -146,6 +178,7 @@ interface PdfBrand {
 }
 
 function getBrandForPdf(invoiceData: InvoiceData): PdfBrand {
+  // ✅ Check all relevant fields including explicit wilconnect markers
   const hint = [
     (invoiceData as any)?.buildingName,
     (invoiceData as any)?.location,
@@ -168,6 +201,8 @@ function getBrandForPdf(invoiceData: InvoiceData): PdfBrand {
       invoiceData?.customerAddress,
     );
 
+    // ✅ CRITICAL: For Wilconnect buildings (El Pueblo / Vitalez / Newport),
+    //    ALWAYS use workselpueblo@fyberblizz.com — NEVER admin@misterfyber.com.
     return {
       isWilconnect: true,
       companyName: "WILCONNECT NETWORK CORPORATION",
@@ -176,6 +211,7 @@ function getBrandForPdf(invoiceData: InvoiceData): PdfBrand {
       bankName: bankAccount.bankName,
       accountName: bankAccount.accountName,
       accountNumber: bankAccount.accountNumber,
+      // ✅ Footer + collection + sent-from all use workselpueblo email
       supportEmail: WORKSELPUEBLO_EMAIL,
       collectionEmail: WORKSELPUEBLO_EMAIL,
       sentFromName: "Workselpueblo",
@@ -183,6 +219,7 @@ function getBrandForPdf(invoiceData: InvoiceData): PdfBrand {
     };
   }
 
+  // Non-Wilconnect (Mister Fyber) fallback
   return {
     isWilconnect: false,
     companyName: "FYBERBLIZZ NETWORK CORPORATION",
@@ -260,6 +297,8 @@ export async function generateInvoicePDF(
   const resolvedCompanyName = brand.companyName;
   const resolvedCompanyAddress = brand.companyAddress;
 
+  // ✅ These are already resolved to workselpueblo@fyberblizz.com for
+  //    El Pueblo / Vitalez / Newport via getBrandForPdf()
   const resolvedSupportEmail = brand.supportEmail;
   const resolvedCollectionEmail = brand.collectionEmail;
   const resolvedSentFromName = brand.sentFromName;
@@ -311,7 +350,6 @@ export async function generateInvoicePDF(
       }
 
       // ==================== HEADER ====================
-      // ⚠️ VAT-REG. / CONTACT NO. line REMOVED here.
       doc
         .font("Helvetica-Bold")
         .fontSize(22)
@@ -721,7 +759,9 @@ export async function generateInvoicePDF(
       }
 
       // ==================== FOOTER ====================
-      // ⚠️ VAT-REG. / CONTACT NO. line REMOVED from footer as well.
+      // ✅ For El Pueblo / Vitalez / Newport → workselpueblo@fyberblizz.com ONLY
+      //    (support + collection + sent-from all use that address)
+      //    NEVER admin@misterfyber.com for these buildings.
       doc
         .font("Helvetica")
         .fontSize(9)

@@ -399,6 +399,9 @@ export const getUsage = async (
   }
 };
 
+// ============================================================
+// FIXED: getBillingSummary now includes billingCycle & isAfterCutoff
+// ============================================================
 export const getBillingSummary = async (
   req: AuthRequest,
   res: Response,
@@ -409,36 +412,47 @@ export const getBillingSummary = async (
 
     console.log("Fetching billing summary for user:", userId);
 
+    // 1. Fetch Billing Cycle (with Plan info)
+    const billingCycle = await BillingCycle.findOne({
+      userId,
+      status: {
+        $in: ["active", "pending_activation", "paused", "disconnected"],
+      },
+    }).populate("planId", "name price speed description features");
+
+    // 2. Fetch Current Bill
     const currentBill = await Billing.findOne({
       userId,
-      status: { $in: ["sent", "overdue"] },
+      status: { $in: ["sent", "overdue", "pending_confirmation"] },
     }).sort({ dueDate: 1 });
 
+    // 3. Fetch Last Payment
     const lastPayment = await Payment.findOne({
       userId,
       status: "completed",
     }).sort({ paidAt: -1 });
 
+    // 4. Fetch Payment History (limit 5 for dashboard)
     const paymentHistory = await Payment.find({ userId, status: "completed" })
       .sort({ paidAt: -1 })
       .limit(5);
 
+    // 5. Fetch Billing History (limit 50)
     const billingHistory = await Billing.find({ userId })
       .sort({ createdAt: -1 })
       .limit(50);
 
     console.log(`Found ${billingHistory.length} bills for user ${userId}`);
 
-    billingHistory.forEach((bill, index) => {
-      console.log(
-        `Bill ${index + 1}: ${bill.invoiceNumber} - ${bill.status} - ₱${bill.total}`,
-      );
-    });
-
     res.status(200).json({
       success: true,
       data: {
+        billingCycle: billingCycle || null, // <-- IDINAGDAG ITO
         currentBill: currentBill || null,
+        needsFirstPayment: billingCycle
+          ? billingCycle.proRatedPaid === false
+          : false,
+        isAfterCutoff: billingCycle?.isAfterCutoff || false,
         lastPayment: lastPayment || null,
         paymentHistory: paymentHistory || [],
         billingHistory: billingHistory || [],
@@ -463,7 +477,13 @@ export const getCurrentBill = async (
       status: { $in: ["sent", "overdue"] },
     })
       .sort({ dueDate: 1 })
-      .populate("billingCycleId");
+      .populate({
+        path: "billingCycleId",
+        populate: {
+          path: "planId",
+          select: "name price speed description features",
+        },
+      }); // <-- FIXED: populate planId inside billingCycleId
 
     if (!currentBill) {
       return res.status(200).json({
