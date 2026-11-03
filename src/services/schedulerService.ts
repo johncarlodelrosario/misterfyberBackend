@@ -35,7 +35,7 @@ function getSenderInfoByType(
     case "workselpueblo":
       return {
         email:
-          process.env.SENDER_EMAIL_WORKSELPUEBLO || "workselpueblo@gmail.com",
+          process.env.SENDER_EMAIL_WORKSELPUEBLO || "workselpueblo@fyberblizz.com",
         name: process.env.SENDER_NAME_WORKSELPUEBLO || "Workselpueblo",
         label: "Workselpueblo",
       };

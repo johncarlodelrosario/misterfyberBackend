@@ -49,65 +49,7 @@ export interface InvoiceData {
 
 // ==================== WILCONNECT BRAND RESOLUTION ====================
 const WILCONNECT_BUILDINGS = ["el pueblo", "vitalez", "newport"];
-
-// ✅ Footer support + collection email for Wilconnect buildings
-//    (El Pueblo / Vitalez / Newport) — ALWAYS use this, never admin@misterfyber.com
 const WORKSELPUEBLO_EMAIL = "workselpueblo@fyberblizz.com";
-
-function isElPuebloBuilding(
-  buildingName?: string,
-  location?: string,
-  customerAddress?: string,
-): boolean {
-  const hint = [buildingName, location, customerAddress]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-  return hint.includes("el pueblo");
-}
-
-function isVitalezOrNewportBuilding(
-  buildingName?: string,
-  location?: string,
-  customerAddress?: string,
-): boolean {
-  const hint = [buildingName, location, customerAddress]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-  return hint.includes("vitalez") || hint.includes("newport");
-}
-
-/**
- * ✅ Returns true if the building is one of the Wilconnect-managed buildings:
- *    El Pueblo / Vitalez / Newport
- */
-function isWilconnectBuilding(
-  buildingName?: string,
-  location?: string,
-  customerAddress?: string,
-): boolean {
-  const hint = [buildingName, location, customerAddress]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-
-  if (!hint) return false;
-
-  // Direct match on known Wilconnect building keywords
-  if (
-    hint.includes("el pueblo") ||
-    hint.includes("vitalez") ||
-    hint.includes("newport")
-  ) {
-    return true;
-  }
-
-  // Also treat explicit "wilconnect" keyword as Wilconnect
-  if (hint.includes("wilconnect")) return true;
-
-  return false;
-}
 
 interface BankAccountInfo {
   bankName: string;
@@ -116,9 +58,6 @@ interface BankAccountInfo {
 }
 
 // ✅ Correct BDO account per building
-// - Vitalez / Newport → 013448003703 / RANDY MANZANARES AND ANGELA TAPEL
-// - El Pueblo         → 013448003711 / RANDY D MANZANARES AND ANGELA C TAPEL
-// - Generic Wilconnect / Mister Fyber → default fallback
 function getBankAccountForBuilding(
   buildingName?: string,
   location?: string,
@@ -175,10 +114,10 @@ interface PdfBrand {
   collectionEmail: string;
   sentFromName: string;
   sentFromEmail: string;
+  headerEmail: string; // ✅ Idinagdag natin ito para sapilitang palitan ang email sa taas
 }
 
 function getBrandForPdf(invoiceData: InvoiceData): PdfBrand {
-  // ✅ Check all relevant fields including explicit wilconnect markers
   const hint = [
     (invoiceData as any)?.buildingName,
     (invoiceData as any)?.location,
@@ -201,8 +140,6 @@ function getBrandForPdf(invoiceData: InvoiceData): PdfBrand {
       invoiceData?.customerAddress,
     );
 
-    // ✅ CRITICAL: For Wilconnect buildings (El Pueblo / Vitalez / Newport),
-    //    ALWAYS use workselpueblo@fyberblizz.com — NEVER admin@misterfyber.com.
     return {
       isWilconnect: true,
       companyName: "WILCONNECT NETWORK CORPORATION",
@@ -211,11 +148,11 @@ function getBrandForPdf(invoiceData: InvoiceData): PdfBrand {
       bankName: bankAccount.bankName,
       accountName: bankAccount.accountName,
       accountNumber: bankAccount.accountNumber,
-      // ✅ Footer + collection + sent-from all use workselpueblo email
       supportEmail: WORKSELPUEBLO_EMAIL,
       collectionEmail: WORKSELPUEBLO_EMAIL,
       sentFromName: "Workselpueblo",
       sentFromEmail: WORKSELPUEBLO_EMAIL,
+      headerEmail: WORKSELPUEBLO_EMAIL, // ✅ SAPILITANG GAGAMITIN ITO SA TAAS
     };
   }
 
@@ -232,6 +169,7 @@ function getBrandForPdf(invoiceData: InvoiceData): PdfBrand {
     collectionEmail: "admin@misterfyber.com",
     sentFromName: "Mister Fyber",
     sentFromEmail: "admin@misterfyber.com",
+    headerEmail: invoiceData.companyEmail || "admin@misterfyber.com",
   };
 }
 
@@ -290,15 +228,10 @@ export async function generateInvoicePDF(
   const free = isFreeInvoice(invoiceData);
   const paid = !free && isPaidInvoice(invoiceData);
 
-  const bankName = invoiceData.bankName || brand.bankName;
-  const accountName = invoiceData.accountName || brand.accountName;
-  const accountNumber = invoiceData.accountNumber || brand.accountNumber;
-
   const resolvedCompanyName = brand.companyName;
   const resolvedCompanyAddress = brand.companyAddress;
+  const resolvedHeaderEmail = brand.headerEmail; // ✅ Gagamitin natin ito sa taas
 
-  // ✅ These are already resolved to workselpueblo@fyberblizz.com for
-  //    El Pueblo / Vitalez / Newport via getBrandForPdf()
   const resolvedSupportEmail = brand.supportEmail;
   const resolvedCollectionEmail = brand.collectionEmail;
   const resolvedSentFromName = brand.sentFromName;
@@ -311,6 +244,7 @@ export async function generateInvoicePDF(
         size: "A4",
         margin: 50,
         bufferPages: true,
+        autoFirstPage: true,
       });
 
       const chunks: Buffer[] = [];
@@ -320,11 +254,10 @@ export async function generateInvoicePDF(
 
       const pageWidth = doc.page.width;
       const pageHeight = doc.page.height;
+      const bottomMargin = 100;
 
-      // ============================================================
-      // WATERMARK (PAID or FREE)
-      // ============================================================
-      if (paid || free) {
+      const drawWatermark = () => {
+        if (!paid && !free) return;
         try {
           const watermarkText = free ? "FREE" : "PAID";
           const watermarkColor = free ? "#0ea5e9" : "#28a745";
@@ -347,7 +280,9 @@ export async function generateInvoicePDF(
         } catch (wmErr) {
           console.error("Watermark draw error:", wmErr);
         }
-      }
+      };
+
+      drawWatermark();
 
       // ==================== HEADER ====================
       doc
@@ -362,13 +297,14 @@ export async function generateInvoicePDF(
         .fillColor("#333")
         .text(resolvedCompanyAddress, 50, 75, { align: "center" });
 
+      // ✅ DITO NATIN IPINILIT NA GAMITIN ANG RESOLVED HEADER EMAIL
       doc
         .font("Helvetica")
         .fontSize(10)
         .fillColor("#333")
-        .text(invoiceData.companyEmail, 50, 109, { align: "center" });
+        .text(resolvedHeaderEmail, 50, 109, { align: "center" });
 
-      // ==================== PAID / FREE BANNER (top-right) ====================
+      // ==================== PAID / FREE BANNER ====================
       if (paid || free) {
         try {
           const badgeX = 440;
@@ -495,74 +431,47 @@ export async function generateInvoicePDF(
       }
 
       // ==================== ITEMS TABLE ====================
-      const tableY = Math.max(detailY + 20, 340);
-
       const col1 = 50;
       const col2 = 250;
       const col3 = 380;
       const col4 = 460;
-      const rowHeight = 25;
+      const rowHeight = 22;
 
-      doc
-        .font("Helvetica-Bold")
-        .fontSize(10)
-        .fillColor("#fff")
-        .rect(col1, tableY, 500, rowHeight)
-        .fill("#1a237e")
-        .fillColor("#fff")
-        .text("Description", col1 + 10, tableY + 7)
-        .text("Qty", col2 + 10, tableY + 7)
-        .text("Rate", col3 + 10, tableY + 7)
-        .text("Amount", col4 + 10, tableY + 7);
+      let currentY = Math.max(detailY + 20, 340);
 
-      let currentY = tableY + rowHeight;
-      const maxItemsPerPage = 15;
-      let itemCount = 0;
+      const drawTableHeader = (y: number) => {
+        doc
+          .font("Helvetica-Bold")
+          .fontSize(10)
+          .rect(col1, y, 500, rowHeight)
+          .fill("#1a237e")
+          .fillColor("#fff")
+          .text("Description", col1 + 10, y + 6)
+          .text("Qty", col2 + 10, y + 6)
+          .text("Rate", col3 + 10, y + 6)
+          .text("Amount", col4 + 10, y + 6);
+      };
 
-      for (const item of invoiceData.items) {
-        if (itemCount >= maxItemsPerPage) {
-          doc.addPage();
-          currentY = 80;
-
-          if (paid || free) {
-            try {
-              const watermarkText = free ? "FREE" : "PAID";
-              const watermarkColor = free ? "#0ea5e9" : "#28a745";
-              const fontSize = free ? 140 : 130;
-              doc.save();
-              doc.translate(pageWidth / 2, pageHeight / 2);
-              doc.rotate(-30);
-              doc
-                .font("Helvetica-Bold")
-                .fontSize(fontSize)
-                .fillColor(watermarkColor)
-                .opacity(0.13)
-                .text(watermarkText, -320, -80, {
-                  width: 640,
-                  align: "center",
-                });
-              doc.restore();
-              doc.opacity(1);
-            } catch (wmErr) {
-              console.error("Watermark draw error (new page):", wmErr);
-            }
-          }
-
-          doc
-            .font("Helvetica-Bold")
-            .fontSize(10)
-            .fillColor("#fff")
-            .rect(col1, currentY, 500, rowHeight)
-            .fill("#1a237e")
-            .fillColor("#fff")
-            .text("Description", col1 + 10, currentY + 7)
-            .text("Qty", col2 + 10, currentY + 7)
-            .text("Rate", col3 + 10, currentY + 7)
-            .text("Amount", col4 + 10, currentY + 7);
-
-          currentY += rowHeight;
-          itemCount = 0;
+      const ensureSpace = (needed: number, redrawHeader = true): number => {
+        if (currentY + needed <= pageHeight - bottomMargin) {
+          return currentY;
         }
+        doc.addPage();
+        drawWatermark();
+        currentY = 60;
+        if (redrawHeader) {
+          drawTableHeader(currentY);
+          currentY += rowHeight;
+        }
+        return currentY;
+      };
+
+      drawTableHeader(currentY);
+      currentY += rowHeight;
+
+      let itemCount = 0;
+      for (const item of invoiceData.items) {
+        currentY = ensureSpace(rowHeight);
 
         const bgColor = itemCount % 2 === 0 ? "#f8f9fa" : "#ffffff";
         doc.fillColor(bgColor).rect(col1, currentY, 500, rowHeight).fill();
@@ -571,10 +480,10 @@ export async function generateInvoicePDF(
           .font("Helvetica")
           .fontSize(9)
           .fillColor("#333")
-          .text(item.description, col1 + 10, currentY + 7, { width: 140 })
-          .text(item.quantity.toString(), col2 + 10, currentY + 7)
-          .text(formatCurrency(item.rate), col3 + 10, currentY + 7)
-          .text(formatCurrency(item.amount), col4 + 10, currentY + 7, {
+          .text(item.description, col1 + 10, currentY + 5, { width: 140 })
+          .text(item.quantity.toString(), col2 + 10, currentY + 5)
+          .text(formatCurrency(item.rate), col3 + 10, currentY + 5)
+          .text(formatCurrency(item.amount), col4 + 10, currentY + 5, {
             align: "right",
           });
 
@@ -583,7 +492,9 @@ export async function generateInvoicePDF(
       }
 
       // ==================== SUMMARY ====================
-      const summaryY = currentY + 20;
+      currentY = ensureSpace(140, false);
+      currentY += 15;
+      let summaryY = currentY;
 
       doc
         .font("Helvetica")
@@ -594,38 +505,34 @@ export async function generateInvoicePDF(
           align: "right",
         });
 
+      summaryY += 18;
+
       if (invoiceData.discountAmount > 0) {
         doc
           .text(
             `Discount (${((invoiceData.discountAmount / invoiceData.subtotal) * 100).toFixed(0)}%)`,
             380,
-            summaryY + 20,
+            summaryY,
           )
           .text(
             `-${formatCurrency(invoiceData.discountAmount)}`,
             480,
-            summaryY + 20,
+            summaryY,
             { align: "right" },
           );
+        summaryY += 18;
       }
 
       if (invoiceData.taxAmount > 0) {
-        const taxY =
-          invoiceData.discountAmount > 0 ? summaryY + 40 : summaryY + 20;
         doc
-          .text(`Tax (${invoiceData.taxRate}%)`, 380, taxY)
-          .text(formatCurrency(invoiceData.taxAmount), 480, taxY, {
+          .text(`Tax (${invoiceData.taxRate}%)`, 380, summaryY)
+          .text(formatCurrency(invoiceData.taxAmount), 480, summaryY, {
             align: "right",
           });
+        summaryY += 18;
       }
 
-      const totalY =
-        summaryY +
-        (invoiceData.discountAmount > 0
-          ? 60
-          : invoiceData.taxAmount > 0
-            ? 40
-            : 20);
+      const totalY = summaryY + 6;
       doc
         .font("Helvetica-Bold")
         .fontSize(14)
@@ -635,34 +542,42 @@ export async function generateInvoicePDF(
           align: "right",
         });
 
+      let afterTotalY = totalY + 22;
+
       if (paid) {
         doc
           .font("Helvetica-Bold")
           .fontSize(11)
           .fillColor("#28a745")
-          .text("PAID", 380, totalY + 22)
-          .text(formatCurrency(invoiceData.total), 480, totalY + 22, {
+          .text("PAID", 380, afterTotalY)
+          .text(formatCurrency(invoiceData.total), 480, afterTotalY, {
             align: "right",
           });
+        afterTotalY += 18;
       } else if (free) {
         doc
           .font("Helvetica-Bold")
           .fontSize(11)
           .fillColor("#0ea5e9")
-          .text("FREE", 380, totalY + 22)
-          .text("Php 0.00", 480, totalY + 22, {
-            align: "right",
-          });
+          .text("FREE", 380, afterTotalY)
+          .text("Php 0.00", 480, afterTotalY, { align: "right" });
+        afterTotalY += 18;
       }
 
       // ==================== DIVIDER ====================
       doc
-        .moveTo(50, totalY + (paid || free ? 60 : 40))
-        .lineTo(550, totalY + (paid || free ? 60 : 40))
+        .moveTo(50, afterTotalY + 6)
+        .lineTo(550, afterTotalY + 6)
         .stroke("#ccc");
 
       // ==================== PAYMENT STATUS SECTION ====================
-      const paymentY = totalY + (paid || free ? 80 : 60);
+      let paymentY = afterTotalY + 22;
+
+      if (paymentY + 90 > pageHeight - bottomMargin) {
+        doc.addPage();
+        drawWatermark();
+        paymentY = 60;
+      }
 
       if (free) {
         doc
@@ -678,7 +593,7 @@ export async function generateInvoicePDF(
           .text(
             `This invoice has been marked as FREE (waived)${invoiceData.paidAt ? ` on ${formatDateForPDF(invoiceData.paidAt)}` : ""}.`,
             50,
-            paymentY + 22,
+            paymentY + 20,
             { width: 500 },
           );
 
@@ -689,9 +604,11 @@ export async function generateInvoicePDF(
           .text(
             "No payment is required. This document serves as your official receipt for the waived charge.",
             50,
-            paymentY + 42,
+            paymentY + 38,
             { width: 500 },
           );
+
+        paymentY += 60;
       } else if (paid) {
         doc
           .font("Helvetica-Bold")
@@ -706,7 +623,7 @@ export async function generateInvoicePDF(
           .text(
             `This invoice has been fully settled${invoiceData.paidAt ? ` on ${formatDateForPDF(invoiceData.paidAt)}` : ""}.`,
             50,
-            paymentY + 22,
+            paymentY + 20,
             { width: 500 },
           );
 
@@ -717,15 +634,23 @@ export async function generateInvoicePDF(
           .text(
             "Thank you for your payment. This document serves as your official receipt.",
             50,
-            paymentY + 42,
+            paymentY + 38,
             { width: 500 },
           );
+
+        paymentY += 60;
       }
 
       // ==================== NOTES ====================
-      let notesY = paymentY + (paid || free ? 90 : 40);
+      let notesY = paymentY + 10;
 
       if (invoiceData.notes) {
+        if (notesY + 50 > pageHeight - bottomMargin) {
+          doc.addPage();
+          drawWatermark();
+          notesY = 60;
+        }
+
         doc
           .font("Helvetica-Bold")
           .fontSize(11)
@@ -736,76 +661,86 @@ export async function generateInvoicePDF(
           .font("Helvetica")
           .fontSize(10)
           .fillColor("#555")
-          .text(invoiceData.notes, 50, notesY + 20, { width: 500 });
+          .text(invoiceData.notes, 50, notesY + 18, { width: 500 });
 
-        notesY += 60;
+        notesY += 50;
       }
 
       // ==================== TERMS AND CONDITIONS ====================
       if (invoiceData.termsAndConditions) {
+        if (notesY + 60 > pageHeight - bottomMargin) {
+          doc.addPage();
+          drawWatermark();
+          notesY = 60;
+        }
+
         doc
           .font("Helvetica-Bold")
           .fontSize(11)
           .fillColor("#333")
-          .text("IMPORTANT NOTICE:", 50, notesY + 20);
+          .text("IMPORTANT NOTICE:", 50, notesY + 10);
 
         doc
           .font("Helvetica")
           .fontSize(9)
           .fillColor("#dc3545")
-          .text(invoiceData.termsAndConditions, 50, notesY + 42, {
+          .text(invoiceData.termsAndConditions, 50, notesY + 30, {
             width: 500,
           });
       }
 
       // ==================== FOOTER ====================
-      // ✅ For El Pueblo / Vitalez / Newport → workselpueblo@fyberblizz.com ONLY
-      //    (support + collection + sent-from all use that address)
-      //    NEVER admin@misterfyber.com for these buildings.
-      doc
-        .font("Helvetica")
-        .fontSize(9)
-        .fillColor("#666")
-        .text(
-          free
-            ? `🎁 Free of charge — Thank you for choosing our service!`
-            : paid
-              ? `✅ Payment received — Thank you for choosing our service!`
-              : `Thank you for choosing our service!`,
-          50,
-          pageHeight - 110,
-          { align: "center", width: 500 },
-        )
-        .text(
-          `${resolvedBrandName} - Your trusted internet provider`,
-          50,
-          pageHeight - 90,
-          { align: "center", width: 500 },
-        )
-        .text(
-          `Need help? Contact us at ${resolvedSupportEmail}`,
-          50,
-          pageHeight - 75,
-          { align: "center", width: 500 },
-        )
-        .text(
-          "This is a computer-generated invoice. No signature required.",
-          50,
-          pageHeight - 60,
-          { align: "center", width: 500 },
-        )
-        .text(
-          `Collection email: ${resolvedCollectionEmail}`,
-          50,
-          pageHeight - 45,
-          { align: "center", width: 500 },
-        )
-        .text(
-          `Sent from: ${resolvedSentFromName} (${resolvedSentFromEmail})`,
-          50,
-          pageHeight - 30,
-          { align: "center", width: 500 },
-        );
+      const range = doc.bufferedPageRange();
+      for (let i = range.start; i < range.start + range.count; i++) {
+        doc.switchToPage(i);
+
+        const footerBase = pageHeight - 100;
+
+        doc
+          .font("Helvetica")
+          .fontSize(9)
+          .fillColor("#666")
+          .text(
+            free
+              ? `🎁 Free of charge — Thank you for choosing our service!`
+              : paid
+                ? `✅ Payment received — Thank you for choosing our service!`
+                : `Thank you for choosing our service!`,
+            50,
+            footerBase,
+            { align: "center", width: 500 },
+          )
+          .text(
+            `${resolvedBrandName} - Your trusted internet provider`,
+            50,
+            footerBase + 15,
+            { align: "center", width: 500 },
+          )
+          .text(
+            `Need help? Contact us at ${resolvedSupportEmail}`,
+            50,
+            footerBase + 30,
+            { align: "center", width: 500 },
+          )
+          .text(
+            "This is a computer-generated invoice. No signature required.",
+            50,
+            footerBase + 45,
+            { align: "center", width: 500 },
+          )
+          .text(
+            `Collection email: ${resolvedCollectionEmail}`,
+            50,
+            footerBase + 60,
+            { align: "center", width: 500 },
+          )
+          .text(
+            `Sent from: ${resolvedSentFromName} (${resolvedSentFromEmail})`,
+            50,
+            footerBase + 75,
+            { align: "center", width: 500 },
+          );
+      }
 
       // ==================== FINALIZE ====================
       doc.end();

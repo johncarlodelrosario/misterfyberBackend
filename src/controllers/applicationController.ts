@@ -1,9 +1,10 @@
-// controllers/applicationController.ts - COMPLETE FIXED - WILCONNECT EMAIL FIX + PER-ADMIN TOGGLE
-// ✅ FIX: approveApplication now explicitly sets billingStarted:false and serviceStatus:"pending"
-//         so approved apps WITHOUT billing are ALWAYS visible in getDashboardData
-// ✅ FIX: Unsets disconnectedAt/disconnectReason on approval so stale flags don't leak
-// ✅ FIX: Passes requesting admin's ID (req.user._id) to emailService calls so the
-//         PER-ADMIN customerEmailAlertsEnabled toggle is respected.
+// controllers/applicationController.ts - COMPLETE OPTIMIZED
+// ✅ FIX: approveApplication explicitly sets billingStarted:false and serviceStatus:"pending"
+// ✅ FIX: Unsets disconnectedAt/disconnectReason on approval
+// ✅ FIX: Passes requesting admin's ID to emailService for per-admin toggle
+// ✅ OPTIMIZED: Shared id-image aggregation helper, reduced duplicate code,
+//              single-pass map building, parallelized lookups, lean queries,
+//              removed redundant re-fetches, tighter typing.
 import { Request, Response, NextFunction } from "express";
 import Application from "../models/Application";
 import Plan from "../models/Plan";
@@ -75,13 +76,129 @@ export const getImageUrl = (imagePath?: string): string => {
   }
   if (imagePath.startsWith("data:")) return imagePath;
   const PRODUCTION_URL = "https://misterfyberbackend-lvjd.onrender.com";
-  let filename = "";
   const parts = imagePath.split(/[\\\/]/);
-  filename = parts[parts.length - 1];
+  const filename = parts[parts.length - 1];
   if (!filename || filename === "placeholder.jpg") {
     return `${PRODUCTION_URL}/uploads/id-cards/placeholder.jpg`;
   }
   return `${PRODUCTION_URL}/uploads/id-cards/${filename}`;
+};
+
+// ============ SHARED: Build ID-image metadata map (single aggregation) ============
+type IdImageInfo = { hasImage: boolean; filename: string };
+
+const buildIdImageMap = async (
+  appIds: mongoose.Types.ObjectId[],
+): Promise<Map<string, IdImageInfo>> => {
+  const map = new Map<string, IdImageInfo>();
+  if (appIds.length === 0) return map;
+
+  const idImageData = await Application.aggregate([
+    { $match: { _id: { $in: appIds } } },
+    {
+      $project: {
+        _id: 1,
+        hasIdImage: {
+          $cond: [
+            {
+              $and: [
+                { $ne: ["$idImage", null] },
+                { $ne: ["$idImage", ""] },
+                { $ne: [{ $type: "$idImage" }, "missing"] },
+              ],
+            },
+            true,
+            false,
+          ],
+        },
+        isBase64: {
+          $cond: [
+            {
+              $and: [
+                { $ne: ["$idImage", null] },
+                { $ne: ["$idImage", ""] },
+                { $regexMatch: { input: "$idImage", regex: "^data:" } },
+              ],
+            },
+            true,
+            false,
+          ],
+        },
+        idImageFilename: {
+          $cond: [
+            {
+              $and: [
+                { $ne: ["$idImage", null] },
+                { $ne: ["$idImage", ""] },
+                {
+                  $not: {
+                    $regexMatch: { input: "$idImage", regex: "^data:" },
+                  },
+                },
+              ],
+            },
+            {
+              $arrayElemAt: [{ $split: ["$idImage", "/"] }, -1],
+            },
+            "",
+          ],
+        },
+      },
+    },
+  ]).allowDiskUse(true);
+
+  for (const info of idImageData) {
+    const idStr = info._id.toString();
+    if (!info.hasIdImage) {
+      map.set(idStr, { hasImage: false, filename: "" });
+    } else if (info.isBase64) {
+      map.set(idStr, { hasImage: true, filename: "base64" });
+    } else {
+      map.set(idStr, {
+        hasImage: true,
+        filename: info.idImageFilename || "",
+      });
+    }
+  }
+
+  return map;
+};
+
+// ============ SHARED: Resolve building name for emails ============
+const resolveBuildingNameForEmail = async (
+  application: any,
+): Promise<string> => {
+  let buildingNameForEmail = "";
+  if (application.buildingId && typeof application.buildingId === "object") {
+    buildingNameForEmail = application.buildingId.buildingName || "";
+  }
+  if (!buildingNameForEmail) {
+    buildingNameForEmail = application.buildingName || "";
+  }
+  if (!buildingNameForEmail && application.buildingId) {
+    try {
+      const buildingId =
+        typeof application.buildingId === "object"
+          ? application.buildingId._id
+          : application.buildingId;
+      const building = await Building.findById(buildingId)
+        .select("buildingName")
+        .lean();
+      if (building) {
+        buildingNameForEmail = building.buildingName || "";
+      }
+    } catch (e) {
+      console.error("Error fetching building for email:", e);
+    }
+  }
+  return buildingNameForEmail;
+};
+
+// ============ SHARED: Flush caches ============
+const flushCaches = () => {
+  appCache.flushAll();
+  dashboardCache = null;
+  dashboardCacheTime = 0;
 };
 
 // ============ ADDRESS DATA FUNCTIONS ============
@@ -274,78 +391,7 @@ export const getAllApplications = async (
     );
 
     const appIds = applications.map((app: any) => app._id);
-
-    let idImageMap = new Map<string, { hasImage: boolean; filename: string }>();
-
-    if (appIds.length > 0) {
-      const idImageData = await Application.aggregate([
-        { $match: { _id: { $in: appIds } } },
-        {
-          $project: {
-            _id: 1,
-            hasIdImage: {
-              $cond: [
-                {
-                  $and: [
-                    { $ne: ["$idImage", null] },
-                    { $ne: ["$idImage", ""] },
-                    { $ne: [{ $type: "$idImage" }, "missing"] },
-                  ],
-                },
-                true,
-                false,
-              ],
-            },
-            isBase64: {
-              $cond: [
-                {
-                  $and: [
-                    { $ne: ["$idImage", null] },
-                    { $ne: ["$idImage", ""] },
-                    { $regexMatch: { input: "$idImage", regex: "^data:" } },
-                  ],
-                },
-                true,
-                false,
-              ],
-            },
-            idImageFilename: {
-              $cond: [
-                {
-                  $and: [
-                    { $ne: ["$idImage", null] },
-                    { $ne: ["$idImage", ""] },
-                    {
-                      $not: {
-                        $regexMatch: { input: "$idImage", regex: "^data:" },
-                      },
-                    },
-                  ],
-                },
-                {
-                  $arrayElemAt: [{ $split: ["$idImage", "/"] }, -1],
-                },
-                "",
-              ],
-            },
-          },
-        },
-      ]).allowDiskUse(true);
-
-      idImageData.forEach((info: any) => {
-        const idStr = info._id.toString();
-        if (!info.hasIdImage) {
-          idImageMap.set(idStr, { hasImage: false, filename: "" });
-        } else if (info.isBase64) {
-          idImageMap.set(idStr, { hasImage: true, filename: "base64" });
-        } else {
-          idImageMap.set(idStr, {
-            hasImage: true,
-            filename: info.idImageFilename || "",
-          });
-        }
-      });
-    }
+    const idImageMap = await buildIdImageMap(appIds);
 
     const formattedData = applications.map((app: any) => {
       const appIdStr = app._id.toString();
@@ -480,78 +526,7 @@ export const getAllApplicationsNoLimit = async (
     );
 
     const appIds = applications.map((app: any) => app._id);
-
-    let idImageMap = new Map<string, { hasImage: boolean; filename: string }>();
-
-    if (appIds.length > 0) {
-      const idImageData = await Application.aggregate([
-        { $match: { _id: { $in: appIds } } },
-        {
-          $project: {
-            _id: 1,
-            hasIdImage: {
-              $cond: [
-                {
-                  $and: [
-                    { $ne: ["$idImage", null] },
-                    { $ne: ["$idImage", ""] },
-                    { $ne: [{ $type: "$idImage" }, "missing"] },
-                  ],
-                },
-                true,
-                false,
-              ],
-            },
-            isBase64: {
-              $cond: [
-                {
-                  $and: [
-                    { $ne: ["$idImage", null] },
-                    { $ne: ["$idImage", ""] },
-                    { $regexMatch: { input: "$idImage", regex: "^data:" } },
-                  ],
-                },
-                true,
-                false,
-              ],
-            },
-            idImageFilename: {
-              $cond: [
-                {
-                  $and: [
-                    { $ne: ["$idImage", null] },
-                    { $ne: ["$idImage", ""] },
-                    {
-                      $not: {
-                        $regexMatch: { input: "$idImage", regex: "^data:" },
-                      },
-                    },
-                  ],
-                },
-                {
-                  $arrayElemAt: [{ $split: ["$idImage", "/"] }, -1],
-                },
-                "",
-              ],
-            },
-          },
-        },
-      ]).allowDiskUse(true);
-
-      idImageData.forEach((info: any) => {
-        const idStr = info._id.toString();
-        if (!info.hasIdImage) {
-          idImageMap.set(idStr, { hasImage: false, filename: "" });
-        } else if (info.isBase64) {
-          idImageMap.set(idStr, { hasImage: true, filename: "base64" });
-        } else {
-          idImageMap.set(idStr, {
-            hasImage: true,
-            filename: info.idImageFilename || "",
-          });
-        }
-      });
-    }
+    const idImageMap = await buildIdImageMap(appIds);
 
     const formattedData = applications.map((app: any) => {
       const appIdStr = app._id.toString();
@@ -636,6 +611,7 @@ export const getApplicationDashboardData = async (
       rejectedApplications,
       suspendedApplications,
       disconnectedApplications,
+      recentApplications,
     ] = await Promise.all([
       Application.estimatedDocumentCount(),
       Application.countDocuments({ status: "pending" }),
@@ -643,15 +619,14 @@ export const getApplicationDashboardData = async (
       Application.countDocuments({ status: "rejected" }),
       Application.countDocuments({ status: "suspended" }),
       Application.countDocuments({ status: "disconnected" }),
+      Application.find()
+        .select(
+          "applicationId firstName lastName email status createdAt buildingName",
+        )
+        .sort({ createdAt: -1 })
+        .limit(10)
+        .lean(),
     ]);
-
-    const recentApplications = await Application.find()
-      .select(
-        "applicationId firstName lastName email status createdAt buildingName",
-      )
-      .sort({ createdAt: -1 })
-      .limit(10)
-      .lean();
 
     const stats = {
       totalApplications,
@@ -795,7 +770,6 @@ export const getApplicationStats = async (
 // ============================================================
 // ✅ SUBMIT APPLICATION - FIXED: ALLOW DUPLICATE EMAIL/PHONE
 // ✅ FIX: Passes requesting admin's ID to sendApplicationReceived
-//         so the per-admin customerEmailAlertsEnabled toggle is respected.
 // ============================================================
 export const submitApplication = async (
   req: AuthRequest,
@@ -983,9 +957,7 @@ export const submitApplication = async (
     await session.commitTransaction();
     session.endSession();
 
-    appCache.flushAll();
-    dashboardCache = null;
-    dashboardCacheTime = 0;
+    flushCaches();
 
     const fullImageUrl = getImageUrl(application.idImage);
     const populatedPlan = populatedApplication[0]?.plan;
@@ -1162,11 +1134,6 @@ export const getApplication = async (
 
 // ============================================================
 // ✅ APPROVE APPLICATION - FIXED
-// ✅ FIX: Guarantees billingStarted defaults to false (not undefined)
-//         so getDashboardData's filter picks it up correctly.
-// ✅ FIX: Uses $unset on disconnectedAt/disconnectReason so approved apps
-//         are never hidden by stale disconnect flags.
-// ✅ FIX: Passes requesting admin's ID to sendApplicationApproved.
 // ============================================================
 export const approveApplication = async (
   req: AuthRequest,
@@ -1230,33 +1197,10 @@ export const approveApplication = async (
     await session.commitTransaction();
     session.endSession();
 
-    appCache.flushAll();
-    dashboardCache = null;
-    dashboardCacheTime = 0;
+    flushCaches();
 
     // Resolve building name for email
-    let buildingNameForEmail = "";
-    if (application.buildingId && typeof application.buildingId === "object") {
-      buildingNameForEmail = (application.buildingId as any).buildingName || "";
-    }
-    if (!buildingNameForEmail) {
-      buildingNameForEmail = application.buildingName || "";
-    }
-
-    if (!buildingNameForEmail && application.buildingId) {
-      try {
-        const buildingId =
-          typeof application.buildingId === "object"
-            ? (application.buildingId as any)._id
-            : application.buildingId;
-        const building = await Building.findById(buildingId).lean();
-        if (building) {
-          buildingNameForEmail = building.buildingName || "";
-        }
-      } catch (e) {
-        console.error("Error fetching building for email:", e);
-      }
-    }
+    const buildingNameForEmail = await resolveBuildingNameForEmail(application);
 
     console.log(`📧 Application ${application.applicationId}:`);
     console.log(`   buildingNameForEmail: "${buildingNameForEmail}"`);
@@ -1310,7 +1254,6 @@ export const approveApplication = async (
 
 // ============================================================
 // ✅ REJECT APPLICATION - FIXED WILCONNECT DETECTION
-// ✅ FIX: Passes requesting admin's ID to sendApplicationRejected.
 // ============================================================
 export const rejectApplication = async (
   req: AuthRequest,
@@ -1364,31 +1307,9 @@ export const rejectApplication = async (
     await session.commitTransaction();
     session.endSession();
 
-    appCache.flushAll();
-    dashboardCache = null;
-    dashboardCacheTime = 0;
+    flushCaches();
 
-    let buildingNameForEmail = "";
-    if (application.buildingId && typeof application.buildingId === "object") {
-      buildingNameForEmail = (application.buildingId as any).buildingName || "";
-    }
-    if (!buildingNameForEmail) {
-      buildingNameForEmail = application.buildingName || "";
-    }
-    if (!buildingNameForEmail && application.buildingId) {
-      try {
-        const buildingId =
-          typeof application.buildingId === "object"
-            ? (application.buildingId as any)._id
-            : application.buildingId;
-        const building = await Building.findById(buildingId).lean();
-        if (building) {
-          buildingNameForEmail = building.buildingName || "";
-        }
-      } catch (e) {
-        console.error("Error fetching building for email:", e);
-      }
-    }
+    const buildingNameForEmail = await resolveBuildingNameForEmail(application);
 
     const applicationForEmail = {
       ...application,
@@ -1455,13 +1376,17 @@ export const deleteApplication = async (
       });
     }
 
-    const hasBillingCycle = await BillingCycle.findOne({
-      applicationId: application.applicationId,
-    }).session(session);
-
-    const hasBilling = await Billing.findOne({
-      applicationId: application.applicationId,
-    }).session(session);
+    // ✅ OPTIMIZED: run existence checks in parallel
+    const [hasBillingCycle, hasBilling] = await Promise.all([
+      BillingCycle.findOne({
+        applicationId: application.applicationId,
+      })
+        .session(session)
+        .lean(),
+      Billing.findOne({ applicationId: application.applicationId })
+        .session(session)
+        .lean(),
+    ]);
 
     if (hasBillingCycle) {
       await BillingCycle.deleteMany({
@@ -1490,9 +1415,7 @@ export const deleteApplication = async (
     await session.commitTransaction();
     session.endSession();
 
-    appCache.flushAll();
-    dashboardCache = null;
-    dashboardCacheTime = 0;
+    flushCaches();
 
     console.log(`✅ Application deleted: ${application.applicationId}`);
 
@@ -1583,9 +1506,7 @@ export const bulkDeleteApplications = async (
     await session.commitTransaction();
     session.endSession();
 
-    appCache.flushAll();
-    dashboardCache = null;
-    dashboardCacheTime = 0;
+    flushCaches();
 
     console.log(`🗑️ Bulk deleted ${result.deletedCount} applications`);
 
@@ -1603,6 +1524,123 @@ export const bulkDeleteApplications = async (
     console.error("❌ Error in bulkDeleteApplications:", error);
     next(error);
   }
+};
+
+// ============================================================
+// ✅ SHARED: Apply patch fields from updateData
+// ============================================================
+const applyUpdateFields = async (
+  updateData: any,
+  updateFields: any,
+  session: mongoose.ClientSession,
+): Promise<{ ok: boolean; status?: number; message?: string }> => {
+  if (updateData.firstName !== undefined) {
+    updateFields.firstName = updateData.firstName?.trim();
+  }
+  if (updateData.lastName !== undefined) {
+    updateFields.lastName = updateData.lastName?.trim();
+  }
+  if (updateData.middleName !== undefined) {
+    updateFields.middleName = updateData.middleName?.trim() || "";
+  }
+  if (updateData.email !== undefined) {
+    updateFields.email = updateData.email?.trim().toLowerCase();
+  }
+  if (updateData.phoneNumber !== undefined) {
+    updateFields.phoneNumber = updateData.phoneNumber?.trim();
+  }
+
+  if (updateData.buildingId !== undefined) {
+    const building = await Building.findById(updateData.buildingId)
+      .session(session)
+      .lean();
+    if (building) {
+      updateFields.buildingId = updateData.buildingId;
+      updateFields.buildingName = building.buildingName;
+    } else {
+      return { ok: false, status: 404, message: "Building not found" };
+    }
+  }
+  if (updateData.tower !== undefined) {
+    updateFields.tower = updateData.tower?.trim() || "";
+  }
+  if (updateData.floor !== undefined) {
+    updateFields.floor = updateData.floor?.toString().trim();
+  }
+  if (updateData.unitNumber !== undefined) {
+    updateFields.unitNumber = updateData.unitNumber?.toString().trim();
+  }
+
+  if (updateData.planId !== undefined) {
+    const plan = await Plan.findById(updateData.planId).session(session).lean();
+    if (!plan) {
+      return { ok: false, status: 404, message: "Plan not found" };
+    }
+    updateFields.planId = updateData.planId;
+  }
+
+  if (updateData.idType !== undefined) {
+    updateFields.idType = updateData.idType?.trim() || "Not Provided";
+  }
+  if (updateData.idNumber !== undefined) {
+    updateFields.idNumber = updateData.idNumber?.trim() || "Not Provided";
+  }
+  if (updateData.macAddress !== undefined) {
+    updateFields.macAddress = updateData.macAddress?.trim() || "";
+  }
+
+  if (updateData.status !== undefined) {
+    const validStatuses = [
+      "pending",
+      "approved",
+      "rejected",
+      "suspended",
+      "disconnected",
+    ];
+    if (!validStatuses.includes(updateData.status)) {
+      return {
+        ok: false,
+        status: 400,
+        message:
+          "Invalid status. Must be: pending, approved, rejected, suspended, disconnected",
+      };
+    }
+    updateFields.status = updateData.status;
+  }
+
+  if (updateData.serviceStatus !== undefined) {
+    const validServiceStatuses = [
+      "pending",
+      "active",
+      "suspended",
+      "disconnected",
+    ];
+    if (!validServiceStatuses.includes(updateData.serviceStatus)) {
+      return {
+        ok: false,
+        status: 400,
+        message:
+          "Invalid service status. Must be: pending, active, suspended, disconnected",
+      };
+    }
+    updateFields.serviceStatus = updateData.serviceStatus;
+  }
+
+  if (updateData.installationFee !== undefined) {
+    updateFields.installationFee = parseFloat(updateData.installationFee) || 0;
+  }
+  if (updateData.installationFeePaid !== undefined) {
+    updateFields.installationFeePaid = Boolean(updateData.installationFeePaid);
+  }
+
+  if (updateData.notes !== undefined) {
+    updateFields.notes = updateData.notes || "";
+  }
+  if (updateData.adminNotes !== undefined) {
+    updateFields.adminNotes = updateData.adminNotes || "";
+  }
+
+  return { ok: true };
 };
 
 // ============================================================
@@ -1632,129 +1670,17 @@ export const updateApplication = async (
     }
 
     const updateFields: any = {};
+    const result = await applyUpdateFields(updateData, updateFields, session);
 
-    if (updateData.firstName !== undefined) {
-      updateFields.firstName = updateData.firstName?.trim();
-    }
-    if (updateData.lastName !== undefined) {
-      updateFields.lastName = updateData.lastName?.trim();
-    }
-    if (updateData.middleName !== undefined) {
-      updateFields.middleName = updateData.middleName?.trim() || "";
-    }
-    if (updateData.email !== undefined) {
-      updateFields.email = updateData.email?.trim().toLowerCase();
-    }
-    if (updateData.phoneNumber !== undefined) {
-      updateFields.phoneNumber = updateData.phoneNumber?.trim();
+    if (!result.ok) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(result.status || 400).json({
+        success: false,
+        message: result.message,
+      });
     }
 
-    if (updateData.buildingId !== undefined) {
-      const building = await Building.findById(updateData.buildingId)
-        .session(session)
-        .lean();
-      if (building) {
-        updateFields.buildingId = updateData.buildingId;
-        updateFields.buildingName = building.buildingName;
-      } else {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(404).json({
-          success: false,
-          message: "Building not found",
-        });
-      }
-    }
-    if (updateData.tower !== undefined) {
-      updateFields.tower = updateData.tower?.trim() || "";
-    }
-    if (updateData.floor !== undefined) {
-      updateFields.floor = updateData.floor?.toString().trim();
-    }
-    if (updateData.unitNumber !== undefined) {
-      updateFields.unitNumber = updateData.unitNumber?.toString().trim();
-    }
-
-    if (updateData.planId !== undefined) {
-      const plan = await Plan.findById(updateData.planId)
-        .session(session)
-        .lean();
-      if (!plan) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(404).json({
-          success: false,
-          message: "Plan not found",
-        });
-      }
-      updateFields.planId = updateData.planId;
-    }
-
-    if (updateData.idType !== undefined) {
-      updateFields.idType = updateData.idType?.trim() || "Not Provided";
-    }
-    if (updateData.idNumber !== undefined) {
-      updateFields.idNumber = updateData.idNumber?.trim() || "Not Provided";
-    }
-    if (updateData.macAddress !== undefined) {
-      updateFields.macAddress = updateData.macAddress?.trim() || "";
-    }
-
-    if (updateData.status !== undefined) {
-      const validStatuses = [
-        "pending",
-        "approved",
-        "rejected",
-        "suspended",
-        "disconnected",
-      ];
-      if (!validStatuses.includes(updateData.status)) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(400).json({
-          success: false,
-          message:
-            "Invalid status. Must be: pending, approved, rejected, suspended, disconnected",
-        });
-      }
-      updateFields.status = updateData.status;
-    }
-
-    if (updateData.serviceStatus !== undefined) {
-      const validServiceStatuses = [
-        "pending",
-        "active",
-        "suspended",
-        "disconnected",
-      ];
-      if (!validServiceStatuses.includes(updateData.serviceStatus)) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(400).json({
-          success: false,
-          message:
-            "Invalid service status. Must be: pending, active, suspended, disconnected",
-        });
-      }
-      updateFields.serviceStatus = updateData.serviceStatus;
-    }
-
-    if (updateData.installationFee !== undefined) {
-      updateFields.installationFee =
-        parseFloat(updateData.installationFee) || 0;
-    }
-    if (updateData.installationFeePaid !== undefined) {
-      updateFields.installationFeePaid = Boolean(
-        updateData.installationFeePaid,
-      );
-    }
-
-    if (updateData.notes !== undefined) {
-      updateFields.notes = updateData.notes || "";
-    }
-    if (updateData.adminNotes !== undefined) {
-      updateFields.adminNotes = updateData.adminNotes || "";
-    }
     if (updateData.billingStarted !== undefined) {
       updateFields.billingStarted = Boolean(updateData.billingStarted);
     }
@@ -1786,9 +1712,7 @@ export const updateApplication = async (
     await session.commitTransaction();
     session.endSession();
 
-    appCache.flushAll();
-    dashboardCache = null;
-    dashboardCacheTime = 0;
+    flushCaches();
 
     console.log(`✅ Application updated: ${updatedApplication?.applicationId}`);
 
@@ -1844,128 +1768,15 @@ export const patchApplication = async (
     }
 
     const updateFields: any = {};
+    const result = await applyUpdateFields(updateData, updateFields, session);
 
-    if (updateData.firstName !== undefined) {
-      updateFields.firstName = updateData.firstName?.trim();
-    }
-    if (updateData.lastName !== undefined) {
-      updateFields.lastName = updateData.lastName?.trim();
-    }
-    if (updateData.middleName !== undefined) {
-      updateFields.middleName = updateData.middleName?.trim() || "";
-    }
-    if (updateData.email !== undefined) {
-      updateFields.email = updateData.email?.trim().toLowerCase();
-    }
-    if (updateData.phoneNumber !== undefined) {
-      updateFields.phoneNumber = updateData.phoneNumber?.trim();
-    }
-
-    if (updateData.buildingId !== undefined) {
-      const building = await Building.findById(updateData.buildingId)
-        .session(session)
-        .lean();
-      if (building) {
-        updateFields.buildingId = updateData.buildingId;
-        updateFields.buildingName = building.buildingName;
-      } else {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(404).json({
-          success: false,
-          message: "Building not found",
-        });
-      }
-    }
-    if (updateData.tower !== undefined) {
-      updateFields.tower = updateData.tower?.trim() || "";
-    }
-    if (updateData.floor !== undefined) {
-      updateFields.floor = updateData.floor?.toString().trim();
-    }
-    if (updateData.unitNumber !== undefined) {
-      updateFields.unitNumber = updateData.unitNumber?.toString().trim();
-    }
-
-    if (updateData.planId !== undefined) {
-      const plan = await Plan.findById(updateData.planId)
-        .session(session)
-        .lean();
-      if (!plan) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(404).json({
-          success: false,
-          message: "Plan not found",
-        });
-      }
-      updateFields.planId = updateData.planId;
-    }
-
-    if (updateData.idType !== undefined) {
-      updateFields.idType = updateData.idType?.trim() || "Not Provided";
-    }
-    if (updateData.idNumber !== undefined) {
-      updateFields.idNumber = updateData.idNumber?.trim() || "Not Provided";
-    }
-    if (updateData.macAddress !== undefined) {
-      updateFields.macAddress = updateData.macAddress?.trim() || "";
-    }
-
-    if (updateData.status !== undefined) {
-      const validStatuses = [
-        "pending",
-        "approved",
-        "rejected",
-        "suspended",
-        "disconnected",
-      ];
-      if (!validStatuses.includes(updateData.status)) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(400).json({
-          success: false,
-          message:
-            "Invalid status. Must be: pending, approved, rejected, suspended, disconnected",
-        });
-      }
-      updateFields.status = updateData.status;
-    }
-
-    if (updateData.serviceStatus !== undefined) {
-      const validServiceStatuses = [
-        "pending",
-        "active",
-        "suspended",
-        "disconnected",
-      ];
-      if (!validServiceStatuses.includes(updateData.serviceStatus)) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(400).json({
-          success: false,
-          message:
-            "Invalid service status. Must be: pending, active, suspended, disconnected",
-        });
-      }
-      updateFields.serviceStatus = updateData.serviceStatus;
-    }
-
-    if (updateData.installationFee !== undefined) {
-      updateFields.installationFee =
-        parseFloat(updateData.installationFee) || 0;
-    }
-    if (updateData.installationFeePaid !== undefined) {
-      updateFields.installationFeePaid = Boolean(
-        updateData.installationFeePaid,
-      );
-    }
-
-    if (updateData.notes !== undefined) {
-      updateFields.notes = updateData.notes || "";
-    }
-    if (updateData.adminNotes !== undefined) {
-      updateFields.adminNotes = updateData.adminNotes || "";
+    if (!result.ok) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(result.status || 400).json({
+        success: false,
+        message: result.message,
+      });
     }
 
     Object.keys(updateFields).forEach((key) => {
@@ -2000,9 +1811,7 @@ export const patchApplication = async (
     await session.commitTransaction();
     session.endSession();
 
-    appCache.flushAll();
-    dashboardCache = null;
-    dashboardCacheTime = 0;
+    flushCaches();
 
     console.log(`✅ Application patched: ${updatedApplication?.applicationId}`);
     console.log("📝 Updated fields:", Object.keys(updateFields));
@@ -2091,6 +1900,7 @@ export const startBillingForApplication = async (
       });
     }
 
+    // ✅ OPTIMIZED: run in parallel
     const [existingBillingCycle, existingBills] = await Promise.all([
       BillingCycle.findOne({
         applicationId: application.applicationId,
@@ -2143,7 +1953,7 @@ export const startBillingForApplication = async (
     const dailyRate = annualRate / 365;
 
     const billingCutoffDay = 24;
-    let installationDateObj = installationDate
+    const installationDateObj = installationDate
       ? new Date(installationDate)
       : new Date();
     installationDateObj.setHours(0, 0, 0, 0);
@@ -2160,7 +1970,8 @@ export const startBillingForApplication = async (
     const actualBillableDays = daysInMonth - installationDay + 1;
     const isAfterCutoff = installationDay > billingCutoffDay;
 
-    let proRatedAmount = Math.round(dailyRate * actualBillableDays * 100) / 100;
+    const proRatedAmount =
+      Math.round(dailyRate * actualBillableDays * 100) / 100;
     let billingStartDateForCycle: Date;
     let billingEndDateForCycle: Date;
     let nextBillingDate: Date;
@@ -2334,9 +2145,7 @@ export const startBillingForApplication = async (
     await session.commitTransaction();
     session.endSession();
 
-    appCache.flushAll();
-    dashboardCache = null;
-    dashboardCacheTime = 0;
+    flushCaches();
 
     const buildingNameForEmail = application.buildingName || "";
     const requestingAdminId = getRequestingAdminId(req);
@@ -2385,9 +2194,7 @@ export const startBillingForApplication = async (
 
 // ============ CLEAR CACHE ============
 export const clearApplicationCache = () => {
-  appCache.flushAll();
-  dashboardCache = null;
-  dashboardCacheTime = 0;
+  flushCaches();
   console.log("🗑️ Application cache cleared");
 };
 

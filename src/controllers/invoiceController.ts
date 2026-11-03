@@ -22,6 +22,7 @@ type AuthRequest = Request & { user?: any };
 
 // ==================== WILCONNECT BUILDINGS ====================
 const WILCONNECT_BUILDINGS = ["el pueblo", "vitalez", "newport"];
+const WORKSELPUEBLO_EMAIL = "workselpueblo@fyberblizz.com";
 
 interface BrandInfo {
   isWilconnect: boolean;
@@ -183,7 +184,14 @@ export const createInvoiceFromBilling = async (
     const user = await User.findOne({ email: application.email }).lean();
 
     const location = await getLocationFromEntity(application);
-    const collectionEmail = getCollectionEmailByLocation(location);
+
+    // ✅ FIX: Force workselpueblo email for Wilconnect buildings
+    const isWilconnect = WILCONNECT_BUILDINGS.some((b) =>
+      (application.buildingName || "").toLowerCase().includes(b),
+    );
+    const collectionEmail = isWilconnect
+      ? WORKSELPUEBLO_EMAIL
+      : getCollectionEmailByLocation(location);
 
     const brand = await getBrandForApplication(application);
 

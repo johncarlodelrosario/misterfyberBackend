@@ -26,6 +26,10 @@ interface AuthRequest extends Request {
   body: any;
 }
 
+// ==================== WILCONNECT BUILDINGS ====================
+const WILCONNECT_BUILDINGS = ["el pueblo", "vitalez", "newport"];
+const WORKSELPUEBLO_EMAIL = "workselpueblo@fyberblizz.com";
+
 // ==================== HELPER: DETERMINE CORRECT PAYMENT TYPE ====================
 function determinePaymentType(billing: any, requestedType?: string): string {
   // If explicit type provided and valid, use it
@@ -962,7 +966,21 @@ export const confirmPayment = async (
           const customerAddress =
             (app as any)?.buildingName || (app as any)?.address || "N/A";
           const planName = (plan as any)?.name || "N/A";
-          const collectionEmail = getCollectionEmailByLocation(location);
+
+          // ✅ FIX: Force workselpueblo email for Wilconnect buildings
+          const isWilconnect = WILCONNECT_BUILDINGS.some((b) =>
+            ((app as any)?.buildingName || "").toLowerCase().includes(b),
+          );
+
+          // ✅ FIXED: Use finalCollectionEmail directly without referencing undefined collectionEmail
+          const finalCollectionEmail = isWilconnect
+            ? WORKSELPUEBLO_EMAIL
+            : getCollectionEmailByLocation(location) || "admin@misterfyber.com";
+
+          // Need to fetch brand info for the invoice
+          const brandName = isWilconnect
+            ? "WILCONNECT NETWORK CORPORATION"
+            : "Fyberblizz Network Corporation";
 
           const invoiceData = {
             invoiceNumber: invoiceNumberGen,
@@ -973,12 +991,12 @@ export const confirmPayment = async (
             customerAddress: customerAddress,
             customerEmail: customerEmail,
             customerPhone: payment.customerPhone || "",
-            companyName: "Fyberblizz Network Corporation",
+            companyName: brandName,
             companyAddress:
               "UNIT 6 BLDG 2 G/F EL PUEBLO CONDO, ANONAS ST., STA. MESA, MANILA",
             companyVat: "697-461-165-00000",
             companyContact: "0969-341-4876",
-            companyEmail: collectionEmail || "admin@misterfyber.com",
+            companyEmail: finalCollectionEmail,
             billingPeriod: {
               start: billing.billingPeriod?.start || new Date(),
               end: billing.billingPeriod?.end || new Date(),
@@ -992,7 +1010,9 @@ export const confirmPayment = async (
             discountAmount: 0,
             total: total,
             bankName: "BDO",
-            accountName: "FYBERBLIZZ NETWORK CORPORATION",
+            accountName: isWilconnect
+              ? "WILCONNECT NETWORK CORPORATION"
+              : "FYBERBLIZZ NETWORK CORPORATION",
             accountNumber: "013448002421",
             status: "paid",
             billingId: billing._id,
@@ -1005,7 +1025,7 @@ export const confirmPayment = async (
             termsAndConditions:
               "Please be advised that failure to settle your account on or before the due date may result in temporary service interruption.",
             location: location || "",
-            collectionEmail: collectionEmail || "admin@misterfyber.com",
+            collectionEmail: finalCollectionEmail,
             paidAt: new Date(),
             paymentId: payment._id,
           };
