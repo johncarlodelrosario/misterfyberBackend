@@ -71,6 +71,10 @@ console.log(`🔗 Backend URL: ${PRODUCTION_BACKEND_URL}`);
 // ============================================================
 // ALLOWED ORIGINS - COMPREHENSIVE LIST
 // ============================================================
+const envOrigins = process.env.FRONTEND_URLS
+  ? process.env.FRONTEND_URLS.split(",").map((url) => url.trim())
+  : [];
+
 const allowedOrigins = [
   // Local development
   "http://localhost:3000",
@@ -89,13 +93,10 @@ const allowedOrigins = [
   "https://misterfyberbackend-lvjd.onrender.com",
   "https://newport-application.vercel.app",
   "https://vitalez-residence-application-form.vercel.app",
-  // Environment variable
+  // Environment variables
   process.env.FRONTEND_URL || "",
-  // Additional Vercel deployments
-  process.env.FRONTEND_URLS?.split(",") || [],
-]
-  .flat()
-  .filter(Boolean);
+  ...envOrigins,
+].filter(Boolean);
 
 console.log("✅ Allowed origins:", allowedOrigins);
 
@@ -111,45 +112,45 @@ const io = webSocketService.getIO();
 // ============================================================
 // MIDDLEWARES
 // ============================================================
-app.use(compression());
 
-app.use(
-  helmet({
-    crossOriginResourcePolicy: { policy: "cross-origin" },
-    crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
-    contentSecurityPolicy: IS_PRODUCTION ? undefined : false,
-  }),
-);
-
-// ============================================================
-// CORS - SINGLE SOURCE OF TRUTH
-// ============================================================
+// ⚠️ CRITICAL FIX: CORS MUST BE THE VERY FIRST MIDDLEWARE
+// Otherwise, if helmet/compression throws an error, the CORS headers
+// are never attached to the response, causing the browser to block it.
 app.use(
   cors({
     origin: function (origin, callback) {
       // Allow requests with no origin (mobile apps, curl, Postman)
       if (!origin) return callback(null, true);
 
-      // Check exact match
-      if (allowedOrigins.indexOf(origin) !== -1) {
+      // Normalize origin (remove trailing slash, lowercase)
+      const normalizedOrigin = origin.toLowerCase().replace(/\/$/, "");
+
+      // Check exact match against allowedOrigins
+      const isExplicitlyAllowed = allowedOrigins.some(
+        (allowed) =>
+          allowed.toLowerCase().replace(/\/$/, "") === normalizedOrigin,
+      );
+
+      if (isExplicitlyAllowed) {
         return callback(null, true);
       }
 
       // Allow localhost in development
       if (
         !IS_PRODUCTION &&
-        (origin.includes("localhost") || origin.includes("127.0.0.1"))
+        (normalizedOrigin.includes("localhost") ||
+          normalizedOrigin.includes("127.0.0.1"))
       ) {
         return callback(null, true);
       }
 
-      // Allow all vercel.app and render.com subdomains in production
+      // Allow vercel.app, render.com, and misterfyber.com in production
       if (IS_PRODUCTION) {
-        if (origin.includes("vercel.app") || origin.includes("render.com")) {
-          return callback(null, true);
-        }
-        // Allow misterfyber.com domains
-        if (origin.includes("misterfyber.com")) {
+        if (
+          normalizedOrigin.includes("vercel.app") ||
+          normalizedOrigin.includes("render.com") ||
+          normalizedOrigin.includes("misterfyber.com")
+        ) {
           return callback(null, true);
         }
       }
@@ -175,6 +176,38 @@ app.use(
   }),
 );
 
+// Helmet AFTER CORS to prevent CSP from overriding CORS headers
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
+    // Explicitly allow connect-src for your backend/frontend domains
+    contentSecurityPolicy: IS_PRODUCTION
+      ? {
+          directives: {
+            defaultSrc: ["'self'"],
+            connectSrc: [
+              "'self'",
+              "https://misterfyberbackend-lvjd.onrender.com",
+              "https://*.vercel.app",
+              "https://*.misterfyber.com",
+            ],
+            imgSrc: [
+              "'self'",
+              "data:",
+              "https://res.cloudinary.com",
+              "https://*.onrender.com",
+            ],
+          },
+        }
+      : false,
+  }),
+);
+
+// Compression after CORS
+app.use(compression());
+
+// Other standard middlewares
 app.use(cookieParser());
 app.use(morgan(IS_PRODUCTION ? "combined" : "dev"));
 app.use(express.json({ limit: "10mb" }));
@@ -311,6 +344,14 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   console.error("❌ Error:", err.stack);
   const status = (err as any).status || 500;
   const message = err.message || "Internal server error";
+
+  // IMPORTANT: Ensure CORS headers are attached even in errors
+  const origin = req.headers.origin;
+  if (origin) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+  }
+
   res.status(status).json({
     success: false,
     message,
