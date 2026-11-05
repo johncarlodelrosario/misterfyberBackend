@@ -1,4 +1,4 @@
-// backend/src/routes/paymentRoutes.ts - COMPLETE WITH UPDATE ROUTE
+// backend/src/routes/paymentRoutes.ts
 
 import express from "express";
 import { body } from "express-validator";
@@ -25,7 +25,7 @@ import { protect, authorize } from "../middleware/auth";
 
 const router = express.Router();
 
-// Webhooks (public - no authentication)
+// Webhooks (public)
 router.post("/webhook/paymongo", payMongoWebhook);
 router.post("/webhook/dragonpay", dragonPayWebhook);
 
@@ -42,9 +42,9 @@ router.post(
 
 router.get("/", protect, getPayments);
 router.get("/verify/:reference", protect, verifyPayment);
-router.get("/:id", protect, getPayment);
 
 // ==================== ADMIN ROUTES ====================
+// NOTE: Admin routes MUST be declared before `/:id` to avoid being swallowed
 router.get(
   "/admin/all",
   protect,
@@ -73,12 +73,18 @@ router.get(
   getInstallationPaymentSummary,
 );
 
-// ==================== MIGRATION ROUTE (SUPER ADMIN ONLY) ====================
 router.post(
   "/admin/fix-pro-rated-types",
   protect,
   authorize("super_admin"),
   fixProRatedPaymentTypes,
+);
+
+router.delete(
+  "/bulk/customer/:customerId",
+  protect,
+  authorize("super_admin", "admin", "staff"),
+  bulkDeleteCustomerPayments,
 );
 
 router.put(
@@ -88,7 +94,6 @@ router.put(
   confirmPayment,
 );
 
-// ==================== UPDATE ROUTE (EDITABLE EVEN IF COMPLETED) ====================
 router.put(
   "/:id",
   protect,
@@ -110,8 +115,6 @@ router.post(
   refundPayment,
 );
 
-// ==================== DELETE ROUTES ====================
-// Delete single payment
 router.delete(
   "/:id",
   protect,
@@ -119,13 +122,7 @@ router.delete(
   deletePayment,
 );
 
-// BULK DELETE - Delete all payments for a customer
-// IMPORTANT: This route MUST be placed BEFORE /:id route to avoid conflict
-router.delete(
-  "/bulk/customer/:customerId",
-  protect,
-  authorize("super_admin", "admin", "staff"),
-  bulkDeleteCustomerPayments,
-);
+// Keep `/:id` GET last so it doesn't shadow `/verify/...`
+router.get("/:id", protect, getPayment);
 
 export default router;

@@ -1,4 +1,7 @@
-// controllers/applicationController.ts - COMPLETE OPTIMIZED
+// controllers/applicationController.ts - COMPLETE FIXED
+// ✅ FIX: Full-name search now works ("Juan Dela Cruz", "Cruz Juan", "JuanDelaCruz")
+// ✅ FIX: Search also matches email, phone, applicationId, idNumber, macAddress,
+//         buildingName, tower, floor, unitNumber, status, notes, adminNotes
 // ✅ FIX: approveApplication explicitly sets billingStarted:false and serviceStatus:"pending"
 // ✅ FIX: Unsets disconnectedAt/disconnectReason on approval
 // ✅ FIX: Passes requesting admin's ID to emailService for per-admin toggle
@@ -64,6 +67,161 @@ const isWilconnectBuilding = (buildingName?: string): boolean => {
   const normalized = buildingName.toLowerCase().trim();
   return WILCONNECT_BUILDINGS.some((b) => normalized.includes(b));
 };
+
+// ============ ✅ HELPER: Build full-name search $or conditions ============
+/**
+ * Full-name search builder that supports:
+ *   - "Juan"                  → matches firstName
+ *   - "Cruz"                  → matches lastName
+ *   - "Juan Dela Cruz"        → matches full name (was broken before)
+ *   - "juan dela cruz"        → matches (case-insensitive)
+ *   - "JUAN DELA CRUZ"        → matches (case-insensitive)
+ *   - "JuanDelaCruz"          → matches (no spaces)
+ *   - "Cruz Juan"             → matches (reverse order)
+ *   - "juan  dela  cruz"      → matches (extra whitespace)
+ *   - email / phone / appId   → matches
+ *   - idNumber / macAddress   → matches
+ *   - buildingName / tower / floor / unitNumber → matches
+ *   - status / notes / adminNotes → matches
+ */
+function buildSearchConditions(searchTerm: string): any[] {
+  if (!searchTerm || !searchTerm.trim()) return [];
+
+  const term = searchTerm.trim();
+  // Escape special regex characters to prevent injection
+  const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escaped = escapeRegex(term);
+  const escapedNoSpaces = escapeRegex(term.replace(/\s+/g, ""));
+  const words = term.split(/\s+/).filter(Boolean);
+  const escapedWords = words.map(escapeRegex);
+
+  const conditions: any[] = [];
+
+  // 1) Direct substring on combined full name (first + middle + last)
+  conditions.push({
+    $expr: {
+      $regexMatch: {
+        input: {
+          $concat: [
+            { $ifNull: ["$firstName", ""] },
+            " ",
+            { $ifNull: ["$middleName", ""] },
+            " ",
+            { $ifNull: ["$lastName", ""] },
+          ],
+        },
+        regex: escaped,
+        options: "i",
+      },
+    },
+  });
+
+  // 2) First + last only (no middle)
+  conditions.push({
+    $expr: {
+      $regexMatch: {
+        input: {
+          $concat: [
+            { $ifNull: ["$firstName", ""] },
+            " ",
+            { $ifNull: ["$lastName", ""] },
+          ],
+        },
+        regex: escaped,
+        options: "i",
+      },
+    },
+  });
+
+  // 3) Reverse name (last + first) — handles "Cruz Juan"
+  conditions.push({
+    $expr: {
+      $regexMatch: {
+        input: {
+          $concat: [
+            { $ifNull: ["$lastName", ""] },
+            " ",
+            { $ifNull: ["$firstName", ""] },
+          ],
+        },
+        regex: escaped,
+        options: "i",
+      },
+    },
+  });
+
+  // 4) No-spaces match — handles "JuanDelaCruz"
+  if (escapedNoSpaces !== escaped) {
+    conditions.push({
+      $expr: {
+        $regexMatch: {
+          input: {
+            $replaceAll: {
+              input: {
+                $concat: [
+                  { $ifNull: ["$firstName", ""] },
+                  " ",
+                  { $ifNull: ["$middleName", ""] },
+                  " ",
+                  { $ifNull: ["$lastName", ""] },
+                ],
+              },
+              find: " ",
+              replacement: "",
+            },
+          },
+          regex: escapedNoSpaces,
+          options: "i",
+        },
+      },
+    });
+  }
+
+  // 5) Individual field matches
+  conditions.push(
+    { firstName: { $regex: escaped, $options: "i" } },
+    { middleName: { $regex: escaped, $options: "i" } },
+    { lastName: { $regex: escaped, $options: "i" } },
+    { email: { $regex: escaped, $options: "i" } },
+    { phoneNumber: { $regex: escaped, $options: "i" } },
+    { applicationId: { $regex: escaped, $options: "i" } },
+    { idNumber: { $regex: escaped, $options: "i" } },
+    { macAddress: { $regex: escaped, $options: "i" } },
+    { buildingName: { $regex: escaped, $options: "i" } },
+    { tower: { $regex: escaped, $options: "i" } },
+    { floor: { $regex: escaped, $options: "i" } },
+    { unitNumber: { $regex: escaped, $options: "i" } },
+    { status: { $regex: escaped, $options: "i" } },
+    { notes: { $regex: escaped, $options: "i" } },
+    { adminNotes: { $regex: escaped, $options: "i" } },
+  );
+
+  // 6) Word-based match — ALL words must appear somewhere
+  //    Handles "Cruz Juan", "juan d", "dela juan", etc.
+  if (escapedWords.length > 1) {
+    conditions.push({
+      $and: escapedWords.map((word) => ({
+        $or: [
+          { firstName: { $regex: word, $options: "i" } },
+          { middleName: { $regex: word, $options: "i" } },
+          { lastName: { $regex: word, $options: "i" } },
+          { email: { $regex: word, $options: "i" } },
+          { phoneNumber: { $regex: word, $options: "i" } },
+          { applicationId: { $regex: word, $options: "i" } },
+          { idNumber: { $regex: word, $options: "i" } },
+          { macAddress: { $regex: word, $options: "i" } },
+          { buildingName: { $regex: word, $options: "i" } },
+          { tower: { $regex: word, $options: "i" } },
+          { floor: { $regex: word, $options: "i" } },
+          { unitNumber: { $regex: word, $options: "i" } },
+          { status: { $regex: word, $options: "i" } },
+        ],
+      })),
+    });
+  }
+
+  return conditions;
+}
 
 // ============ GET IMAGE URL ============
 export const getImageUrl = (imagePath?: string): string => {
@@ -311,7 +469,7 @@ export const getBarangaysByCity = async (
 };
 
 // ============================================================
-// ✅ GET ALL APPLICATIONS - WITH NAME SORT SUPPORT
+// ✅ GET ALL APPLICATIONS - WITH FULL-NAME SEARCH + NAME SORT
 // ============================================================
 export const getAllApplications = async (
   req: Request,
@@ -352,16 +510,23 @@ export const getAllApplications = async (
       }
     }
 
+    // ✅ FIX: Full-name search conditions
     if (search && search.trim() !== "") {
-      const searchTerm = search.trim();
-      filter.$or = [
-        { firstName: { $regex: searchTerm, $options: "i" } },
-        { lastName: { $regex: searchTerm, $options: "i" } },
-        { email: { $regex: searchTerm, $options: "i" } },
-        { applicationId: { $regex: searchTerm, $options: "i" } },
-        { phoneNumber: { $regex: searchTerm, $options: "i" } },
-        { idNumber: { $regex: searchTerm, $options: "i" } },
-      ];
+      const searchConditions = buildSearchConditions(search);
+
+      // Merge with existing filter (status, buildingId) via $and
+      // to avoid overwriting them
+      if (Object.keys(filter).length > 0) {
+        const existingFilter = { ...filter };
+        Object.keys(filter).forEach((key) => delete filter[key]);
+        filter.$and = [existingFilter, { $or: searchConditions }];
+      } else {
+        filter.$or = searchConditions;
+      }
+
+      console.log(
+        `🔍 Search applied: "${search}" (${searchConditions.length} conditions)`,
+      );
     }
 
     console.log("🔍 Final filter:", JSON.stringify(filter, null, 2));

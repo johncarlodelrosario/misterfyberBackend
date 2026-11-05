@@ -1,4 +1,4 @@
-// backend/src/models/Payment.ts - COMPLETE WITH 'free' ENUM
+// backend/src/models/Payment.ts - OPTIMIZED WITH COMPOUND INDEXES
 
 import mongoose, { Schema, Document } from "mongoose";
 
@@ -51,7 +51,6 @@ const PaymentSchema: Schema = new Schema(
       type: String,
       ref: "Application",
       required: false,
-      index: true,
     },
     amount: { type: Number, required: true },
     currency: { type: String, default: "PHP" },
@@ -118,21 +117,26 @@ PaymentSchema.pre("save", function (next) {
 });
 
 PaymentSchema.pre("validate", function (next) {
-  // Allow payments without userId or applicationId if it's a free payment
   if (!this.userId && !this.applicationId && this.paymentMethod !== "free") {
     next(new Error("Either userId or applicationId must be provided"));
   }
   next();
 });
 
-// INDEXES - Add these for performance
+// ==================== OPTIMIZED INDEXES ====================
+// Single-field (used alone)
+PaymentSchema.index({ referenceNumber: 1 }, { unique: true });
 PaymentSchema.index({ applicationId: 1 });
-PaymentSchema.index({ status: 1 });
-PaymentSchema.index({ createdAt: -1 });
-PaymentSchema.index({ paymentType: 1 });
 PaymentSchema.index({ billingId: 1 });
-PaymentSchema.index({ referenceNumber: 1 });
+PaymentSchema.index({ createdAt: -1 });
+
+// Compound (admin dashboard / filtered lists)
+PaymentSchema.index({ status: 1, createdAt: -1 });
+PaymentSchema.index({ paymentType: 1, status: 1, createdAt: -1 });
+PaymentSchema.index({ billingId: 1, status: 1 });
+PaymentSchema.index({ userId: 1, createdAt: -1 });
+PaymentSchema.index({ paymentMethod: 1, status: 1 });
 PaymentSchema.index({ customerName: 1 });
-PaymentSchema.index({ paymentMethod: 1 });
+PaymentSchema.index({ customerEmail: 1 });
 
 export default mongoose.model<IPayment>("Payment", PaymentSchema);
