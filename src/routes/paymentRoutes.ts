@@ -1,4 +1,4 @@
-// backend/src/routes/paymentRoutes.ts - COMPLETE WITH MIGRATION ROUTE
+// backend/src/routes/paymentRoutes.ts - COMPLETE WITH UPDATE ROUTE
 
 import express from "express";
 import { body } from "express-validator";
@@ -12,6 +12,7 @@ import {
   getPaymentStats,
   refundPayment,
   confirmPayment,
+  updatePayment,
   rejectPayment,
   getPendingPayments,
   getAllPaymentsAdmin,
@@ -85,6 +86,14 @@ router.put(
   protect,
   authorize("super_admin", "admin", "staff"),
   confirmPayment,
+);
+
+// ==================== UPDATE ROUTE (EDITABLE EVEN IF COMPLETED) ====================
+router.put(
+  "/:id",
+  protect,
+  authorize("super_admin", "admin", "staff"),
+  updatePayment,
 );
 
 router.put(

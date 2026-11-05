@@ -1,4 +1,4 @@
-// backend/src/controllers/paymentController.ts - COMPLETE FIXED - PRO-RATED PAYMENT TYPE CORRECTLY SET
+// backend/src/controllers/paymentController.ts - COMPLETE FIXED - PRO-RATED PAYMENT TYPE CORRECTLY SET + CUSTOMIZABLE AMOUNT + EDITABLE COMPLETED PAYMENTS
 
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
@@ -653,7 +653,7 @@ export const refundPayment = async (
   }
 };
 
-// ==================== CONFIRM PAYMENT (ADMIN ONLY) - WITH PDF ATTACHMENT ====================
+// ==================== CONFIRM PAYMENT (ADMIN ONLY) - WITH CUSTOMIZABLE AMOUNT ====================
 export const confirmPayment = async (
   req: AuthRequest,
   res: Response,
@@ -664,7 +664,7 @@ export const confirmPayment = async (
 
   try {
     const { id } = req.params;
-    const { notes, paymentType } = req.body;
+    const { notes, paymentType, customAmount } = req.body;
     const adminId = req.user._id;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -686,6 +686,38 @@ export const confirmPayment = async (
       await session.abortTransaction();
       return res.status(400).json({ message: "Payment already confirmed" });
     }
+
+    // ==================== CUSTOMIZABLE AMOUNT ====================
+    const originalAmount = payment.amount;
+    let finalAmount = payment.amount;
+
+    if (customAmount !== undefined && customAmount !== null) {
+      const parsedAmount = Number(customAmount);
+      if (isNaN(parsedAmount) || parsedAmount < 0) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          message: "Invalid custom amount. Must be a non-negative number.",
+        });
+      }
+      finalAmount = parsedAmount;
+      payment.amount = finalAmount;
+
+      // Store the original amount in metadata for audit trail
+      if (!payment.metadata) {
+        payment.metadata = {};
+      }
+      payment.metadata.originalAmount = originalAmount;
+      payment.metadata.customAmount = finalAmount;
+      payment.metadata.amountAdjustedBy = adminId;
+      payment.metadata.amountAdjustedAt = new Date();
+      payment.metadata.amountAdjustmentReason =
+        notes || "Amount adjusted during confirmation";
+
+      console.log(
+        `💰 Amount adjusted: ₱${originalAmount} → ₱${finalAmount} by admin ${adminId}`,
+      );
+    }
+    // ✅ END CUSTOMIZABLE AMOUNT
 
     let readableApplicationId = "";
     let customerEmail = "";
@@ -768,6 +800,9 @@ export const confirmPayment = async (
         customerName: payment.customerName,
         customerEmail: payment.customerEmail,
         customerPhone: payment.customerPhone,
+        originalAmount: originalAmount,
+        finalAmount: finalAmount,
+        amountAdjusted: originalAmount !== finalAmount,
       },
       notes: payment.paymentDetails?.notes,
       isFree: payment.paymentDetails?.isFree || false,
@@ -858,6 +893,8 @@ export const confirmPayment = async (
         console.log(`   To: ${customerEmail}`);
         console.log(`   Payment ID: ${payment._id}`);
         console.log(`   Amount: ₱${payment.amount}`);
+        console.log(`   Original Amount: ₱${originalAmount}`);
+        console.log(`   Amount Adjusted: ${originalAmount !== finalAmount}`);
         console.log(`   Payment Type: ${payment.paymentType}`);
         console.log(`   Location: ${location || "NONE"}`);
         console.log(`========================================`);
@@ -1114,8 +1151,246 @@ export const confirmPayment = async (
 
     res.status(200).json({
       success: true,
-      message: "Payment confirmed successfully.",
+      message:
+        originalAmount !== finalAmount
+          ? `Payment confirmed successfully. Amount adjusted from ₱${originalAmount} to ₱${finalAmount}.`
+          : "Payment confirmed successfully.",
       data: populatedPayment,
+      amountAdjusted: originalAmount !== finalAmount,
+      originalAmount: originalAmount,
+      finalAmount: finalAmount,
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
+// ==================== UPDATE PAYMENT (EDITABLE EVEN IF COMPLETED) ====================
+// @desc    Update payment details (admin only) - works for pending AND completed payments
+// @route   PUT /api/payments/:id
+// @access  Private/Admin
+export const updatePayment = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { id } = req.params;
+    const {
+      amount,
+      paymentMethod,
+      paymentType,
+      status,
+      referenceNumber,
+      notes,
+      customerName,
+      customerEmail,
+      customerPhone,
+      paidAt,
+      transactionId,
+    } = req.body;
+    const adminId = req.user._id;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      await session.abortTransaction();
+      return res.status(400).json({ message: "Invalid payment ID" });
+    }
+
+    const payment = await Payment.findById(id).session(session);
+    if (!payment) {
+      await session.abortTransaction();
+      return res.status(404).json({ message: "Payment not found" });
+    }
+
+    const originalSnapshot = {
+      amount: payment.amount,
+      paymentMethod: payment.paymentMethod,
+      paymentType: payment.paymentType,
+      status: payment.status,
+      referenceNumber: payment.referenceNumber,
+      customerName: payment.customerName,
+      customerEmail: payment.customerEmail,
+      customerPhone: payment.customerPhone,
+      paidAt: payment.paidAt,
+      transactionId: payment.transactionId,
+    };
+
+    // --- Amount ---
+    if (amount !== undefined && amount !== null) {
+      const parsed = Number(amount);
+      if (isNaN(parsed) || parsed < 0) {
+        await session.abortTransaction();
+        return res
+          .status(400)
+          .json({ message: "Invalid amount. Must be a non-negative number." });
+      }
+      payment.amount = parsed;
+    }
+
+    // --- Payment Method ---
+    if (paymentMethod !== undefined && paymentMethod !== null) {
+      const validMethods = [
+        "paymongo",
+        "dragonpay",
+        "gcash",
+        "maya",
+        "card",
+        "bank_transfer",
+        "manual",
+        "free",
+      ];
+      if (!validMethods.includes(paymentMethod)) {
+        await session.abortTransaction();
+        return res.status(400).json({ message: "Invalid payment method" });
+      }
+      payment.paymentMethod = paymentMethod;
+    }
+
+    // --- Payment Type ---
+    if (paymentType !== undefined && paymentType !== null) {
+      const validTypes = [
+        "subscription",
+        "installation",
+        "pro_rated",
+        "others",
+      ];
+      if (!validTypes.includes(paymentType)) {
+        await session.abortTransaction();
+        return res.status(400).json({ message: "Invalid payment type" });
+      }
+      payment.paymentType = paymentType;
+    }
+
+    // --- Status ---
+    if (status !== undefined && status !== null) {
+      const validStatuses = [
+        "pending",
+        "processing",
+        "completed",
+        "failed",
+        "refunded",
+      ];
+      if (!validStatuses.includes(status)) {
+        await session.abortTransaction();
+        return res.status(400).json({ message: "Invalid status" });
+      }
+      payment.status = status;
+      // If status set to completed and no paidAt, set it
+      if (status === "completed" && !payment.paidAt) {
+        payment.paidAt = new Date();
+      }
+    }
+
+    // --- Reference Number ---
+    if (referenceNumber !== undefined && referenceNumber !== null) {
+      const trimmed = String(referenceNumber).trim();
+      if (trimmed.length > 0) {
+        // Check uniqueness
+        const existing = await Payment.findOne({
+          referenceNumber: trimmed,
+          _id: { $ne: payment._id },
+        }).session(session);
+        if (existing) {
+          await session.abortTransaction();
+          return res
+            .status(400)
+            .json({ message: "Reference number already exists" });
+        }
+        payment.referenceNumber = trimmed;
+      }
+    }
+
+    // --- Customer info ---
+    if (customerName !== undefined && customerName !== null) {
+      payment.customerName = String(customerName).trim();
+    }
+    if (customerEmail !== undefined && customerEmail !== null) {
+      payment.customerEmail = String(customerEmail).trim();
+    }
+    if (customerPhone !== undefined && customerPhone !== null) {
+      payment.customerPhone = String(customerPhone).trim();
+    }
+
+    // --- Paid At ---
+    if (paidAt !== undefined && paidAt !== null) {
+      const d = new Date(paidAt);
+      if (isNaN(d.getTime())) {
+        await session.abortTransaction();
+        return res.status(400).json({ message: "Invalid paidAt date" });
+      }
+      payment.paidAt = d;
+    }
+
+    // --- Transaction ID ---
+    if (transactionId !== undefined && transactionId !== null) {
+      payment.transactionId = String(transactionId).trim();
+    }
+
+    // --- Notes ---
+    if (notes !== undefined && notes !== null) {
+      if (!payment.paymentDetails) {
+        payment.paymentDetails = {
+          gateway: "manual",
+          gatewayResponse: {},
+        } as any;
+      }
+      payment.paymentDetails.notes = String(notes);
+    }
+
+    // --- Audit trail ---
+    if (!payment.metadata) {
+      payment.metadata = {};
+    }
+    payment.metadata.lastEditedBy = adminId;
+    payment.metadata.lastEditedAt = new Date();
+    payment.metadata.originalSnapshot = originalSnapshot;
+
+    await payment.save({ session });
+
+    // --- Sync billing / billing cycle if status changed ---
+    if (
+      payment.billingId &&
+      status !== undefined &&
+      originalSnapshot.status !== status
+    ) {
+      const billing = await Billing.findById(payment.billingId).session(
+        session,
+      );
+      if (billing) {
+        if (status === "completed") {
+          billing.status = "paid";
+          billing.paymentId = payment._id;
+          billing.paidAt = payment.paidAt || new Date();
+          if (billing.isInstallationBill || billing.installationFee > 0) {
+            billing.installationFeePaid = true;
+          }
+        } else if (originalSnapshot.status === "completed") {
+          // Reverting away from completed
+          billing.status = "pending_confirmation";
+          billing.paymentId = undefined;
+          billing.paidAt = undefined;
+          if (billing.isInstallationBill || billing.installationFee > 0) {
+            billing.installationFeePaid = false;
+          }
+        }
+        await billing.save({ session });
+      }
+    }
+
+    await session.commitTransaction();
+
+    const updatedPayment = await getPopulatedPayment(payment._id.toString());
+
+    res.status(200).json({
+      success: true,
+      message: "Payment updated successfully",
+      data: updatedPayment,
     });
   } catch (error) {
     await session.abortTransaction();
@@ -2127,6 +2402,7 @@ export default {
   getPaymentStats,
   refundPayment,
   confirmPayment,
+  updatePayment,
   rejectPayment,
   getPendingPayments,
   getAllPaymentsAdmin,
