@@ -3,6 +3,8 @@
 // FIXED: PER-ADMIN toggle — every sendEmail call now passes adminId so the
 //        requesting admin's OWN toggle is checked, not a global one.
 // NEW: Wilconnect buildings (Vitalez, El Pueblo, Newport) use workselpueblo@fyberblizz.com
+// NEW: PLAN FILTER + BUILDING FILTER on getCustomersForEmail — returns planId/planName per customer
+// FIX: TS2339 "planName does not exist on type FlattenMaps<IApplication>" — cast customer to any
 
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
@@ -12,6 +14,8 @@ import BillingCycle from "../models/BillingCycle";
 import EmailSentRecord from "../models/EmailSentRecord";
 import EmailTemplate from "../models/EmailTemplate";
 import EmailSchedule from "../models/EmailSchedule";
+import Plan from "../models/Plan";
+import Building from "../models/Building";
 import emailService, {
   getLocationFromEntity,
   getCollectionEmailByLocation,
@@ -291,6 +295,70 @@ function parseScheduledDate(scheduledFor: string): Date {
 }
 
 // ============================================================
+// HELPER: Escape regex special chars
+// ============================================================
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// ============================================================
+// HELPER: Resolve plan reference (id or name)
+// ============================================================
+async function resolvePlanId(rawPlan?: string): Promise<string | null> {
+  if (!rawPlan || rawPlan === "all" || rawPlan.trim() === "") return null;
+  const trimmed = rawPlan.trim();
+  if (mongoose.Types.ObjectId.isValid(trimmed)) {
+    return trimmed;
+  }
+  const plan = await Plan.findOne({
+    name: new RegExp(`^${escapeRegex(trimmed)}$`, "i"),
+  })
+    .select("_id")
+    .lean();
+  return plan ? plan._id.toString() : null;
+}
+
+// ============================================================
+// HELPER: Resolve building reference (id or name)
+// ============================================================
+async function resolveBuildingRef(rawBuilding?: string): Promise<{
+  id: string | null;
+  name: string | null;
+}> {
+  if (!rawBuilding || rawBuilding === "all" || rawBuilding.trim() === "") {
+    return { id: null, name: null };
+  }
+  const trimmed = rawBuilding.trim();
+  if (mongoose.Types.ObjectId.isValid(trimmed)) {
+    const building = await Building.findById(trimmed)
+      .select("_id buildingName name")
+      .lean();
+    if (building) {
+      return {
+        id: building._id.toString(),
+        name: (building as any).buildingName || (building as any).name || null,
+      };
+    }
+    return { id: trimmed, name: null };
+  }
+  const building = await Building.findOne({
+    $or: [
+      { buildingName: new RegExp(`^${escapeRegex(trimmed)}$`, "i") },
+      { name: new RegExp(`^${escapeRegex(trimmed)}$`, "i") },
+    ],
+  })
+    .select("_id buildingName name")
+    .lean();
+  return building
+    ? {
+        id: building._id.toString(),
+        name:
+          (building as any).buildingName || (building as any).name || trimmed,
+      }
+    : { id: null, name: trimmed };
+}
+
+// ============================================================
 // GENERATE EMAIL PREVIEW
 // ============================================================
 function generateEmailPreview(
@@ -428,6 +496,7 @@ function generateEmailPreview(
 
 // ============================================================
 // GET CUSTOMERS FOR EMAIL - FULLY OPTIMIZED + ALWAYS FRESH
+// NOW WITH PLAN + BUILDING FILTERS + planId/planName IN RESPONSE
 // ============================================================
 export const getCustomersForEmail = async (
   req: AuthRequest,
@@ -437,7 +506,15 @@ export const getCustomersForEmail = async (
   if (!checkAdmin(req, res)) return;
 
   try {
-    const { search, status, hasBilling, forceRefresh, location } = req.query;
+    const {
+      search,
+      status,
+      hasBilling,
+      forceRefresh,
+      location,
+      building,
+      plan,
+    } = req.query as Record<string, string | undefined>;
 
     res.set({
       "Cache-Control": "no-store, no-cache, must-revalidate, private",
@@ -446,19 +523,26 @@ export const getCustomersForEmail = async (
       "Surrogate-Control": "no-store",
     });
 
-    let query: any = {};
+    const query: any = {};
+    const andConditions: any[] = [];
 
-    if (search) {
+    // ==================== SEARCH ====================
+    if (search && search.trim()) {
+      const regex = new RegExp(escapeRegex(search.trim()), "i");
       query.$or = [
-        { firstName: { $regex: search, $options: "i" } },
-        { lastName: { $regex: search, $options: "i" } },
-        { email: { $regex: search, $options: "i" } },
-        { applicationId: { $regex: search, $options: "i" } },
+        { firstName: regex },
+        { lastName: regex },
+        { email: regex },
+        { applicationId: regex },
       ];
     }
 
-    if (status) query.status = status;
+    // ==================== STATUS ====================
+    if (status && status !== "all") {
+      query.status = status;
+    }
 
+    // ==================== LOCATION ====================
     if (location && location !== "all") {
       if (location === "breeze") {
         query.buildingName = { $regex: "breeze", $options: "i" };
@@ -466,7 +550,7 @@ export const getCustomersForEmail = async (
         query.buildingName = { $regex: /sil|silk/, $options: "i" };
       } else if (location === "other") {
         query.buildingName = {
-          $not: { $regex: /breeze|sil|silk/, $options: "i" },
+          $not: { $regex: /breeze|sil|silk/i },
         };
       } else if (location === "wilconnect") {
         query.buildingName = {
@@ -475,9 +559,62 @@ export const getCustomersForEmail = async (
       }
     }
 
+    // ==================== BUILDING FILTER (NEW) ====================
+    // Accepts either a MongoDB ObjectId or a building name
+    if (building && building !== "all" && building.trim() !== "") {
+      const ref = await resolveBuildingRef(building);
+      if (ref.id && mongoose.Types.ObjectId.isValid(ref.id)) {
+        andConditions.push({
+          $or: [
+            { buildingId: ref.id },
+            ref.name
+              ? {
+                  buildingName: new RegExp(`^${escapeRegex(ref.name)}$`, "i"),
+                }
+              : { _id: { $exists: false } },
+          ],
+        });
+      } else if (ref.name) {
+        andConditions.push({
+          buildingName: new RegExp(`^${escapeRegex(ref.name)}$`, "i"),
+        });
+      }
+    }
+
+    // ==================== PLAN FILTER (NEW) ====================
+    // Accepts either a MongoDB ObjectId or a plan name.
+    // Tries planId field first, then planName field, then populated plan ref.
+    if (plan && plan !== "all" && plan.trim() !== "") {
+      const planId = await resolvePlanId(plan);
+      if (planId) {
+        const planDoc = await Plan.findById(planId).select("name").lean();
+        const planName = planDoc?.name;
+
+        const planOr: any[] = [{ planId: planId }];
+        if (planName) {
+          planOr.push({
+            planName: new RegExp(`^${escapeRegex(planName)}$`, "i"),
+          });
+        }
+        andConditions.push({ $or: planOr });
+      } else {
+        // Could not resolve plan — return empty on purpose so UI doesn't show
+        // stale customers when an invalid plan id/name is passed.
+        andConditions.push({ _id: { $exists: false } });
+      }
+    }
+
+    if (andConditions.length > 0) {
+      query.$and = andConditions;
+    }
+
+    console.log(
+      `🔎 getCustomersForEmail filters: location=${location || "all"}, building=${building || "all"}, plan=${plan || "all"}, search=${search || ""}`,
+    );
+
     const applications = await Application.find(query)
       .select(
-        "firstName lastName email phoneNumber applicationId status buildingName buildingId",
+        "firstName lastName email phoneNumber applicationId status buildingName buildingId planId planName plan price",
       )
       .lean()
       .sort({ createdAt: -1 })
@@ -497,12 +634,56 @@ export const getCustomersForEmail = async (
           fetchedAt: new Date().toISOString(),
           totalApplications: 0,
           forceRefresh: forceRefresh === "true",
+          filters: { location, building, plan, search, status, hasBilling },
         },
       });
     }
 
+    // ==================== BATCH LOAD PLANS ====================
+    const planIds = Array.from(
+      new Set(
+        applications
+          .map((app: any) => app.planId)
+          .filter((id: any) => id && mongoose.Types.ObjectId.isValid(id)),
+      ),
+    );
+
+    const plans =
+      planIds.length > 0
+        ? await Plan.find({ _id: { $in: planIds } })
+            .select("_id name price speed")
+            .lean()
+        : [];
+
+    const planMap = new Map<string, any>();
+    for (const p of plans) {
+      planMap.set(p._id.toString(), p);
+    }
+
+    // ==================== BATCH LOAD BUILDINGS ====================
+    const buildingIds = Array.from(
+      new Set(
+        applications
+          .map((app: any) => app.buildingId)
+          .filter((id: any) => id && mongoose.Types.ObjectId.isValid(id)),
+      ),
+    );
+
+    const buildings =
+      buildingIds.length > 0
+        ? await Building.find({ _id: { $in: buildingIds } })
+            .select("_id buildingName name location")
+            .lean()
+        : [];
+
+    const buildingMap = new Map<string, any>();
+    for (const b of buildings) {
+      buildingMap.set(b._id.toString(), b);
+    }
+
     const applicationIds = applications.map((app) => app.applicationId);
 
+    // ==================== BILLING / UNPAID / LAST BILL (original logic) ====================
     const billingCycles = await BillingCycle.find({
       applicationId: { $in: applicationIds },
     })
@@ -553,20 +734,45 @@ export const getCustomersForEmail = async (
       lastBillsAgg.map((item) => [item._id, item.lastBill]),
     );
 
-    const enhancedCustomers = applications.map((app) => {
+    // ==================== ENRICH EACH CUSTOMER ====================
+    const enhancedCustomers = applications.map((app: any) => {
       const lastBill = lastBillMap.get(app.applicationId);
       const location = extractLocationFromBuildingName(app.buildingName);
       const isWilconnect = isWilconnectBuilding(app.buildingName);
 
-      // ✅ Determine the sender email based on building
+      // Resolve plan from batch (in case planId is set but planName is missing)
+      const resolvedPlan = app.planId ? planMap.get(String(app.planId)) : null;
+
+      const finalPlanId = app.planId || resolvedPlan?._id || null;
+      const finalPlanName = app.planName || resolvedPlan?.name || "";
+      const finalPlanPrice =
+        typeof app.price === "number" ? app.price : (resolvedPlan?.price ?? 0);
+      const finalPlanSpeed = resolvedPlan?.speed
+        ? `${resolvedPlan.speed.download}Mbps/${resolvedPlan.speed.upload}Mbps`
+        : "";
+
+      // Resolve building location
+      const resolvedBuilding = app.buildingId
+        ? buildingMap.get(String(app.buildingId))
+        : null;
+      let computedLocation = location;
+      if (
+        computedLocation === "other" &&
+        resolvedBuilding &&
+        (resolvedBuilding as any).location
+      ) {
+        computedLocation = (resolvedBuilding as any).location;
+      }
+
+      // Determine the sender email based on building
       let senderEmail = "";
       let senderLabel = "";
       if (isWilconnect) {
         senderEmail = ADDITIONAL_SENDER_EMAILS.workselpueblo;
         senderLabel = "Workselpueblo";
-      } else if (location !== "other") {
-        senderEmail = getCollectionEmailByLocation(location);
-        senderLabel = `${location.charAt(0).toUpperCase() + location.slice(1)} Collection`;
+      } else if (computedLocation !== "other") {
+        senderEmail = getCollectionEmailByLocation(computedLocation);
+        senderLabel = `${computedLocation.charAt(0).toUpperCase() + computedLocation.slice(1)} Collection`;
       } else {
         senderEmail =
           process.env.COLLECTION_EMAIL_DEFAULT || "admin@misterfyber.com";
@@ -575,11 +781,25 @@ export const getCustomersForEmail = async (
 
       return {
         ...app,
+        // ✅ PLAN FIELDS (crucial for frontend plan filter)
+        planId: finalPlanId,
+        planName: finalPlanName,
+        planPrice: finalPlanPrice,
+        planSpeed: finalPlanSpeed,
+        // ✅ BUILDING RESOLUTION
+        buildingName:
+          app.buildingName ||
+          (resolvedBuilding as any)?.buildingName ||
+          (resolvedBuilding as any)?.name ||
+          "",
+        buildingId: app.buildingId || resolvedBuilding?._id || null,
+        // ✅ BILLING FLAGS
         hasBilling: applicationsWithBilling.has(app.applicationId),
         hasUnpaidBills: applicationsWithUnpaidBills.has(app.applicationId),
         lastBillAmount: lastBill?.total || 0,
         lastBillStatus: lastBill?.status || null,
-        location,
+        // ✅ LOCATION + SENDER
+        location: computedLocation,
         isWilconnect,
         senderEmail,
         senderLabel,
@@ -587,6 +807,7 @@ export const getCustomersForEmail = async (
       };
     });
 
+    // ==================== POST-FILTER hasBilling ====================
     const filteredCustomers =
       hasBilling === "true"
         ? enhancedCustomers.filter((c) => c.hasBilling)
@@ -595,7 +816,8 @@ export const getCustomersForEmail = async (
           : enhancedCustomers;
 
     console.log(
-      `✅ Returning ${filteredCustomers.length} customers (fresh from DB)`,
+      `✅ Returning ${filteredCustomers.length} customers (fresh from DB) ` +
+        `[location=${location || "all"}, building=${building || "all"}, plan=${plan || "all"}]`,
     );
 
     res.status(200).json({
@@ -607,6 +829,7 @@ export const getCustomersForEmail = async (
         fetchedAt: new Date().toISOString(),
         totalApplications: applications.length,
         forceRefresh: forceRefresh === "true",
+        filters: { location, building, plan, search, status, hasBilling },
       },
     });
   } catch (error) {
@@ -643,7 +866,9 @@ export const getCustomerBills = async (
     const [bills, customer] = await Promise.all([
       Billing.find({ applicationId }).sort({ createdAt: -1 }).lean(),
       Application.findOne({ applicationId })
-        .select("firstName lastName email phoneNumber buildingName buildingId")
+        .select(
+          "firstName lastName email phoneNumber buildingName buildingId planId planName plan price",
+        )
         .lean(),
     ]);
 
@@ -656,12 +881,26 @@ export const getCustomerBills = async (
         }
       : null;
 
+    // Resolve plan if planId present
+    let resolvedPlan: any = null;
+    const customerAny = customer as any;
+    if (
+      customerAny?.planId &&
+      mongoose.Types.ObjectId.isValid(customerAny.planId)
+    ) {
+      resolvedPlan = await Plan.findById(customerAny.planId)
+        .select("_id name price speed")
+        .lean();
+    }
+
     res.status(200).json({
       success: true,
       data: {
         customer: customer
           ? {
-              ...customer,
+              ...customerAny,
+              planId: customerAny.planId || resolvedPlan?._id || null,
+              planName: customerAny.planName || resolvedPlan?.name || "",
               isWilconnect,
               senderInfo,
             }
@@ -1275,7 +1514,7 @@ export const sendBulkEmails = async (
     }
 
     // Count how many were Wilconnect
-    const wilconnectCount = results.filter((r) => r.isWilconnect).length;
+    const wilconnectCount = results.filter((r: any) => r.isWilconnect).length;
 
     res.status(200).json({
       success: true,
@@ -1852,7 +2091,7 @@ export const sendReminderToUnpaid = async (
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
 
-    const wilconnectCount = results.filter((r) => r.isWilconnect).length;
+    const wilconnectCount = results.filter((r: any) => r.isWilconnect).length;
 
     res.status(200).json({
       success: true,
@@ -2058,7 +2297,7 @@ export const scheduleEmail = async (
         query.buildingName = { $regex: /sil|silk/, $options: "i" };
       } else if (locationFilter === "other") {
         query.buildingName = {
-          $not: { $regex: /breeze|sil|silk/, $options: "i" },
+          $not: { $regex: /breeze|sil|silk/i },
         };
       }
 
