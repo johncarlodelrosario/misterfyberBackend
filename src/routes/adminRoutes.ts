@@ -16,6 +16,8 @@ import {
   getCustomersWithoutAccounts,
   toggleCustomerEmailAlerts,
   getCustomerEmailAlertsPreference,
+  getAdminThemePreference,
+  updateAdminThemePreference,
 } from "../controllers/adminController";
 import { optionalAuth, adminMiddleware } from "../middleware/auth";
 
@@ -27,7 +29,6 @@ router.get("/dashboard", getDashboardStats);
 router.get("/recent-activities", getRecentActivities);
 
 // ==================== CUSTOMER EMAIL ALERT TOGGLE ROUTES ====================
-// These routes ALWAYS use the EXACT value provided by admin - NO DEFAULTS
 router.put(
   "/customer-email-alerts/toggle",
   adminMiddleware,
@@ -38,6 +39,10 @@ router.get(
   adminMiddleware,
   getCustomerEmailAlertsPreference,
 );
+
+// ==================== THEME PREFERENCE ROUTES ⭐ ====================
+router.get("/theme-preference", adminMiddleware, getAdminThemePreference);
+router.put("/theme-preference", adminMiddleware, updateAdminThemePreference);
 
 router.post(
   "/manual-customer",
@@ -57,7 +62,6 @@ router.get(
   adminMiddleware,
   getCustomersWithoutAccounts,
 );
-
 router.get("/users", adminMiddleware, getAllUsers);
 router.get("/users/:id", adminMiddleware, getUser);
 router.put("/users/:id", adminMiddleware, updateUser);

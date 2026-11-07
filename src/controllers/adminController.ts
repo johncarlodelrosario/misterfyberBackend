@@ -1,10 +1,4 @@
 // backend/src/controllers/adminController.ts - COMPLETE FIXED VERSION
-// FIXED: Toggle is now PER-ADMIN (each admin has their own customerEmailAlertsEnabled)
-// When THIS admin's toggle is OFF = NO customer emails sent by THIS admin.
-// When THIS admin's toggle is ON = customer emails sent by THIS admin.
-// FIXED: createManualCustomer now passes adminId to sendWelcomeEmail and
-//        sendApplicationApproved so the per-admin toggle is respected.
-
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import User from "../models/User";
@@ -29,11 +23,9 @@ let dashboardCacheTime = 0;
 const CACHE_TTL = 5 * 60 * 1000;
 
 // ⭐ Helper: Get the requesting admin's OWN record (PER-ADMIN toggle)
-// No more global source-of-truth. Each admin controls their own toggle.
 const getRequestingAdmin = async (req: AuthRequest) => {
   const adminId = req.user?._id || req.user?.id;
   if (!adminId) return null;
-
   const admin = await Admin.findById(adminId);
   return admin;
 };
@@ -268,10 +260,7 @@ export const getDashboardStats = async (
     dashboardCache = result;
     dashboardCacheTime = now;
 
-    res.status(200).json({
-      success: true,
-      data: result,
-    });
+    res.status(200).json({ success: true, data: result });
   } catch (error) {
     next(error);
   }
@@ -309,13 +298,15 @@ export const getAllUsers = async (
       User.countDocuments(query),
     ]);
 
-    res.status(200).json({
-      success: true,
-      data: users,
-      totalPages: Math.ceil(total / limitNum),
-      currentPage: parseInt(page as string),
-      total,
-    });
+    res
+      .status(200)
+      .json({
+        success: true,
+        data: users,
+        totalPages: Math.ceil(total / limitNum),
+        currentPage: parseInt(page as string),
+        total,
+      });
   } catch (error) {
     next(error);
   }
@@ -328,7 +319,6 @@ export const getUser = async (
 ) => {
   try {
     const userId = req.params.id;
-
     const [user, payments, bills, billingCycle] = await Promise.all([
       User.findById(userId).select("-password").populate("planId").lean(),
       Payment.find({ userId }).sort({ createdAt: -1 }).limit(10).lean(),
@@ -338,14 +328,10 @@ export const getUser = async (
         .lean(),
     ]);
 
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
-
-    res.status(200).json({
-      success: true,
-      data: { user, payments, bills, billingCycle },
-    });
+    if (!user) return res.status(404).json({ message: "User not found" });
+    res
+      .status(200)
+      .json({ success: true, data: { user, payments, bills, billingCycle } });
   } catch (error) {
     next(error);
   }
@@ -358,10 +344,7 @@ export const updateUser = async (
 ) => {
   try {
     let user = await User.findById(req.params.id);
-
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
+    if (!user) return res.status(404).json({ message: "User not found" });
 
     const {
       firstName,
@@ -372,7 +355,6 @@ export const updateUser = async (
       status,
       mikrotik,
     } = req.body;
-
     if (firstName) user.firstName = firstName;
     if (lastName) user.lastName = lastName;
     if (phoneNumber) user.phoneNumber = phoneNumber;
@@ -382,18 +364,12 @@ export const updateUser = async (
     if (mikrotik) user.mikrotik = { ...user.mikrotik, ...mikrotik };
 
     await user.save();
-
     dashboardCache = null;
-
     const updatedUser = await User.findById(user._id)
       .select("-password")
       .populate("planId")
       .lean();
-
-    res.status(200).json({
-      success: true,
-      data: updatedUser,
-    });
+    res.status(200).json({ success: true, data: updatedUser });
   } catch (error) {
     next(error);
   }
@@ -406,14 +382,9 @@ export const deleteUser = async (
 ) => {
   try {
     const user = await User.findById(req.params.id);
-
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
-
+    if (!user) return res.status(404).json({ message: "User not found" });
     user.status = "inactive";
     await user.save();
-
     const billingCycle = await BillingCycle.findOne({
       userId: user._id,
       status: "active",
@@ -422,13 +393,10 @@ export const deleteUser = async (
       billingCycle.status = "cancelled";
       await billingCycle.save();
     }
-
     dashboardCache = null;
-
-    res.status(200).json({
-      success: true,
-      message: "User deactivated successfully",
-    });
+    res
+      .status(200)
+      .json({ success: true, message: "User deactivated successfully" });
   } catch (error) {
     next(error);
   }
@@ -441,16 +409,11 @@ export const approveUser = async (
 ) => {
   try {
     const user = await User.findById(req.params.id);
-
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
-
+    if (!user) return res.status(404).json({ message: "User not found" });
     user.status = "active";
     await user.save();
-
     if (!user.mikrotik || !user.mikrotik.username) {
-      if (!user.mikrotik) {
+      if (!user.mikrotik)
         user.mikrotik = {
           username: "",
           password: "",
@@ -458,19 +421,18 @@ export const approveUser = async (
           ipAddress: "",
           macAddress: "",
         };
-      }
       user.mikrotik.username = user.username;
       user.mikrotik.password = Math.random().toString(36).slice(-8);
       await user.save();
     }
-
     dashboardCache = null;
-
-    res.status(200).json({
-      success: true,
-      message: "User approved successfully",
-      data: user,
-    });
+    res
+      .status(200)
+      .json({
+        success: true,
+        message: "User approved successfully",
+        data: user,
+      });
   } catch (error) {
     next(error);
   }
@@ -483,14 +445,9 @@ export const suspendUser = async (
 ) => {
   try {
     const user = await User.findById(req.params.id);
-
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
-
+    if (!user) return res.status(404).json({ message: "User not found" });
     user.status = "suspended";
     await user.save();
-
     const billingCycle = await BillingCycle.findOne({
       userId: user._id,
       status: "active",
@@ -500,13 +457,10 @@ export const suspendUser = async (
       billingCycle.serviceSuspendedAt = new Date();
       await billingCycle.save();
     }
-
     dashboardCache = null;
-
-    res.status(200).json({
-      success: true,
-      message: "User suspended successfully",
-    });
+    res
+      .status(200)
+      .json({ success: true, message: "User suspended successfully" });
   } catch (error) {
     next(error);
   }
@@ -521,7 +475,6 @@ export const getAllPayments = async (
     const { page = 1, limit = 10, status } = req.query;
     const skip = (parseInt(page as string) - 1) * parseInt(limit as string);
     const limitNum = parseInt(limit as string);
-
     let query: any = {};
     if (status) query.status = status;
 
@@ -593,7 +546,6 @@ export const getAllBills = async (
     const { page = 1, limit = 10, status, userId } = req.query;
     const skip = (parseInt(page as string) - 1) * parseInt(limit as string);
     const limitNum = parseInt(limit as string);
-
     let query: any = {};
     if (status) query.status = status;
     if (userId) query.userId = userId;
@@ -618,14 +570,16 @@ export const getAllBills = async (
       ]),
     ]);
 
-    res.status(200).json({
-      success: true,
-      data: bills,
-      stats,
-      totalPages: Math.ceil(total / limitNum),
-      currentPage: parseInt(page as string),
-      total,
-    });
+    res
+      .status(200)
+      .json({
+        success: true,
+        data: bills,
+        stats,
+        totalPages: Math.ceil(total / limitNum),
+        currentPage: parseInt(page as string),
+        total,
+      });
   } catch (error) {
     next(error);
   }
@@ -638,7 +592,6 @@ export const generateReport = async (
 ) => {
   try {
     const { type, startDate, endDate, format } = req.body;
-
     let data: any = {};
 
     switch (type) {
@@ -664,7 +617,6 @@ export const generateReport = async (
           { $sort: { "_id.year": 1, "_id.month": 1, "_id.day": 1 } },
         ]);
         break;
-
       case "users":
         data = await User.aggregate([
           {
@@ -685,7 +637,6 @@ export const generateReport = async (
           { $sort: { "_id.year": 1, "_id.month": 1, "_id.day": 1 } },
         ]);
         break;
-
       case "plans":
         data = await User.aggregate([
           { $match: { planId: { $ne: null } } },
@@ -708,7 +659,6 @@ export const generateReport = async (
           },
         ]);
         break;
-
       case "billing":
         data = await Billing.aggregate([
           {
@@ -725,7 +675,6 @@ export const generateReport = async (
           },
         ]);
         break;
-
       default:
         return res
           .status(400)
@@ -740,12 +689,13 @@ export const generateReport = async (
       );
       return res.status(200).send(JSON.stringify(data));
     }
-
-    res.status(200).json({
-      success: true,
-      data,
-      metadata: { type, startDate, endDate, generatedAt: new Date() },
-    });
+    res
+      .status(200)
+      .json({
+        success: true,
+        data,
+        metadata: { type, startDate, endDate, generatedAt: new Date() },
+      });
   } catch (error) {
     next(error);
   }
@@ -791,7 +741,6 @@ export const getRecentActivities = async (
           : user && user.email
             ? user.email
             : "Unknown User";
-
       activities.push({
         title: "Payment Received",
         description: `${userName} paid ₱${payment.amount?.toLocaleString() || 0}`,
@@ -833,7 +782,6 @@ export const getRecentActivities = async (
             : user && user.email
               ? user.email
               : "Unknown User";
-
         activities.push({
           title: "Bill Overdue",
           description: `${userName} has an overdue bill of ₱${bill.total?.toLocaleString() || 0}`,
@@ -848,13 +796,8 @@ export const getRecentActivities = async (
     activities.sort(
       (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
     );
-
-    res.status(200).json({
-      success: true,
-      data: activities.slice(0, 10),
-    });
+    res.status(200).json({ success: true, data: activities.slice(0, 10) });
   } catch (error) {
-    console.error("Error in getRecentActivities:", error);
     next(error);
   }
 };
@@ -865,7 +808,6 @@ const getTimeAgo = (date: Date): string => {
   const diffMins = Math.floor(diffMs / 60000);
   const diffHours = Math.floor(diffMs / 3600000);
   const diffDays = Math.floor(diffMs / 86400000);
-
   if (diffMins < 1) return "Just now";
   if (diffMins < 60) return `${diffMins} minute${diffMins > 1 ? "s" : ""} ago`;
   if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? "s" : ""} ago`;
@@ -900,34 +842,35 @@ export const createManualCustomer = async (
     } = req.body;
 
     if (!firstName || !lastName || !email || !phoneNumber) {
-      return res.status(400).json({
-        success: false,
-        message: "First name, last name, email, and phone number are required",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message:
+            "First name, last name, email, and phone number are required",
+        });
     }
-
     if (!planId) {
-      return res.status(400).json({
-        success: false,
-        message: "Plan selection is required",
-      });
+      return res
+        .status(400)
+        .json({ success: false, message: "Plan selection is required" });
     }
 
     const existingUser = await User.findOne({ email });
     if (existingUser) {
-      return res.status(400).json({
-        success: false,
-        message: "A user with this email already exists",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "A user with this email already exists",
+        });
     }
 
     const plan = await Plan.findById(planId);
-    if (!plan) {
-      return res.status(404).json({
-        success: false,
-        message: "Plan not found",
-      });
-    }
+    if (!plan)
+      return res
+        .status(404)
+        .json({ success: false, message: "Plan not found" });
 
     const application = await Application.create(
       [
@@ -957,8 +900,6 @@ export const createManualCustomer = async (
 
     const appDoc = application[0];
     let billingResult = null;
-
-    // ⭐ Get requesting admin's ID for per-admin toggle
     const requestingAdminId = getRequestingAdminId(req);
 
     if (startBillingImmediately) {
@@ -996,15 +937,11 @@ export const createManualCustomer = async (
             ipAddress: "",
             macAddress: "",
           },
-          billingInfo: {
-            currentBill: 0,
-            autoPay: false,
-          },
+          billingInfo: { currentBill: 0, autoPay: false },
         };
 
         const user = await User.create([userData], { session });
         const userDoc = user[0];
-
         appDoc.registeredUserId = userDoc._id;
         await appDoc.save({ session });
 
@@ -1017,7 +954,6 @@ export const createManualCustomer = async (
           },
           user: req.user,
         } as any;
-
         let capturedData: any = null;
         const billingRes = {
           status: (code: number) => ({
@@ -1030,14 +966,11 @@ export const createManualCustomer = async (
 
         await startBillingService(billingReq, billingRes, next);
         billingResult = capturedData;
-
-        // ⭐ Pass adminId so the per-admin toggle is respected
         await emailService.sendWelcomeEmail(userDoc, requestingAdminId);
       } catch (billingError) {
         console.error("Error starting billing:", billingError);
       }
     } else {
-      // ⭐ Pass adminId so the per-admin toggle is respected
       await emailService.sendApplicationApproved(
         appDoc,
         plan,
@@ -1055,10 +988,7 @@ export const createManualCustomer = async (
         ? "Customer created and billing started successfully!"
         : "Customer created successfully! An approval email has been sent with registration link. No account was created yet.",
       data: {
-        application: {
-          id: appDoc._id,
-          applicationId: appDoc.applicationId,
-        },
+        application: { id: appDoc._id, applicationId: appDoc.applicationId },
         billing: billingResult?.data || null,
       },
     });
@@ -1077,8 +1007,6 @@ export const getCustomersWithoutAccounts = async (
   next: NextFunction,
 ) => {
   try {
-    console.log("🔍 [ADMIN] Fetching customers without accounts...");
-
     const applications = await Application.find({
       status: "approved",
       $or: [
@@ -1091,27 +1019,14 @@ export const getCustomersWithoutAccounts = async (
       .sort({ createdAt: -1 })
       .lean();
 
-    console.log(
-      `✅ [ADMIN] Found ${applications.length} approved applications without user accounts`,
-    );
-
-    res.status(200).json({
-      success: true,
-      data: applications,
-      count: applications.length,
-    });
+    res
+      .status(200)
+      .json({ success: true, data: applications, count: applications.length });
   } catch (error) {
-    console.error("Error in getCustomersWithoutAccounts:", error);
     next(error);
   }
 };
 
-// ============================================================
-// ⭐⭐⭐ FIXED: TOGGLE CUSTOMER EMAIL ALERTS - PER ADMIN ⭐⭐⭐
-// ============================================================
-// Each admin has their OWN toggle. When John Carlo toggles, it only affects
-// John Carlo's account. When Larianne toggles, it only affects Larianne's.
-// No more shared/global source-of-truth.
 export const toggleCustomerEmailAlerts = async (
   req: AuthRequest,
   res: Response,
@@ -1121,72 +1036,47 @@ export const toggleCustomerEmailAlerts = async (
     const { enabled } = req.body;
     const requestingAdminId = req.user?._id || req.user?.id;
 
-    console.log(`🔄 ========================================`);
-    console.log(`🔄 TOGGLE CUSTOMER EMAIL ALERTS (PER-ADMIN)`);
-    console.log(`🔄 Requesting admin ID: ${requestingAdminId}`);
-    console.log(`🔄 Requesting admin email: ${req.user?.email}`);
-    console.log(`🔄 Requested value: ${enabled} (type: ${typeof enabled})`);
-    console.log(`🔄 ========================================`);
-
     if (typeof enabled !== "boolean") {
-      return res.status(400).json({
-        success: false,
-        message: "Please provide a boolean value for 'enabled'",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Please provide a boolean value for 'enabled'",
+        });
     }
-
     if (!requestingAdminId) {
-      return res.status(401).json({
-        success: false,
-        message: "You must be logged in as admin to toggle this setting",
-      });
+      return res
+        .status(401)
+        .json({
+          success: false,
+          message: "You must be logged in as admin to toggle this setting",
+        });
     }
 
-    // ⭐ Get the REQUESTING ADMIN's own record
     const admin = await Admin.findById(requestingAdminId);
+    if (!admin)
+      return res
+        .status(404)
+        .json({ success: false, message: "Admin account not found" });
 
-    if (!admin) {
-      return res.status(404).json({
-        success: false,
-        message: "Admin account not found",
-      });
-    }
-
-    console.log(`📧 Admin: ${admin.email} (${admin.role})`);
-    console.log(
-      `📧 BEFORE save: customerEmailAlertsEnabled = ${admin.customerEmailAlertsEnabled}`,
-    );
-
-    // ⭐ Set the EXACT value on THIS admin's record only
     admin.customerEmailAlertsEnabled = enabled;
     await admin.save();
 
-    // ⭐ VERIFY it actually saved on THIS admin's record
     const verifyAdmin = await Admin.findById(requestingAdminId).select(
       "email customerEmailAlertsEnabled",
     );
     const verifiedValue = verifyAdmin?.customerEmailAlertsEnabled === true;
 
-    console.log(`📧 AFTER save: customerEmailAlertsEnabled = ${verifiedValue}`);
-    console.log(
-      `📧 Match: ${verifiedValue === enabled ? "✅ YES" : "❌ NO - MISMATCH!"}`,
-    );
-
     if (verifiedValue !== enabled) {
-      return res.status(500).json({
-        success: false,
-        message: "Failed to save preference. Please try again.",
-      });
+      return res
+        .status(500)
+        .json({
+          success: false,
+          message: "Failed to save preference. Please try again.",
+        });
     }
 
     dashboardCache = null;
-
-    console.log(`✅ ========================================`);
-    console.log(
-      `✅ ${admin.email}'s customer emails are now ${verifiedValue ? "ENABLED ✅" : "DISABLED ❌"}`,
-    );
-    console.log(`✅ ========================================`);
-
     return res.status(200).json({
       success: true,
       message: `Customer email alerts ${verifiedValue ? "enabled" : "disabled"} successfully for ${admin.email}`,
@@ -1202,10 +1092,6 @@ export const toggleCustomerEmailAlerts = async (
   }
 };
 
-// ============================================================
-// ⭐⭐⭐ FIXED: GET CUSTOMER EMAIL ALERTS PREFERENCE - PER ADMIN ⭐⭐⭐
-// ============================================================
-// Reads from the REQUESTING ADMIN's own record. Each admin sees their own toggle.
 export const getCustomerEmailAlertsPreference = async (
   req: AuthRequest,
   res: Response,
@@ -1214,43 +1100,28 @@ export const getCustomerEmailAlertsPreference = async (
   try {
     const requestingAdminId = req.user?._id || req.user?.id;
 
-    console.log(
-      `📧 Preference check for admin: ${req.user?.email} (ID: ${requestingAdminId})`,
-    );
-
     if (!requestingAdminId) {
-      return res.status(200).json({
-        success: true,
-        data: {
-          customerEmailAlertsEnabled: true,
-          adminEmail: null,
-        },
-      });
+      return res
+        .status(200)
+        .json({
+          success: true,
+          data: { customerEmailAlertsEnabled: true, adminEmail: null },
+        });
     }
 
     const admin = await Admin.findById(requestingAdminId).select(
       "email customerEmailAlertsEnabled role",
     );
-
     if (!admin) {
-      return res.status(200).json({
-        success: true,
-        data: {
-          customerEmailAlertsEnabled: true,
-          adminEmail: null,
-        },
-      });
+      return res
+        .status(200)
+        .json({
+          success: true,
+          data: { customerEmailAlertsEnabled: true, adminEmail: null },
+        });
     }
 
     const isEnabled = admin.customerEmailAlertsEnabled === true;
-
-    console.log(`📧 ========================================`);
-    console.log(`📧 Preference for: ${admin.email} (${admin.role})`);
-    console.log(
-      `📧 customerEmailAlertsEnabled = ${isEnabled ? "ON ✅" : "OFF ❌"}`,
-    );
-    console.log(`📧 ========================================`);
-
     return res.status(200).json({
       success: true,
       data: {
@@ -1261,6 +1132,83 @@ export const getCustomerEmailAlertsPreference = async (
     });
   } catch (error: any) {
     console.error("❌ Error getting customer email alerts preference:", error);
+    next(error);
+  }
+};
+
+// ============================================================
+// ⭐⭐⭐ THEME PREFERENCE - PER ADMIN (SAVED IN DB) ⭐⭐⭐
+// ============================================================
+
+export const getAdminThemePreference = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const adminId = req.user?._id || req.user?.id;
+    if (!adminId) {
+      return res
+        .status(200)
+        .json({ success: true, data: { themePreference: "porcelain" } });
+    }
+
+    const admin = await Admin.findById(adminId).select("themePreference");
+    if (!admin) {
+      return res
+        .status(200)
+        .json({ success: true, data: { themePreference: "porcelain" } });
+    }
+
+    return res
+      .status(200)
+      .json({
+        success: true,
+        data: { themePreference: admin.themePreference || "porcelain" },
+      });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateAdminThemePreference = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const { themeId } = req.body;
+    const adminId = req.user?._id || req.user?.id;
+
+    if (!adminId) {
+      return res
+        .status(401)
+        .json({
+          success: false,
+          message: "You must be logged in as admin to update theme",
+        });
+    }
+    if (!themeId || typeof themeId !== "string") {
+      return res
+        .status(400)
+        .json({ success: false, message: "Theme ID is required" });
+    }
+
+    const admin = await Admin.findById(adminId);
+    if (!admin)
+      return res
+        .status(404)
+        .json({ success: false, message: "Admin account not found" });
+
+    admin.themePreference = themeId;
+    await admin.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Theme preference saved",
+      data: { themePreference: admin.themePreference },
+    });
+  } catch (error) {
     next(error);
   }
 };

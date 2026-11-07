@@ -12,6 +12,7 @@ export interface IAdmin extends Document {
   status: "active" | "inactive" | "suspended";
   permissions: string[];
   customerEmailAlertsEnabled: boolean;
+  themePreference?: string;
   lastLogin?: Date;
   profilePicture?: string;
   createdAt: Date;
@@ -41,6 +42,10 @@ const AdminSchema: Schema = new Schema(
     customerEmailAlertsEnabled: {
       type: Boolean,
       default: true,
+    },
+    themePreference: {
+      type: String,
+      default: "porcelain",
     },
     lastLogin: { type: Date },
     profilePicture: { type: String },
